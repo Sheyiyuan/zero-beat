@@ -1,3 +1,3 @@
-module github.com/sheyiyuan/hbp
+module github.com/sheyiyuan/zero-beat
 
 go 1.24

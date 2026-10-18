@@ -1,4 +1,4 @@
-// Command hbp 是新项目的入口占位实现。
+// Command zero 是新项目的入口占位实现。
 //
 // 目前只提供 --version 与子命令骨架，真正的 TUI、音频引擎与音源实现
 // 按 ROADMAP.md 的阶段推进。项目名尚未确定，见 docs/NAMING.md。
@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	appName = "hbp"
+	appName = "zero"
 	version = "0.0.1-dev"
 )
 

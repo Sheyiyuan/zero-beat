@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sheyiyuan/hbp/internal/domain"
+	"github.com/sheyiyuan/zero-beat/internal/domain"
 )
 
 type fakeSource struct{ id string }

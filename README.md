@@ -1,10 +1,12 @@
-# hbp（暂定名）
+# zero-beat · 零拍
 
 **跨平台音乐终端播放器。** 一个歌单里可以同时装 B 站和网易云的单曲，某个平台放不了，就自动换另一个平台的版本。
 
 > **状态：脚手架阶段。** 仓库里只有骨架、接口契约和文档，还不能播放。进度见 [ROADMAP.md](ROADMAP.md)。
->
-> 项目名待定，候选与讨论见 [docs/NAMING.md](docs/NAMING.md)。
+
+名字取自无线电里的 *zero beat*：两个振荡器频率完全相同时，差拍归零，听不出拍频。这个项目做的是同一件事——同一首歌在两个平台同频，切源时听不出接缝。
+
+命令是 `zero`，仓库与包名是 `zero-beat`（命名取舍见 [docs/NAMING.md](docs/NAMING.md)）。
 
 ---
 
@@ -29,7 +31,7 @@ v1（[Half Beat Player](https://github.com/Sheyiyuan/Half-Beat-Player)）是 Wai
 ## 目录结构
 
 ```
-cmd/hbp/              CLI 入口（子命令骨架）
+cmd/zero/              CLI 入口（子命令骨架）
 internal/
   domain/             与平台无关的领域模型（Track / TrackSource / Quality）
   store/              SQLite 表结构、迁移、v1 导入器
@@ -52,8 +54,8 @@ docs/
 需要 Go 1.24+ 能编译当前骨架；**引入 charm v2 与 oto v3 后要求 Go 1.26+**（见 `go.mod` 演进说明）。
 
 ```bash
-make build      # 产出 bin/hbp
-./bin/hbp       # 打印用法
+make build      # 产出 bin/zero
+./bin/zero       # 打印用法
 make check      # gofmt + vet + test
 ```
 
@@ -79,10 +81,11 @@ make check      # gofmt + vet + test
 
 ## 命名
 
-`hbp` 是占位名。候选与取舍见 [docs/NAMING.md](docs/NAMING.md)。定下来后：
+`zero-beat` / `zero` 已定名，理由与代价见 [docs/NAMING.md](docs/NAMING.md)。若以后还要改：
 
 ```bash
-scripts/rename.sh onbeat          # 改模块路径、包引用、cmd 目录、文档
+scripts/rename.sh <slug> [--binary <name>]   # 改模块路径、import、cmd 目录、Makefile、文档
+make check
 ```
 
 ## 许可证

@@ -1,4 +1,4 @@
-BINARY := hbp
+BINARY := zero
 GO     ?= go
 
 .PHONY: all build run test vet fmt fmt-check tidy check clean

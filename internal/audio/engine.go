@@ -9,7 +9,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/sheyiyuan/hbp/internal/source"
+	"github.com/sheyiyuan/zero-beat/internal/source"
 )
 
 // ErrNotSupported 表示当前解码后端无法处理该编码。

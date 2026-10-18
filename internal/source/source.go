@@ -11,7 +11,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/sheyiyuan/hbp/internal/domain"
+	"github.com/sheyiyuan/zero-beat/internal/domain"
 )
 
 // Capability 描述音源支持的能力，UI 依据它决定展示哪些控件，

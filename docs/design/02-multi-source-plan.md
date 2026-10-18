@@ -275,8 +275,7 @@ type Decoder interface {
 ```
 half-beat-v2/
 ├── cmd/
-│   ├── hbp/                 # TUI 入口
-│   └── hbp/...              # 子命令：play <bvid|url> / search / login / daemon
+│   └── zero/                 # 入口与子命令：tui / play <bvid|url> / search / login / daemon
 ├── internal/
 │   ├── domain/              # Track / TrackSource / Playlist / Account / Quality
 │   ├── store/               # SQLite（GORM 或 sqlc），迁移 + v1 导入器
@@ -298,7 +297,7 @@ half-beat-v2/
 1. 搬 `models`/`db`/`lyrics`/`netguard` + 测试 → 改名成 `domain`/`store`/`lyrics`。
 2. 写 v1 数据导入器：`Song` → `Track` + `TrackSource(bilibili)`，`Favorite` → `Playlist` + `RemotePlaylist`。**老用户数据不能丢**，这是重写最容易得罪人的地方。
 3. 把 v1 的 `services` 按 Source 接口切成 `source/bilibili`（登录、搜索、BV、多 P、播放、收藏夹）。
-4. 音频引擎 + `hbp play <bvid>` headless 子命令先跑通（无 UI 干扰，最容易调）。
+4. 音频引擎 + `zero play <bvid>` headless 子命令先跑通（无 UI 干扰，最容易调）。
 5. TUI 骨架 + 页面。
 6. 加 `source/netease`。
 7. 匹配、回退、同步、下载、系统集成。
@@ -359,4 +358,4 @@ half-beat-v2/
 | 5 | 音质策略？ | 统一 `Quality` 枚举；B 站选 30280（AAC-LC），避开 HE-AAC；网易云默认 exhigh，会员曲目提示 |
 | 6 | 数据模型？ | **Track + TrackSource 两层**（第 3 节），不存播放直链 |
 
-如果第 1、2 条按建议走，我建议的下一步是：**先做 P0 + B 站 source + `hbp play` headless 播放**（约 2 周），把音频和选轨在真实曲库上验通，再决定 TUI 的页面顺序。需要的话我可以直接开始搭 P0 骨架。
+如果第 1、2 条按建议走，我建议的下一步是：**先做 P0 + B 站 source + `zero play` headless 播放**（约 2 周），把音频和选轨在真实曲库上验通，再决定 TUI 的页面顺序。需要的话我可以直接开始搭 P0 骨架。

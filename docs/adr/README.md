@@ -10,6 +10,6 @@
 | [0004](0004-track-and-tracksource.md) | 数据模型分 Track / TrackSource 两层，直链不落库 | 已接受 |
 | [0005](0005-single-source-first.md) | 先单源落地，接口按多源设计，能力位驱动 UI | 已接受 |
 | [0006](0006-migrate-not-rewrite.md) | 搬迁而不是重写：领域层与测试成建制搬过来 | 已接受 |
-| [0007](0007-provisional-name.md) | 项目名暂用 hbp，定名后脚本改名 | 提议中 |
+| [0007](0007-project-name.md) | 项目命名：仓库 `zero-beat`，命令 `zero` | 已接受 |
 
 新增 ADR 的格式：标题、状态、背景、决策、理由、后果、替代方案。

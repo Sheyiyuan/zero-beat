@@ -13,8 +13,8 @@ import (
 	"context"
 	"io"
 
-	"github.com/sheyiyuan/hbp/internal/domain"
-	"github.com/sheyiyuan/hbp/internal/source"
+	"github.com/sheyiyuan/zero-beat/internal/domain"
+	"github.com/sheyiyuan/zero-beat/internal/source"
 )
 
 // Format 是解码后的 PCM 格式，统一为交错 s16le。

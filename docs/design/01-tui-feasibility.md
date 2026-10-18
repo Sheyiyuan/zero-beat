@@ -217,7 +217,7 @@ ftyp(iso5/dash, GPAC 0.7.2)  free  moov(mvhd, mvex{mehd,trex,trep}, trak{...esds
 | 收藏夹同步进度 | 后台任务 + 状态栏角标 + `:tasks` 页面 | M |
 | 下载管理 | 异步任务队列 + 进度页 | M |
 | 多 P 选择 | 列表内展开二级列表 | S |
-| — | **新增**：MPRIS/DBus 媒体键、桌面通知、`hbp play <bvid>` 子命令、`--json` headless 模式、SSH 友好 | M |
+| — | **新增**：MPRIS/DBus 媒体键、桌面通知、`zero play <bvid>` 子命令、`--json` headless 模式、SSH 友好 | M |
 
 `S/M/L` = 1–3 人日 / 4–8 人日 / 10+ 人日。总体：**该丢的丢掉大约能省 15% 工作量**（主题背景图、滚动文本、窗口控制、音效动画）。
 
@@ -231,7 +231,7 @@ ftyp(iso5/dash, GPAC 0.7.2)  free  moov(mvhd, mvex{mehd,trex,trep}, trak{...esds
 half-beat-player/
 ├── cmd/
 │   ├── half-beat/            # 现有 Wails 入口（保留）
-│   └── hbp-tui/              # TUI 入口 + CLI 子命令
+│   └── zero-tui/              # TUI 入口 + CLI 子命令
 ├── internal/
 │   ├── models/  db/  lyrics/  netguard/    # 原样复用
 │   ├── core/                 # ← 由 services 抽出的领域层（无 UI、无 Wails）
@@ -254,7 +254,7 @@ half-beat-player/
 两个原则：
 
 1. **音频引擎必须先有接口，再有实现**。接口设计对了，mpv 和纯 Go 可以互换，甚至能同时存在（mpv 播放，纯 Go 兜底）。
-2. **先做 `hbp-tui play <bvid>` 这种 headless 子命令**。音频引擎在没有 UI 干扰的情况下最容易调通，这也是降风险最快的一步。
+2. **先做 `zero-tui play <bvid>` 这种 headless 子命令**。音频引擎在没有 UI 干扰的情况下最容易调通，这也是降风险最快的一步。
 
 ---
 
@@ -321,7 +321,7 @@ half-beat-player/
 1. **音频主路径**：mpv 优先求快，还是纯 Go 优先求零依赖？（建议：先 mpv 落地，纯 Go 作为 v2）
 2. **是否共用数据库**：TUI 与桌面版共用一个 `half-beat.db`（数据互通，但需要处理并发写与配置差异），还是 TUI 独立库？（建议共用，TUI 配置单独放 TOML）
 3. **完成度目标**：MVP / 对齐桌面版 / 对标 musicfox？
-4. **仓库形态**：同仓库加 `cmd/hbp-tui`（推荐，共享 `internal/`），还是另开仓库（会被迫复制领域层）？
+4. **仓库形态**：同仓库加 `cmd/zero-tui`（推荐，共享 `internal/`），还是另开仓库（会被迫复制领域层）？
 
 ---
 
