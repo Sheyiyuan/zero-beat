@@ -1,0 +1,19 @@
+# 构建产物
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# 本地数据与缓存
+*.db
+*.db-journal
+*.db-wal
+/data/
+/tmp/
+
+# 编辑器与系统
+.DS_Store
+.idea/
+.vscode/
+*.swp
