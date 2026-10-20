@@ -1,6 +1,6 @@
 # ADR-0004 数据模型分 Track / TrackSource 两层，直链不落库
 
-- 状态：已接受
+- 状态：部分实现（`songs` / `playlists` 已落地，`TrackSource` 推迟到第二个音源）
 - 日期：2026-10-18
 
 ## 背景

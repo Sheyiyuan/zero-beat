@@ -4,6 +4,7 @@
 *.exe
 *.test
 *.out
+*.log
 
 # 本地数据与缓存
 *.db

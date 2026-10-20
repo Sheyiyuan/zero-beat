@@ -1,4 +1,4 @@
-<!-- 本文件由 v1 仓库 docs/ 迁入，作为本项目的设计依据；实现细节以 docs/adr/ 为准。 -->
+<!-- 立项评估，保留作历史资料；实现状态见 docs/IMPLEMENTATION.md。 -->
 
 # Half Beat Player TUI 版：难度与技术栈评估
 

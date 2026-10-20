@@ -1,19 +1,36 @@
-// Package audio 定义播放引擎抽象。
+// Package audio 实现播放引擎：ffmpeg 解码 + oto 输出 + 自研增益链。
 //
-// 引擎只认 source.Stream（URL + Headers + Codec + 过期时间），
-// 因此新增音源不需要改引擎；新增编码只需要新增解码后端。
+// 选型理由见 docs/adr/0003-audio-decoder-abstraction.md：先用外部解码器把
+// 编解码矩阵（AAC-LC / HE-AAC / FLAC / EC-3）全部覆盖，把纯 Go 解码留给后续。
 package audio
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/internal/source"
+	"github.com/ebitengine/oto/v3"
+
+	"github.com/sheyiyuan/zero-beat/internal/audio/dsp"
 )
 
-// ErrNotSupported 表示当前解码后端无法处理该编码。
-var ErrNotSupported = errors.New("audio: 当前解码后端不支持该编码")
+const (
+	sampleRate   = 48000
+	channelCount = 2
+
+	// bytesPerSecond 是 s16le 立体声 48kHz 的字节速率。
+	bytesPerSecond = sampleRate * channelCount * 2
+
+	eventBuffer = 16
+)
 
 // State 是播放状态。
 type State int
@@ -30,56 +47,445 @@ const (
 func (s State) String() string {
 	switch s {
 	case StateBuffering:
-		return "buffering"
+		return "缓冲中"
 	case StatePlaying:
-		return "playing"
+		return "播放中"
 	case StatePaused:
-		return "paused"
+		return "已暂停"
 	case StateEnded:
-		return "ended"
+		return "已结束"
 	case StateFailed:
-		return "failed"
+		return "出错"
 	default:
-		return "idle"
+		return "空闲"
 	}
 }
 
-// EventType 区分引擎事件。
+// EventType 区分事件类型。
 type EventType int
 
 const (
+	// EventStateChanged 播放状态变化。
 	EventStateChanged EventType = iota
-	EventPosition
+	// EventEnded 当前曲目播放完毕。
 	EventEnded
+	// EventFailed 播放失败，Err 里有原因。
 	EventFailed
 )
 
-// Event 是引擎发往 UI 的唯一通道。
-//
-// UI 侧必须在 goroutine 里把它转成 tea.Msg，不要在回调里直接改状态。
+// Event 是引擎发往 UI 的事件。
 type Event struct {
-	Type     EventType
-	State    State
-	Position time.Duration
-	Err      error
+	Type  EventType
+	State State
+	Err   error
 }
 
 // Engine 是播放引擎。
-type Engine interface {
-	Play(ctx context.Context, s *source.Stream) error
-	Pause(ctx context.Context) error
-	Resume(ctx context.Context) error
-	Stop(ctx context.Context) error
-	Seek(ctx context.Context, pos time.Duration) error
+type Engine struct {
+	ctx    *oto.Context
+	events chan Event
 
-	// SetVolume 设置用户音量，范围 0..1。
-	SetVolume(volume float64) error
-	// SetCompensationDB 设置音量补偿（分贝），叠加在用户音量之上。
-	SetCompensationDB(db float64) error
+	ffmpeg string
 
-	Position() time.Duration
-	State() State
-	// Events 返回事件通道；引擎关闭时通道被关闭。
-	Events() <-chan Event
-	Close() error
+	mu       sync.Mutex
+	state    State
+	volume   float64
+	compDB   float64
+	stream   Stream
+	cmd      *exec.Cmd
+	player   *oto.Player
+	gain     *gainReader
+	seekBase time.Duration
+	gen      int
+	closed   bool
+}
+
+// New 创建引擎并初始化音频设备（PulseAudio / WASAPI / CoreAudio）。
+func New() (*Engine, error) {
+	ctx, ready, err := oto.NewContext(&oto.NewContextOptions{
+		SampleRate:      sampleRate,
+		ChannelCount:    channelCount,
+		Format:          oto.FormatSignedInt16LE,
+		BufferSize:      80 * time.Millisecond,
+		ApplicationName: "zero-beat",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("audio: 初始化音频设备: %w", err)
+	}
+	<-ready
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("audio: 音频设备不可用: %w", err)
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return nil, errors.New("audio: 未找到 ffmpeg，请先安装（Debian/Ubuntu: sudo apt install ffmpeg）")
+	}
+	return &Engine{
+		ctx:    ctx,
+		events: make(chan Event, eventBuffer),
+		ffmpeg: ffmpeg,
+		volume: 0.8,
+		state:  StateIdle,
+	}, nil
+}
+
+// Events 返回事件通道。
+func (e *Engine) Events() <-chan Event { return e.events }
+
+// State 返回当前状态。
+func (e *Engine) State() State {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.state
+}
+
+// Volume 返回用户音量（0..1）。
+func (e *Engine) Volume() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.volume
+}
+
+// CompensationDB 返回当前的补偿分贝。
+func (e *Engine) CompensationDB() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.compDB
+}
+
+// SetVolume 调整用户音量。
+func (e *Engine) SetVolume(v float64) {
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	e.mu.Lock()
+	e.volume = v
+	gain := e.gain
+	comp := e.compDB
+	vol := e.volume
+	e.mu.Unlock()
+	if gain != nil {
+		gain.setGain(vol * dbToGain(comp))
+	}
+}
+
+// SetCompensationDB 调整音量补偿（分贝）。
+func (e *Engine) SetCompensationDB(db float64) {
+	if db < -20 {
+		db = -20
+	}
+	if db > 12 {
+		db = 12
+	}
+	e.mu.Lock()
+	e.compDB = db
+	gain := e.gain
+	vol := e.volume
+	e.mu.Unlock()
+	if gain != nil {
+		gain.setGain(vol * dbToGain(db))
+	}
+}
+
+func dbToGain(db float64) float64 {
+	return dsp.DBToGain(db)
+}
+
+// Play 开始播放一个流；会先停掉当前曲目。
+func (e *Engine) Play(ctx context.Context, s Stream) error {
+	if s.URL == "" {
+		return errors.New("audio: 播放地址为空")
+	}
+	e.stopLocked()
+
+	e.mu.Lock()
+	e.stream = s
+	e.seekBase = 0
+	e.mu.Unlock()
+
+	return e.startLocked(ctx, s, 0)
+}
+
+// startLocked 启动 ffmpeg 与播放器；调用方需保证没有正在播放的实例。
+func (e *Engine) startLocked(ctx context.Context, s Stream, seek time.Duration) error {
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-nostdin",
+	}
+	if hdr := headerString(s.Headers); hdr != "" {
+		args = append(args, "-headers", hdr)
+	}
+	if seek > 0 {
+		args = append(args, "-ss", formatSeconds(seek))
+	}
+	args = append(args,
+		"-i", s.URL,
+		"-vn", "-f", "s16le", "-ac", strconv.Itoa(channelCount), "-ar", strconv.Itoa(sampleRate),
+		"pipe:1",
+	)
+
+	cmd := exec.CommandContext(ctx, e.ffmpeg, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("audio: 获取解码输出: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("audio: 获取解码日志: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("audio: 启动 ffmpeg: %w", err)
+	}
+
+	gain := newGainReader(stdout)
+	player := e.ctx.NewPlayer(gain)
+	player.SetVolume(1)
+	player.Play()
+
+	e.mu.Lock()
+	e.gen++
+	gen := e.gen
+	e.cmd = cmd
+	e.player = player
+	e.gain = gain
+	e.seekBase = seek
+	e.state = StatePlaying
+	volume := e.volume
+	comp := e.compDB
+	e.mu.Unlock()
+
+	gain.setGain(volume * dbToGain(comp))
+	e.emit(Event{Type: EventStateChanged, State: StatePlaying})
+
+	go e.collectStderr(stderr, gen)
+	go e.watch(cmd, player, gen)
+	return nil
+}
+
+func (e *Engine) collectStderr(r io.Reader, gen int) {
+	scanner := bufio.NewScanner(r)
+	var last bytes.Buffer
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		last.Reset()
+		last.WriteString(line)
+	}
+	msg := strings.TrimSpace(last.String())
+	if msg == "" {
+		return
+	}
+	e.mu.Lock()
+	if e.gen != gen {
+		e.mu.Unlock()
+		return
+	}
+	failed := e.state == StatePlaying || e.state == StatePaused
+	if failed {
+		e.state = StateFailed
+	}
+	e.mu.Unlock()
+	if failed {
+		e.emit(Event{Type: EventFailed, State: StateFailed, Err: errors.New("audio: " + msg)})
+	}
+}
+
+// watch 等待 ffmpeg 退出并给出结束/失败事件。
+func (e *Engine) watch(cmd *exec.Cmd, player *oto.Player, gen int) {
+	err := cmd.Wait()
+
+	e.mu.Lock()
+	if e.gen != gen {
+		e.mu.Unlock()
+		return // 已经被新的播放替换
+	}
+	state := e.state
+	e.mu.Unlock()
+
+	// 让 oto 把缓冲里的数据放完。
+	time.Sleep(120 * time.Millisecond)
+	_ = player.Close()
+
+	if state == StateFailed {
+		return // stderr 已报告过
+	}
+	if err != nil {
+		e.mu.Lock()
+		if e.gen != gen {
+			e.mu.Unlock()
+			return
+		}
+		e.state = StateFailed
+		e.mu.Unlock()
+		e.emit(Event{Type: EventFailed, State: StateFailed, Err: fmt.Errorf("audio: ffmpeg 退出: %w", err)})
+		return
+	}
+
+	e.mu.Lock()
+	if e.gen != gen {
+		e.mu.Unlock()
+		return
+	}
+	e.state = StateEnded
+	e.mu.Unlock()
+	e.emit(Event{Type: EventEnded, State: StateEnded})
+}
+
+// Pause 暂停播放（同时停止读取，避免继续下载）。
+func (e *Engine) Pause() {
+	e.mu.Lock()
+	player := e.player
+	if e.state != StatePlaying {
+		e.mu.Unlock()
+		return
+	}
+	e.state = StatePaused
+	e.mu.Unlock()
+	if player != nil {
+		player.PauseAndStopReading()
+	}
+	e.emit(Event{Type: EventStateChanged, State: StatePaused})
+}
+
+// Resume 恢复播放。
+func (e *Engine) Resume() {
+	e.mu.Lock()
+	player := e.player
+	if e.state != StatePaused {
+		e.mu.Unlock()
+		return
+	}
+	e.state = StatePlaying
+	e.mu.Unlock()
+	if player != nil {
+		player.Play()
+	}
+	e.emit(Event{Type: EventStateChanged, State: StatePlaying})
+}
+
+// TogglePause 在暂停与播放之间切换。
+func (e *Engine) TogglePause() {
+	if e.State() == StatePaused {
+		e.Resume()
+		return
+	}
+	e.Pause()
+}
+
+// Stop 停止播放并释放资源。
+func (e *Engine) Stop() {
+	e.stopLocked()
+	e.mu.Lock()
+	e.state = StateIdle
+	e.mu.Unlock()
+	e.emit(Event{Type: EventStateChanged, State: StateIdle})
+}
+
+func (e *Engine) stopLocked() {
+	e.mu.Lock()
+	player := e.player
+	cmd := e.cmd
+	gain := e.gain
+	e.player = nil
+	e.cmd = nil
+	e.gain = nil
+	e.gen++
+	e.mu.Unlock()
+
+	if player != nil {
+		_ = player.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
+	_ = gain
+}
+
+// Seek 跳转到指定位置（重启 ffmpeg，定位到目标时间）。
+func (e *Engine) Seek(ctx context.Context, pos time.Duration) error {
+	if pos < 0 {
+		pos = 0
+	}
+	e.mu.Lock()
+	s := e.stream
+	duration := time.Duration(s.DurationMS) * time.Millisecond
+	e.mu.Unlock()
+	if s.URL == "" {
+		return errors.New("audio: 还没有正在播放的曲目")
+	}
+	if duration > 0 && pos > duration {
+		pos = duration
+	}
+	e.stopLocked()
+	return e.startLocked(ctx, s, pos)
+}
+
+// Position 返回当前播放位置。
+func (e *Engine) Position() time.Duration {
+	e.mu.Lock()
+	gain := e.gain
+	base := e.seekBase
+	e.mu.Unlock()
+	if gain == nil {
+		return base
+	}
+	return base + time.Duration(gain.BytesRead()*int64(time.Second)/bytesPerSecond)
+}
+
+// Duration 返回当前曲目总时长。
+func (e *Engine) Duration() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return time.Duration(e.stream.DurationMS) * time.Millisecond
+}
+
+// CurrentStream 返回当前流的副本。
+func (e *Engine) CurrentStream() Stream {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.stream
+}
+
+// Close 停止播放并释放设备；可重复调用。
+func (e *Engine) Close() error {
+	e.stopLocked()
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return nil
+	}
+	e.closed = true
+	e.state = StateIdle
+	e.mu.Unlock()
+	close(e.events)
+	return nil
+}
+
+func (e *Engine) emit(ev Event) {
+	select {
+	case e.events <- ev:
+	default:
+	}
+}
+
+func headerString(headers map[string]string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for k, v := range headers {
+		b.WriteString(k)
+		b.WriteString(": ")
+		b.WriteString(v)
+		b.WriteString("\r\n")
+	}
+	return b.String()
+}
+
+func formatSeconds(d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', 3, 64)
 }

@@ -1,7 +1,7 @@
 BINARY := zero
 GO     ?= go
 
-.PHONY: all build run test vet fmt fmt-check tidy check clean
+.PHONY: all build run demo test vet fmt fmt-check tidy check clean
 
 all: check build
 
@@ -10,6 +10,10 @@ build:
 
 run:
 	$(GO) run ./cmd/$(BINARY)
+
+# 不联网打印一帧示例界面，用于检查布局
+demo:
+	$(GO) run ./cmd/$(BINARY) demo
 
 test:
 	$(GO) test ./...
