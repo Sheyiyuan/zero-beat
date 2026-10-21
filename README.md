@@ -10,7 +10,7 @@
 
 > 本项目是 [Half Beat Player](https://github.com/Sheyiyuan/Half-Beat-Player) 的续作（至少是精神续作），延续「在电脑上听 B 站视频」的出发点；TUI 形态与播放器交互受到 [go-musicfox](https://github.com/go-musicfox/go-musicfox) 的启发。项目以个人使用为主，不承诺功能路线图、平台兼容性或问题响应速度，欢迎 issue 和 PR。
 
-> **状态：v0.4 待发布。** 双源已打通：B 站 + 网易云扫码登录、单源/合并搜索、收藏夹与歌单、混源队列、本地混源歌单、播放、歌词、断点恢复、下一首预解析；新增播放片段、同源云端歌单写入和歌单引用混入。
+> **状态：v0.4.0 已发布**（[下载](https://github.com/Sheyiyuan/zero-beat/releases)）。双源已打通：B 站 + 网易云扫码登录、单源/合并搜索、收藏夹与歌单、混源队列、本地混源歌单、播放、歌词、断点恢复、下一首预解析；新增播放片段、同源云端歌单写入和歌单引用混入。
 > 跨源自动匹配与更多能力见 [ROADMAP.md](ROADMAP.md)。
 
 ---
