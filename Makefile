@@ -1,12 +1,14 @@
-BINARY := zero
-GO     ?= go
+BINARY  := zero
+GO      ?= go
+VERSION ?= 0.4.0
+LDFLAGS ?= -s -w -X main.version=$(VERSION)
 
 .PHONY: all build run demo test vet fmt fmt-check tidy check clean
 
 all: check build
 
 build:
-	$(GO) build -trimpath -o bin/$(BINARY) ./cmd/$(BINARY)
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(BINARY) ./cmd/$(BINARY)
 
 run:
 	$(GO) run ./cmd/$(BINARY)
@@ -25,7 +27,8 @@ fmt:
 	$(GO) fmt ./...
 
 fmt-check:
-	@test -z "$$(gofmt -l .)" || { echo "以下文件未格式化："; gofmt -l .; exit 1; }
+	@files="$$(git ls-files --cached --others --exclude-standard '*.go')"; \
+	test -z "$$(gofmt -l $$files)" || { echo "以下文件未格式化："; gofmt -l $$files; exit 1; }
 
 tidy:
 	$(GO) mod tidy

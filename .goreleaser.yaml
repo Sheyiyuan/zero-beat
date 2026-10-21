@@ -1,0 +1,80 @@
+# GoReleaser v2 配置：tag 触发 GitHub Release。
+# 资产命名必须与 scripts/install.sh 中的 zero_<version>_<os>_<arch>.tar.gz 保持一致。
+version: 2
+
+project_name: zero
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: zero
+    main: ./cmd/zero
+    binary: zero
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    files:
+      - LICENSE
+      - README.md
+      - THIRD_PARTY_NOTICES.md
+      - scripts/install.sh
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  github:
+    owner: sheyiyuan
+    name: zero-beat
+  draft: false
+  prerelease: auto
+  footer: |
+    ## 安装
+
+    Linux / macOS:
+
+    ```bash
+    curl -fsSLO https://github.com/sheyiyuan/zero-beat/releases/latest/download/install.sh
+    sh install.sh
+    ```
+
+    需要 `ffmpeg`；安装脚本会检查并给出对应平台的安装命令。
+
+    Windows 会附带交叉编译 zip，但未适配、不维护、不保证可用；需要的用户请自行处理，欢迎 PR。

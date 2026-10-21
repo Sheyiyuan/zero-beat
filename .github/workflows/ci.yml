@@ -15,10 +15,24 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: gofmt
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+        run: |
+          files="$(git ls-files --cached --others --exclude-standard '*.go')"
+          test -z "$(gofmt -l $files)" || { gofmt -l $files; exit 1; }
       - name: vet
         run: go vet ./...
       - name: test
         run: go test ./...
-      - name: build
+      - name: build (CGO disabled, release mode)
+        env:
+          CGO_ENABLED: "0"
         run: go build ./...
+
+      - name: validate install script
+        run: sh -n scripts/install.sh
+
+      - name: validate GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
