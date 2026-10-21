@@ -35,7 +35,16 @@ func DatabasePath() (string, error) {
 	return filepath.Join(dir, "zero-beat.db"), nil
 }
 
-// CacheDir 返回缓存目录，用于封面等临时文件。
+// KeymapPath 返回快捷键配置文件路径。
+func KeymapPath() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "keymap.toml"), nil
+}
+
+// CacheDir 返回缓存目录，用于二维码图片等临时文件。
 func CacheDir() (string, error) {
 	dir, err := DataDir()
 	if err != nil {

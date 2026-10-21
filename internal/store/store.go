@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动，免 cgo
@@ -18,22 +19,36 @@ import (
 var ErrNotFound = errors.New("store: 记录不存在")
 
 // Song 是一首歌的持久化形态。
+//
+// RemoteID 是音源内的稳定 ID（B 站 BV 号 / 网易云 song id）；BVID 是 v0.1 遗留的
+// B 站专用字段，读写时保持兼容，新代码统一用 ExternalID()。
 type Song struct {
 	ID       string
 	Source   string
+	RemoteID string
 	BVID     string
 	Page     int
 	CID      int64
 	Title    string
 	Artist   string
+	Album    string
 	Duration int // 秒
 	Cover    string
 	AddedAt  time.Time
 }
 
-// Playlist 是一个歌单，Kind 为 "remote"（B 站收藏夹镜像）或 "local"。
+// ExternalID 返回音源内的稳定 ID。
+func (s Song) ExternalID() string {
+	if s.RemoteID != "" {
+		return s.RemoteID
+	}
+	return s.BVID
+}
+
+// Playlist 是一个歌单，Kind 为「remote」（某音源的远端歌单/收藏夹镜像）或「local」。
 type Playlist struct {
 	ID       string
+	Source   string
 	Title    string
 	Kind     string
 	RemoteID string
@@ -49,18 +64,21 @@ const schema = `
 CREATE TABLE IF NOT EXISTS songs (
 	id        TEXT PRIMARY KEY,
 	source    TEXT NOT NULL,
-	bvid      TEXT NOT NULL,
+	remote_id TEXT NOT NULL DEFAULT '',
+	bvid      TEXT NOT NULL DEFAULT '',
 	page      INTEGER NOT NULL DEFAULT 1,
 	cid       INTEGER NOT NULL DEFAULT 0,
 	title     TEXT NOT NULL,
 	artist    TEXT NOT NULL DEFAULT '',
+	album     TEXT NOT NULL DEFAULT '',
 	duration  INTEGER NOT NULL DEFAULT 0,
 	cover     TEXT NOT NULL DEFAULT '',
 	added_at  INTEGER NOT NULL,
-	UNIQUE(source, bvid, page)
+	UNIQUE(source, remote_id, page)
 );
 CREATE TABLE IF NOT EXISTS playlists (
 	id        TEXT PRIMARY KEY,
+	source    TEXT NOT NULL DEFAULT '',
 	title     TEXT NOT NULL,
 	kind      TEXT NOT NULL DEFAULT 'local',
 	remote_id TEXT NOT NULL DEFAULT '',
@@ -71,6 +89,17 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 	song_id     TEXT NOT NULL,
 	position    INTEGER NOT NULL,
 	added_at    INTEGER NOT NULL,
+	PRIMARY KEY (playlist_id, song_id)
+);
+CREATE TABLE IF NOT EXISTS playlist_refs (
+	playlist_id TEXT NOT NULL,
+	ref_id      TEXT NOT NULL,
+	position    INTEGER NOT NULL,
+	PRIMARY KEY (playlist_id, ref_id)
+);
+CREATE TABLE IF NOT EXISTS playlist_excludes (
+	playlist_id TEXT NOT NULL,
+	song_id     TEXT NOT NULL,
 	PRIMARY KEY (playlist_id, song_id)
 );
 CREATE TABLE IF NOT EXISTS queue (
@@ -103,42 +132,167 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: 建表: %w", err)
 	}
-	return &Store{db: db}, nil
+	st := &Store{db: db}
+	if err := st.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return st, nil
 }
 
 // Close 关闭数据库。
 func (s *Store) Close() error { return s.db.Close() }
 
-// SongID 生成稳定的歌曲 ID：同一平台同一 BV 同一分 P 视为同一首。
-func SongID(source, bvid string, page int) string {
-	return fmt.Sprintf("%s:%s:%d", source, bvid, page)
+// migrate 把 v0.1 的 B 站单源表升级到多源结构；可重复执行。
+func (s *Store) migrate() error {
+	hasRemote, err := s.hasColumn("songs", "remote_id")
+	if err != nil {
+		return err
+	}
+	hasAlbum, err := s.hasColumn("songs", "album")
+	if err != nil {
+		return err
+	}
+	if !hasRemote || !hasAlbum {
+		if err := s.rebuildSongs(hasRemote, hasAlbum); err != nil {
+			return err
+		}
+	}
+	hasPlaylistSource, err := s.hasColumn("playlists", "source")
+	if err != nil {
+		return err
+	}
+	if !hasPlaylistSource {
+		if _, err := s.db.Exec(`ALTER TABLE playlists ADD COLUMN source TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("store: 升级歌单表: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE songs SET remote_id = bvid WHERE remote_id = '' AND bvid <> ''`); err != nil {
+		return fmt.Errorf("store: 回填歌曲 ID: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE playlists SET source = 'bilibili' WHERE source = '' AND id LIKE 'bili-fav-%'`); err != nil {
+		return fmt.Errorf("store: 回填 B 站歌单来源: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE playlists SET source = 'netease' WHERE source = '' AND id LIKE 'netease-%'`); err != nil {
+		return fmt.Errorf("store: 回填网易云歌单来源: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) hasColumn(table, column string) (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, fmt.Errorf("store: 读取表结构: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notNull int
+			dflt    any
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return false, fmt.Errorf("store: 解析表结构: %w", err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+func (s *Store) rebuildSongs(hasRemote, hasAlbum bool) error {
+	remoteExpr := `CASE WHEN bvid <> '' THEN bvid ELSE '' END`
+	if hasRemote {
+		remoteExpr = `CASE WHEN remote_id <> '' THEN remote_id ELSE bvid END`
+	}
+	albumExpr := `''`
+	if hasAlbum {
+		albumExpr = `album`
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: 开启迁移事务: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS songs_migrating`); err != nil {
+		return fmt.Errorf("store: 清理迁移临时表: %w", err)
+	}
+	if _, err := tx.Exec(`
+CREATE TABLE songs_migrating (
+	id        TEXT PRIMARY KEY,
+	source    TEXT NOT NULL,
+	remote_id TEXT NOT NULL DEFAULT '',
+	bvid      TEXT NOT NULL DEFAULT '',
+	page      INTEGER NOT NULL DEFAULT 1,
+	cid       INTEGER NOT NULL DEFAULT 0,
+	title     TEXT NOT NULL,
+	artist    TEXT NOT NULL DEFAULT '',
+	album     TEXT NOT NULL DEFAULT '',
+	duration  INTEGER NOT NULL DEFAULT 0,
+	cover     TEXT NOT NULL DEFAULT '',
+	added_at  INTEGER NOT NULL,
+	UNIQUE(source, remote_id, page)
+)`); err != nil {
+		return fmt.Errorf("store: 创建新歌曲表: %w", err)
+	}
+	if _, err := tx.Exec(`
+INSERT INTO songs_migrating (id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at)
+SELECT id, source, ` + remoteExpr + `, bvid, page, cid, title, artist, ` + albumExpr + `, duration, cover, added_at FROM songs`); err != nil {
+		return fmt.Errorf("store: 迁移歌曲数据: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE songs`); err != nil {
+		return fmt.Errorf("store: 删除旧歌曲表: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE songs_migrating RENAME TO songs`); err != nil {
+		return fmt.Errorf("store: 重命名歌曲表: %w", err)
+	}
+	return tx.Commit()
+}
+
+// SongID 生成稳定的歌曲 ID：同一平台同一外部 ID 同一分 P 视为同一首。
+func SongID(source, externalID string, page int) string {
+	if page <= 0 {
+		page = 1
+	}
+	return fmt.Sprintf("%s:%s:%d", source, externalID, page)
 }
 
 // UpsertSong 写入或更新一首歌，返回落库后的记录。
 func (s *Store) UpsertSong(song Song) (Song, error) {
-	if song.Source == "" || song.BVID == "" {
-		return Song{}, fmt.Errorf("store: 歌曲缺少来源或 BV 号")
+	externalID := song.ExternalID()
+	if song.Source == "" || externalID == "" {
+		return Song{}, fmt.Errorf("store: 歌曲缺少来源或外部 ID")
 	}
 	if song.Page <= 0 {
 		song.Page = 1
 	}
+	song.RemoteID = externalID
+	if song.BVID == "" && song.Source == "bilibili" {
+		song.BVID = externalID
+	}
 	if song.ID == "" {
-		song.ID = SongID(song.Source, song.BVID, song.Page)
+		song.ID = SongID(song.Source, externalID, song.Page)
 	}
 	if song.AddedAt.IsZero() {
 		song.AddedAt = time.Now()
 	}
 	_, err := s.db.Exec(`
-INSERT INTO songs (id, source, bvid, page, cid, title, artist, duration, cover, added_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(source, bvid, page) DO UPDATE SET
+INSERT INTO songs (id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(source, remote_id, page) DO UPDATE SET
 	title = excluded.title,
 	artist = excluded.artist,
+	album = excluded.album,
 	duration = excluded.duration,
 	cover = excluded.cover,
+	bvid = excluded.bvid,
 	cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
-		song.ID, song.Source, song.BVID, song.Page, song.CID, song.Title, song.Artist,
-		song.Duration, song.Cover, song.AddedAt.Unix())
+		song.ID, song.Source, song.RemoteID, song.BVID, song.Page, song.CID, song.Title,
+		song.Artist, song.Album, song.Duration, song.Cover, song.AddedAt.Unix())
 	if err != nil {
 		return Song{}, fmt.Errorf("store: 写入歌曲: %w", err)
 	}
@@ -147,7 +301,7 @@ ON CONFLICT(source, bvid, page) DO UPDATE SET
 
 // Song 按 ID 取一首歌。
 func (s *Store) Song(id string) (Song, error) {
-	row := s.db.QueryRow(`SELECT id, source, bvid, page, cid, title, artist, duration, cover, added_at FROM songs WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at FROM songs WHERE id = ?`, id)
 	song, err := scanSong(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Song{}, ErrNotFound
@@ -162,8 +316,8 @@ func scanSong(r rowScanner) (Song, error) {
 		song  Song
 		added int64
 	)
-	err := r.Scan(&song.ID, &song.Source, &song.BVID, &song.Page, &song.CID,
-		&song.Title, &song.Artist, &song.Duration, &song.Cover, &added)
+	err := r.Scan(&song.ID, &song.Source, &song.RemoteID, &song.BVID, &song.Page, &song.CID,
+		&song.Title, &song.Artist, &song.Album, &song.Duration, &song.Cover, &added)
 	if err != nil {
 		return Song{}, err
 	}
@@ -196,59 +350,340 @@ func (s *Store) EnsurePlaylist(p Playlist) (Playlist, error) {
 		p.Kind = "local"
 	}
 	_, err := s.db.Exec(`
-INSERT INTO playlists (id, title, kind, remote_id, created_at) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET title = excluded.title, kind = excluded.kind, remote_id = excluded.remote_id`,
-		p.ID, p.Title, p.Kind, p.RemoteID, time.Now().Unix())
+INSERT INTO playlists (id, source, title, kind, remote_id, created_at) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET source = excluded.source, title = excluded.title,
+	kind = excluded.kind, remote_id = excluded.remote_id`,
+		p.ID, p.Source, p.Title, p.Kind, p.RemoteID, time.Now().Unix())
 	if err != nil {
 		return Playlist{}, fmt.Errorf("store: 写入歌单: %w", err)
 	}
 	return s.Playlist(p.ID)
 }
 
-// Playlist 按 ID 取歌单（带曲目数）。
-func (s *Store) Playlist(id string) (Playlist, error) {
-	row := s.db.QueryRow(`
-SELECT p.id, p.title, p.kind, p.remote_id,
-       (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
-FROM playlists p WHERE p.id = ?`, id)
-	var p Playlist
-	err := row.Scan(&p.ID, &p.Title, &p.Kind, &p.RemoteID, &p.Count)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Playlist{}, ErrNotFound
+// CreatePlaylist 新建一个本地歌单。
+func (s *Store) CreatePlaylist(title string) (Playlist, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return Playlist{}, fmt.Errorf("store: 歌单名不能为空")
 	}
-	if err != nil {
-		return Playlist{}, fmt.Errorf("store: 读歌单: %w", err)
+	id := fmt.Sprintf("local-%d", time.Now().UnixNano())
+	if _, err := s.db.Exec(`
+INSERT INTO playlists (id, source, title, kind, remote_id, created_at) VALUES (?, '', ?, 'local', '', ?)`,
+		id, title, time.Now().Unix()); err != nil {
+		return Playlist{}, fmt.Errorf("store: 新建歌单: %w", err)
 	}
-	return p, nil
+	return s.Playlist(id)
 }
 
-// ListPlaylists 列出全部歌单，远端在前、本地在后。
-func (s *Store) ListPlaylists() ([]Playlist, error) {
-	rows, err := s.db.Query(`
-SELECT p.id, p.title, p.kind, p.remote_id,
-       (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
-FROM playlists p
-ORDER BY CASE p.kind WHEN 'remote' THEN 0 ELSE 1 END, p.created_at`)
+// RenamePlaylist 重命名本地/混合歌单；远端收藏夹镜像不允许改名。
+func (s *Store) RenamePlaylist(id, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return fmt.Errorf("store: 歌单名不能为空")
+	}
+	p, err := s.Playlist(id)
 	if err != nil {
-		return nil, fmt.Errorf("store: 列出歌单: %w", err)
+		return err
+	}
+	if p.Kind != "local" && p.Kind != "mixin" {
+		return fmt.Errorf("store: 只有本地或混合歌单可以重命名")
+	}
+	if _, err := s.db.Exec(`UPDATE playlists SET title = ? WHERE id = ?`, title, id); err != nil {
+		return fmt.Errorf("store: 重命名歌单: %w", err)
+	}
+	return nil
+}
+
+// DeletePlaylist 删除本地/混合歌单及其条目；远端歌单不可删除。
+func (s *Store) DeletePlaylist(id string) error {
+	p, err := s.Playlist(id)
+	if err != nil {
+		return err
+	}
+	if p.Kind != "local" && p.Kind != "mixin" {
+		return fmt.Errorf("store: 远端歌单不能删除")
+	}
+	referenced, err := s.IsReferenced(id)
+	if err != nil {
+		return err
+	}
+	if referenced {
+		return fmt.Errorf("store: 歌单被其他混合歌单引用，先移除引用")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: 开启事务: %w", err)
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM playlist_items WHERE playlist_id = ?`,
+		`DELETE FROM playlist_refs WHERE playlist_id = ?`,
+		`DELETE FROM playlist_excludes WHERE playlist_id = ?`,
+		`DELETE FROM playlists WHERE id = ?`,
+	} {
+		if _, err := tx.Exec(q, id); err != nil {
+			return fmt.Errorf("store: 删除歌单: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// IsReferenced 判断歌单是否被其他混合歌单引用。
+func (s *Store) IsReferenced(id string) (bool, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM playlist_refs WHERE ref_id = ?`, id).Scan(&n); err != nil {
+		return false, fmt.Errorf("store: 读取歌单引用: %w", err)
+	}
+	return n > 0, nil
+}
+
+// UnlockPlaylist 把同步歌单解锁为本地歌单：保留 ID 与全部曲目，断开远端同步。
+func (s *Store) UnlockPlaylist(id string) (Playlist, error) {
+	p, err := s.Playlist(id)
+	if err != nil {
+		return Playlist{}, err
+	}
+	if p.Kind != "remote" {
+		return Playlist{}, fmt.Errorf("store: 只有同步歌单可以解锁")
+	}
+	if _, err := s.db.Exec(`UPDATE playlists SET kind = 'local', source = '', remote_id = '' WHERE id = ?`, id); err != nil {
+		return Playlist{}, fmt.Errorf("store: 解锁歌单: %w", err)
+	}
+	return s.Playlist(id)
+}
+
+// CreateMixin 新建一个混合歌单；refIDs 按引用顺序保存。
+func (s *Store) CreateMixin(title string, refIDs []string) (Playlist, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return Playlist{}, fmt.Errorf("store: 歌单名不能为空")
+	}
+	refs, err := s.validateMixinRefs(refIDs)
+	if err != nil {
+		return Playlist{}, err
+	}
+	id := fmt.Sprintf("mix-%d", time.Now().UnixNano())
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Playlist{}, fmt.Errorf("store: 开启事务: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+INSERT INTO playlists (id, source, title, kind, remote_id, created_at) VALUES (?, '', ?, 'mixin', '', ?)`,
+		id, title, time.Now().Unix()); err != nil {
+		return Playlist{}, fmt.Errorf("store: 新建混合歌单: %w", err)
+	}
+	for i, ref := range refs {
+		if _, err := tx.Exec(`INSERT INTO playlist_refs (playlist_id, ref_id, position) VALUES (?, ?, ?)`, id, ref.ID, i); err != nil {
+			return Playlist{}, fmt.Errorf("store: 写入歌单引用: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Playlist{}, err
+	}
+	return s.Playlist(id)
+}
+
+// SetMixinRefs 按给定顺序替换混合歌单的引用列表。
+func (s *Store) SetMixinRefs(playlistID string, refIDs []string) error {
+	p, err := s.Playlist(playlistID)
+	if err != nil {
+		return err
+	}
+	if p.Kind != "mixin" {
+		return fmt.Errorf("store: 不是混合歌单")
+	}
+	refs, err := s.validateMixinRefs(refIDs)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: 开启事务: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM playlist_refs WHERE playlist_id = ?`, playlistID); err != nil {
+		return fmt.Errorf("store: 清空歌单引用: %w", err)
+	}
+	for i, ref := range refs {
+		if _, err := tx.Exec(`INSERT INTO playlist_refs (playlist_id, ref_id, position) VALUES (?, ?, ?)`, playlistID, ref.ID, i); err != nil {
+			return fmt.Errorf("store: 写入歌单引用: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// AddMixinRef 往混合歌单追加一个引用；已存在时返回 false，不重复写入。
+// 源歌单不能是另一个混合歌单，保持「引用不嵌套」的约束。
+func (s *Store) AddMixinRef(playlistID, refID string) (bool, error) {
+	playlistID = strings.TrimSpace(playlistID)
+	refID = strings.TrimSpace(refID)
+	if playlistID == "" || refID == "" {
+		return false, fmt.Errorf("store: 歌单 ID 不能为空")
+	}
+	if playlistID == refID {
+		return false, fmt.Errorf("store: 歌单不能引用自己")
+	}
+	target, err := s.Playlist(playlistID)
+	if err != nil {
+		return false, err
+	}
+	if target.Kind != "mixin" {
+		return false, fmt.Errorf("store: 只有混合歌单可以添加引用")
+	}
+	ref, err := s.Playlist(refID)
+	if err != nil {
+		return false, err
+	}
+	if ref.Kind == "mixin" {
+		return false, fmt.Errorf("store: 混合歌单不能再引用混合歌单")
+	}
+	var exists int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM playlist_refs WHERE playlist_id = ? AND ref_id = ?`, playlistID, refID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: 检查歌单引用: %w", err)
+	}
+	if exists > 0 {
+		return false, nil
+	}
+	var maxPos sql.NullInt64
+	if err := s.db.QueryRow(`SELECT MAX(position) FROM playlist_refs WHERE playlist_id = ?`, playlistID).Scan(&maxPos); err != nil {
+		return false, fmt.Errorf("store: 读取引用位置: %w", err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO playlist_refs (playlist_id, ref_id, position) VALUES (?, ?, ?)`,
+		playlistID, refID, int(maxPos.Int64)+1); err != nil {
+		return false, fmt.Errorf("store: 追加歌单引用: %w", err)
+	}
+	return true, nil
+}
+
+func (s *Store) validateMixinRefs(refIDs []string) ([]Playlist, error) {
+	if len(refIDs) == 0 {
+		return nil, fmt.Errorf("store: 混合歌单至少引用一个歌单")
+	}
+	seen := map[string]bool{}
+	refs := make([]Playlist, 0, len(refIDs))
+	for _, id := range refIDs {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		p, err := s.Playlist(id)
+		if err != nil {
+			return nil, fmt.Errorf("store: 读取引用歌单 %q: %w", id, err)
+		}
+		if p.Kind == "mixin" {
+			return nil, fmt.Errorf("store: 混合歌单不能再引用混合歌单")
+		}
+		refs = append(refs, p)
+	}
+	if len(refs) == 0 {
+		return nil, fmt.Errorf("store: 混合歌单至少引用一个歌单")
+	}
+	return refs, nil
+}
+
+// MixinRefs 按顺序返回混合歌单引用的歌单。
+func (s *Store) MixinRefs(playlistID string) ([]Playlist, error) {
+	rows, err := s.db.Query(`
+SELECT p.id, p.source, p.title, p.kind, p.remote_id,
+       (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
+FROM playlist_refs r JOIN playlists p ON p.id = r.ref_id
+WHERE r.playlist_id = ? ORDER BY r.position`, playlistID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取歌单引用: %w", err)
 	}
 	defer rows.Close()
 	var out []Playlist
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.Title, &p.Kind, &p.RemoteID, &p.Count); err != nil {
+		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Count); err != nil {
 			return nil, err
+		}
+		if p.Kind == "mixin" {
+			return nil, fmt.Errorf("store: 混合歌单存在嵌套引用")
 		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
+// Playlist 按 ID 取歌单（带曲目数；混合歌单为展开后的去重数量）。
+func (s *Store) Playlist(id string) (Playlist, error) {
+	row := s.db.QueryRow(`
+SELECT p.id, p.source, p.title, p.kind, p.remote_id,
+       (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
+FROM playlists p WHERE p.id = ?`, id)
+	var p Playlist
+	err := row.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Playlist{}, ErrNotFound
+	}
+	if err != nil {
+		return Playlist{}, fmt.Errorf("store: 读歌单: %w", err)
+	}
+	if p.Kind == "mixin" {
+		songs, err := s.mixinSongs(p)
+		if err != nil {
+			return Playlist{}, err
+		}
+		p.Count = len(songs)
+	}
+	return p, nil
+}
+
+// ListPlaylists 列出全部歌单，远端在前、混合次之、本地最后。
+func (s *Store) ListPlaylists() ([]Playlist, error) {
+	rows, err := s.db.Query(`
+SELECT p.id, p.source, p.title, p.kind, p.remote_id,
+       (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
+FROM playlists p
+ORDER BY CASE p.kind WHEN 'remote' THEN 0 WHEN 'mixin' THEN 1 ELSE 2 END, p.created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出歌单: %w", err)
+	}
+	var out []Playlist
+	for rows.Next() {
+		var p Playlist
+		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	// 单连接 SQLite：先读完列表并关闭 rows，再计算混合歌单的展开数量。
+	for i := range out {
+		if out[i].Kind != "mixin" {
+			continue
+		}
+		songs, err := s.mixinSongs(out[i])
+		if err != nil {
+			return nil, err
+		}
+		out[i].Count = len(songs)
+	}
+	return out, nil
+}
+
 // AddSongToPlaylist 把歌曲追加到歌单末尾（重复加入会移到末尾）。
 func (s *Store) AddSongToPlaylist(playlistID string, song Song) error {
+	p, err := s.Playlist(playlistID)
+	if err != nil {
+		return err
+	}
 	stored, err := s.UpsertSong(song)
 	if err != nil {
 		return err
+	}
+	if p.Kind == "mixin" {
+		if _, err := s.db.Exec(`DELETE FROM playlist_excludes WHERE playlist_id = ? AND song_id = ?`, playlistID, stored.ID); err != nil {
+			return fmt.Errorf("store: 取消歌单隐藏: %w", err)
+		}
 	}
 	var maxPos sql.NullInt64
 	if err := s.db.QueryRow(`SELECT MAX(position) FROM playlist_items WHERE playlist_id = ?`, playlistID).Scan(&maxPos); err != nil {
@@ -265,19 +700,55 @@ ON CONFLICT(playlist_id, song_id) DO UPDATE SET position = excluded.position`,
 	return nil
 }
 
-// RemoveSongFromPlaylist 从歌单移除一首歌。
+// RemoveSongFromPlaylist 从歌单移除一首歌；混合歌单中的继承曲目用 exclusion 隐藏，不修改源歌单。
 func (s *Store) RemoveSongFromPlaylist(playlistID, songID string) error {
-	_, err := s.db.Exec(`DELETE FROM playlist_items WHERE playlist_id = ? AND song_id = ?`, playlistID, songID)
+	p, err := s.Playlist(playlistID)
 	if err != nil {
+		return err
+	}
+	if p.Kind != "mixin" {
+		if _, err := s.db.Exec(`DELETE FROM playlist_items WHERE playlist_id = ? AND song_id = ?`, playlistID, songID); err != nil {
+			return fmt.Errorf("store: 移除歌曲: %w", err)
+		}
+		return nil
+	}
+	var inherited int
+	if err := s.db.QueryRow(`
+SELECT COUNT(*) FROM playlist_items i
+WHERE i.song_id = ? AND i.playlist_id IN (SELECT ref_id FROM playlist_refs WHERE playlist_id = ?)`,
+		songID, playlistID).Scan(&inherited); err != nil {
+		return fmt.Errorf("store: 检查继承曲目: %w", err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM playlist_items WHERE playlist_id = ? AND song_id = ?`, playlistID, songID); err != nil {
 		return fmt.Errorf("store: 移除歌曲: %w", err)
+	}
+	if inherited > 0 {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO playlist_excludes (playlist_id, song_id) VALUES (?, ?)`, playlistID, songID); err != nil {
+			return fmt.Errorf("store: 隐藏继承曲目: %w", err)
+		}
 	}
 	return nil
 }
 
-// PlaylistSongs 按顺序返回歌单内的歌曲。
+// PlaylistSongs 按顺序返回歌单内的歌曲；混合歌单实时展开引用。
 func (s *Store) PlaylistSongs(playlistID string) ([]Song, error) {
+	p, err := s.Playlist(playlistID)
+	if err != nil {
+		return nil, err
+	}
+	return s.playlistSongsFor(p)
+}
+
+func (s *Store) playlistSongsFor(p Playlist) ([]Song, error) {
+	if p.Kind == "mixin" {
+		return s.mixinSongs(p)
+	}
+	return s.rawPlaylistSongs(p.ID)
+}
+
+func (s *Store) rawPlaylistSongs(playlistID string) ([]Song, error) {
 	rows, err := s.db.Query(`
-SELECT s.id, s.source, s.bvid, s.page, s.cid, s.title, s.artist, s.duration, s.cover, s.added_at
+SELECT s.id, s.source, s.remote_id, s.bvid, s.page, s.cid, s.title, s.artist, s.album, s.duration, s.cover, s.added_at
 FROM playlist_items i JOIN songs s ON s.id = i.song_id
 WHERE i.playlist_id = ? ORDER BY i.position`, playlistID)
 	if err != nil {
@@ -295,6 +766,58 @@ WHERE i.playlist_id = ? ORDER BY i.position`, playlistID)
 	return out, rows.Err()
 }
 
+func (s *Store) mixinSongs(p Playlist) ([]Song, error) {
+	refs, err := s.MixinRefs(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	excluded := map[string]bool{}
+	rows, err := s.db.Query(`SELECT song_id FROM playlist_excludes WHERE playlist_id = ?`, p.ID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取歌单隐藏项: %w", err)
+	}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		excluded[id] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	seen := map[string]bool{}
+	out := make([]Song, 0)
+	for _, ref := range refs {
+		songs, err := s.playlistSongsFor(ref)
+		if err != nil {
+			return nil, err
+		}
+		for _, song := range songs {
+			if seen[song.ID] || excluded[song.ID] {
+				continue
+			}
+			seen[song.ID] = true
+			out = append(out, song)
+		}
+	}
+	own, err := s.rawPlaylistSongs(p.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, song := range own {
+		if seen[song.ID] {
+			continue
+		}
+		seen[song.ID] = true
+		out = append(out, song)
+	}
+	return out, nil
+}
+
 // ReplacePlaylistSongs 用一个完整列表替换歌单内容（用于远端收藏夹镜像同步）。
 func (s *Store) ReplacePlaylistSongs(playlistID string, songs []Song) error {
 	tx, err := s.db.Begin()
@@ -309,21 +832,30 @@ func (s *Store) ReplacePlaylistSongs(playlistID string, songs []Song) error {
 		if song.Page <= 0 {
 			song.Page = 1
 		}
+		externalID := song.ExternalID()
+		if externalID == "" {
+			return fmt.Errorf("store: 歌曲缺少来源或外部 ID")
+		}
+		song.RemoteID = externalID
+		if song.BVID == "" && song.Source == "bilibili" {
+			song.BVID = externalID
+		}
 		if song.ID == "" {
-			song.ID = SongID(song.Source, song.BVID, song.Page)
+			song.ID = SongID(song.Source, externalID, song.Page)
 		}
 		added := song.AddedAt
 		if added.IsZero() {
 			added = time.Now()
 		}
 		if _, err := tx.Exec(`
-INSERT INTO songs (id, source, bvid, page, cid, title, artist, duration, cover, added_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(source, bvid, page) DO UPDATE SET
-	title = excluded.title, artist = excluded.artist, duration = excluded.duration,
-	cover = excluded.cover, cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
-			song.ID, song.Source, song.BVID, song.Page, song.CID, song.Title, song.Artist,
-			song.Duration, song.Cover, added.Unix()); err != nil {
+INSERT INTO songs (id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(source, remote_id, page) DO UPDATE SET
+	title = excluded.title, artist = excluded.artist, album = excluded.album,
+	duration = excluded.duration, cover = excluded.cover, bvid = excluded.bvid,
+	cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
+			song.ID, song.Source, song.RemoteID, song.BVID, song.Page, song.CID, song.Title,
+			song.Artist, song.Album, song.Duration, song.Cover, added.Unix()); err != nil {
 			return fmt.Errorf("store: 写入歌曲: %w", err)
 		}
 		if _, err := tx.Exec(`INSERT INTO playlist_items (playlist_id, song_id, position, added_at) VALUES (?, ?, ?, ?)`,
@@ -332,6 +864,36 @@ ON CONFLICT(source, bvid, page) DO UPDATE SET
 		}
 	}
 	return tx.Commit()
+}
+
+// SearchSongs 在本地曲库中按标题/歌手/专辑做子串搜索。
+func (s *Store) SearchSongs(query string, limit int) ([]Song, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.Query(`
+SELECT id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at
+FROM songs
+WHERE instr(lower(title), ?) > 0 OR instr(lower(artist), ?) > 0 OR instr(lower(album), ?) > 0
+ORDER BY lower(title), lower(artist)
+LIMIT ?`, query, query, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: 搜索本地歌曲: %w", err)
+	}
+	defer rows.Close()
+	var out []Song
+	for rows.Next() {
+		song, err := scanSong(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, song)
+	}
+	return out, rows.Err()
 }
 
 // QueueState 是播放队列的持久化状态。
@@ -396,6 +958,78 @@ ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 	return nil
 }
 
+// Clip 是一首歌的播放区间，单位毫秒；EndMS 为 0 表示播放到结尾。
+type Clip struct {
+	StartMS int64 `json:"start_ms"`
+	EndMS   int64 `json:"end_ms"`
+}
+
+// Active 判断区间是否真的限制了播放范围。
+func (c Clip) Active() bool { return c.StartMS > 0 || c.EndMS > 0 }
+
+// Clip 读取一首歌的播放区间；没有设置时返回零值。
+func (s *Store) Clip(songID string) (Clip, error) {
+	songID = strings.TrimSpace(songID)
+	if songID == "" {
+		return Clip{}, nil
+	}
+	raw := s.Setting("clip:"+songID, "")
+	if raw == "" {
+		return Clip{}, nil
+	}
+	var c Clip
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return Clip{}, fmt.Errorf("store: 解析播放区间: %w", err)
+	}
+	return c.normalized(), nil
+}
+
+// SetClip 写入播放区间；start/end 都为 0 时等价于清除。
+func (s *Store) SetClip(songID string, c Clip) error {
+	songID = strings.TrimSpace(songID)
+	if songID == "" {
+		return fmt.Errorf("store: 歌曲 ID 不能为空")
+	}
+	c = c.normalized()
+	if c.StartMS < 0 {
+		return fmt.Errorf("store: 片段起点不能为负")
+	}
+	if c.EndMS > 0 && c.EndMS <= c.StartMS {
+		return fmt.Errorf("store: 片段终点必须大于起点")
+	}
+	if !c.Active() {
+		return s.ClearClip(songID)
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("store: 编码播放区间: %w", err)
+	}
+	return s.SetSetting("clip:"+songID, string(raw))
+}
+
+// ClearClip 删除一首歌的播放区间。
+func (s *Store) ClearClip(songID string) error {
+	songID = strings.TrimSpace(songID)
+	if songID == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, "clip:"+songID)
+	if err != nil {
+		return fmt.Errorf("store: 清除播放区间: %w", err)
+	}
+	return nil
+}
+
+func (c Clip) normalized() Clip {
+	if c.StartMS < 0 {
+		c.StartMS = 0
+	}
+	if c.EndMS < 0 {
+		c.EndMS = 0
+	}
+	return c
+}
+
 // SaveAccount 保存音源登录态（JSON）。
 func (s *Store) SaveAccount(source string, payload []byte) error {
 	_, err := s.db.Exec(`INSERT INTO accounts (source, payload, updated_at) VALUES (?, ?, ?)
@@ -426,4 +1060,66 @@ func (s *Store) DeleteAccount(source string) error {
 		return fmt.Errorf("store: 清除登录态: %w", err)
 	}
 	return nil
+}
+
+// DeleteRemotePlaylists 删除所有远端收藏夹镜像及其条目（退出登录时用）。
+func (s *Store) DeleteRemotePlaylists() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: 开启事务: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM playlist_refs WHERE ref_id IN (SELECT id FROM playlists WHERE kind = 'remote')`); err != nil {
+		return fmt.Errorf("store: 删除远端歌单引用: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM playlist_excludes WHERE playlist_id IN (SELECT id FROM playlists WHERE kind = 'remote')`); err != nil {
+		return fmt.Errorf("store: 删除远端歌单隐藏项: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM playlist_items WHERE playlist_id IN (SELECT id FROM playlists WHERE kind = 'remote')`); err != nil {
+		return fmt.Errorf("store: 删除远端歌单条目: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM playlists WHERE kind = 'remote'`); err != nil {
+		return fmt.Errorf("store: 删除远端歌单: %w", err)
+	}
+	return tx.Commit()
+}
+
+// CleanRemotePlaylistsOnce 是一次性维护：清空所有远端歌单镜像，保留本地歌单。
+// marker 已存在时直接返回 false，因此升级后只清一次。
+func (s *Store) CleanRemotePlaylistsOnce(marker string) (bool, error) {
+	if marker == "" || s.Setting(marker, "") == "1" {
+		return false, nil
+	}
+	if err := s.DeleteRemotePlaylists(); err != nil {
+		return false, err
+	}
+	if err := s.SetSetting(marker, "1"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// DeleteRemotePlaylistsBySource 删除指定音源的远端歌单镜像（退出该源账号时用）。
+func (s *Store) DeleteRemotePlaylistsBySource(source string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: 开启事务: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM playlist_refs WHERE ref_id IN
+		(SELECT id FROM playlists WHERE kind = 'remote' AND source = ?)`, source); err != nil {
+		return fmt.Errorf("store: 删除远端歌单引用: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM playlist_excludes WHERE playlist_id IN
+		(SELECT id FROM playlists WHERE kind = 'remote' AND source = ?)`, source); err != nil {
+		return fmt.Errorf("store: 删除远端歌单隐藏项: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM playlist_items WHERE playlist_id IN
+		(SELECT id FROM playlists WHERE kind = 'remote' AND source = ?)`, source); err != nil {
+		return fmt.Errorf("store: 删除远端歌单条目: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM playlists WHERE kind = 'remote' AND source = ?`, source); err != nil {
+		return fmt.Errorf("store: 删除远端歌单: %w", err)
+	}
+	return tx.Commit()
 }

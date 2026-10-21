@@ -30,15 +30,6 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("bilibili: %s 返回 code=%d %s", e.Path, e.Code, e.Message)
 }
 
-// IsNotLoggedIn 判断错误是否为未登录。
-func IsNotLoggedIn(err error) bool {
-	var ae *APIError
-	if ok := asAPIError(err, &ae); ok {
-		return ae.Code == -101 || ae.Code == -400
-	}
-	return false
-}
-
 func asAPIError(err error, target **APIError) bool {
 	for err != nil {
 		if ae, ok := err.(*APIError); ok {
@@ -213,6 +204,50 @@ func (c *Client) getJSON(ctx context.Context, rawURL, referer string, out any) e
 	env, err := c.rawEnvelope(ctx, rawURL, referer)
 	if err != nil {
 		return err
+	}
+	if env.Code != 0 {
+		return &APIError{Code: env.Code, Message: env.Message, Path: rawURL}
+	}
+	if out == nil || len(env.Data) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(env.Data, out); err != nil {
+		return fmt.Errorf("bilibili: 解析 data: %w", err)
+	}
+	return nil
+}
+
+// postForm 发送 application/x-www-form-urlencoded 请求，并解析 B 站信封。
+func (c *Client) postForm(ctx context.Context, rawURL, referer string, form url.Values, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("bilibili: 构造请求: %w", err)
+	}
+	req.Header.Set("User-Agent", defaultUA)
+	req.Header.Set("Referer", referer)
+	req.Header.Set("Origin", "https://www.bilibili.com")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if cookie := c.cookieHeader(); cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("bilibili: 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	c.captureCookies(resp)
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return fmt.Errorf("bilibili: 读取响应: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return &APIError{Code: resp.StatusCode, Message: http.StatusText(resp.StatusCode), Path: rawURL}
+	}
+	var env envelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return fmt.Errorf("bilibili: 解析响应: %w", err)
 	}
 	if env.Code != 0 {
 		return &APIError{Code: env.Code, Message: env.Message, Path: rawURL}

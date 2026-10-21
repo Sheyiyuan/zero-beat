@@ -20,6 +20,7 @@ type VideoPage struct {
 
 // Video 是视频元数据。
 type Video struct {
+	Aid      int64
 	BVID     string
 	Title    string
 	Cover    string
@@ -46,7 +47,7 @@ type AudioTrack struct {
 	Bandwidth int64
 	Codecs    string
 	MimeType  string
-	Quality   string // 展示用档位名，如 "192k" / "FLAC" / "Dolby"
+	Quality   string // 展示用档位名，如「192k」/「FLAC」/「Dolby」
 }
 
 // Stream 是解析后可播放的音频流。

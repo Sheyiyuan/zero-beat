@@ -93,6 +93,7 @@ type Engine struct {
 	compDB   float64
 	stream   Stream
 	cmd      *exec.Cmd
+	proxy    *headerProxy
 	player   *oto.Player
 	gain     *gainReader
 	seekBase time.Duration
@@ -139,20 +140,6 @@ func (e *Engine) State() State {
 	return e.state
 }
 
-// Volume 返回用户音量（0..1）。
-func (e *Engine) Volume() float64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.volume
-}
-
-// CompensationDB 返回当前的补偿分贝。
-func (e *Engine) CompensationDB() float64 {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.compDB
-}
-
 // SetVolume 调整用户音量。
 func (e *Engine) SetVolume(v float64) {
 	if v < 0 {
@@ -196,46 +183,65 @@ func dbToGain(db float64) float64 {
 
 // Play 开始播放一个流；会先停掉当前曲目。
 func (e *Engine) Play(ctx context.Context, s Stream) error {
+	return e.PlayAt(ctx, s, 0)
+}
+
+// PlayAt 从指定位置开始播放；用于断点恢复，避免「先起播再 seek」的双重启动。
+func (e *Engine) PlayAt(ctx context.Context, s Stream, at time.Duration) error {
 	if s.URL == "" {
 		return errors.New("audio: 播放地址为空")
 	}
+	if at < 0 {
+		at = 0
+	}
+	if duration := time.Duration(s.DurationMS) * time.Millisecond; duration > 0 && at > duration {
+		at = duration
+	}
+	at = s.clampPosition(at, false)
 	e.stopLocked()
 
 	e.mu.Lock()
 	e.stream = s
-	e.seekBase = 0
+	e.seekBase = at
 	e.mu.Unlock()
 
-	return e.startLocked(ctx, s, 0)
+	return e.startLocked(ctx, s, at)
 }
 
 // startLocked 启动 ffmpeg 与播放器；调用方需保证没有正在播放的实例。
 func (e *Engine) startLocked(ctx context.Context, s Stream, seek time.Duration) error {
-	args := []string{
-		"-hide_banner", "-loglevel", "error", "-nostdin",
+	streamURL := s.URL
+	var proxy *headerProxy
+	if len(s.Headers) > 0 {
+		var err error
+		proxy, err = newHeaderProxy(s.URL, s.Headers)
+		if err != nil {
+			return err
+		}
+		streamURL = proxy.URL()
 	}
-	if hdr := headerString(s.Headers); hdr != "" {
-		args = append(args, "-headers", hdr)
-	}
-	if seek > 0 {
-		args = append(args, "-ss", formatSeconds(seek))
-	}
-	args = append(args,
-		"-i", s.URL,
-		"-vn", "-f", "s16le", "-ac", strconv.Itoa(channelCount), "-ar", strconv.Itoa(sampleRate),
-		"pipe:1",
-	)
+
+	args := ffmpegArgs(streamURL, seek, s.clipEnd())
 
 	cmd := exec.CommandContext(ctx, e.ffmpeg, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
 		return fmt.Errorf("audio: 获取解码输出: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
 		return fmt.Errorf("audio: 获取解码日志: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
 		return fmt.Errorf("audio: 启动 ffmpeg: %w", err)
 	}
 
@@ -248,6 +254,7 @@ func (e *Engine) startLocked(ctx context.Context, s Stream, seek time.Duration) 
 	e.gen++
 	gen := e.gen
 	e.cmd = cmd
+	e.proxy = proxy
 	e.player = player
 	e.gain = gain
 	e.seekBase = seek
@@ -304,7 +311,12 @@ func (e *Engine) watch(cmd *exec.Cmd, player *oto.Player, gen int) {
 		return // 已经被新的播放替换
 	}
 	state := e.state
+	proxy := e.proxy
+	e.proxy = nil
 	e.mu.Unlock()
+	if proxy != nil {
+		_ = proxy.Close()
+	}
 
 	// 让 oto 把缓冲里的数据放完。
 	time.Sleep(120 * time.Millisecond)
@@ -367,20 +379,13 @@ func (e *Engine) Resume() {
 	e.emit(Event{Type: EventStateChanged, State: StatePlaying})
 }
 
-// TogglePause 在暂停与播放之间切换。
-func (e *Engine) TogglePause() {
-	if e.State() == StatePaused {
-		e.Resume()
-		return
-	}
-	e.Pause()
-}
-
 // Stop 停止播放并释放资源。
 func (e *Engine) Stop() {
 	e.stopLocked()
 	e.mu.Lock()
 	e.state = StateIdle
+	e.stream = Stream{}
+	e.seekBase = 0
 	e.mu.Unlock()
 	e.emit(Event{Type: EventStateChanged, State: StateIdle})
 }
@@ -389,9 +394,11 @@ func (e *Engine) stopLocked() {
 	e.mu.Lock()
 	player := e.player
 	cmd := e.cmd
+	proxy := e.proxy
 	gain := e.gain
 	e.player = nil
 	e.cmd = nil
+	e.proxy = nil
 	e.gain = nil
 	e.gen++
 	e.mu.Unlock()
@@ -401,6 +408,9 @@ func (e *Engine) stopLocked() {
 	}
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
+	}
+	if proxy != nil {
+		_ = proxy.Close()
 	}
 	_ = gain
 }
@@ -420,6 +430,7 @@ func (e *Engine) Seek(ctx context.Context, pos time.Duration) error {
 	if duration > 0 && pos > duration {
 		pos = duration
 	}
+	pos = s.clampPosition(pos, true)
 	e.stopLocked()
 	return e.startLocked(ctx, s, pos)
 }
@@ -460,30 +471,41 @@ func (e *Engine) Close() error {
 	}
 	e.closed = true
 	e.state = StateIdle
-	e.mu.Unlock()
+	// 持锁关闭，保证 emit 不会向已关闭的 channel 发送而 panic。
 	close(e.events)
+	e.mu.Unlock()
 	return nil
 }
 
 func (e *Engine) emit(ev Event) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return
+	}
 	select {
 	case e.events <- ev:
 	default:
 	}
 }
 
-func headerString(headers map[string]string) string {
-	if len(headers) == 0 {
-		return ""
+// ffmpegArgs 拼装解码参数；clipEnd > 0 时用 -t 把输出限制到区间末尾。
+func ffmpegArgs(streamURL string, seek, clipEnd time.Duration) []string {
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-nostdin",
 	}
-	var b strings.Builder
-	for k, v := range headers {
-		b.WriteString(k)
-		b.WriteString(": ")
-		b.WriteString(v)
-		b.WriteString("\r\n")
+	if seek > 0 {
+		args = append(args, "-ss", formatSeconds(seek))
 	}
-	return b.String()
+	args = append(args, "-i", streamURL)
+	if clipEnd > seek {
+		args = append(args, "-t", formatSeconds(clipEnd-seek))
+	}
+	args = append(args,
+		"-vn", "-f", "s16le", "-ac", strconv.Itoa(channelCount), "-ar", strconv.Itoa(sampleRate),
+		"pipe:1",
+	)
+	return args
 }
 
 func formatSeconds(d time.Duration) string {

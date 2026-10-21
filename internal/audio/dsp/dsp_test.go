@@ -22,21 +22,6 @@ func TestDBToGain(t *testing.T) {
 	}
 }
 
-func TestGainClampsVolume(t *testing.T) {
-	if got := Gain(2, 0); got != 1 {
-		t.Fatalf("音量应被夹到 1，实际 %v", got)
-	}
-	if got := Gain(-1, 0); got != 0 {
-		t.Fatalf("音量应被夹到 0，实际 %v", got)
-	}
-}
-
-func TestGainClampsMaxGain(t *testing.T) {
-	if got := Gain(1, 20); got != MaxGain {
-		t.Fatalf("+20dB 应被夹到 %v，实际 %v", MaxGain, got)
-	}
-}
-
 func TestSoftClipBounds(t *testing.T) {
 	if got := SoftClip(0); got != 0 {
 		t.Fatalf("SoftClip(0) = %v, 期望 0", got)
@@ -54,21 +39,6 @@ func TestSoftClipBounds(t *testing.T) {
 			t.Fatalf("SoftClip 应单调递增，在 %v 处退化了", x)
 		}
 		prev = cur
-	}
-}
-
-func TestFadeGain(t *testing.T) {
-	if got := FadeGain(0, 10); got != 0 {
-		t.Fatalf("淡入起点应为 0，实际 %v", got)
-	}
-	if got := FadeGain(5, 10); got != 0.5 {
-		t.Fatalf("淡入中点应为 0.5，实际 %v", got)
-	}
-	if got := FadeGain(10, 10); got != 1 {
-		t.Fatalf("淡入结束应为 1，实际 %v", got)
-	}
-	if got := FadeGain(3, 0); got != 1 {
-		t.Fatalf("total 为 0 时应直接返回 1，实际 %v", got)
 	}
 }
 

@@ -1,6 +1,9 @@
 package bili
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func sampleDash() dashData {
 	var d dashData
@@ -114,5 +117,59 @@ func TestNormalizeURL(t *testing.T) {
 		if got := normalizeURL(in); got != want {
 			t.Fatalf("normalizeURL(%q) = %q，期望 %q", in, got, want)
 		}
+	}
+}
+
+func flacDash() dashData {
+	d := sampleDash()
+	d.Flac = &struct {
+		Display bool       `json:"display"`
+		Audio   *dashAudio `json:"audio"`
+	}{Display: true, Audio: &dashAudio{ID: 32000, BaseURL: "https://cdn/hires.flac", Bandwidth: 1400000, Codecs: "fLaC"}}
+	return d
+}
+
+func TestPickAudioQualityHighSkipsFLAC(t *testing.T) {
+	track, err := pickAudio(flacDash(), QualityHigh)
+	if err != nil {
+		t.Fatalf("不应报错: %v", err)
+	}
+	if track.ID != 30280 || track.Quality != "192k" {
+		t.Fatalf("AAC 优先应跳过 FLAC，实际 %+v", track)
+	}
+}
+
+func TestPickAudioLosslessRequiresFLAC(t *testing.T) {
+	if _, err := pickAudio(sampleDash(), QualityLossless); err == nil {
+		t.Fatal("没有 FLAC 时无损模式应报错")
+	}
+	track, err := pickAudio(flacDash(), QualityLossless)
+	if err != nil {
+		t.Fatalf("有无损轨时应成功: %v", err)
+	}
+	if track.Quality != "FLAC" || track.URL != "https://cdn/hires.flac" {
+		t.Fatalf("应选 FLAC，实际 %+v", track)
+	}
+}
+
+func TestStreamExpiry(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	want := now.Add(30 * time.Minute)
+	got := streamExpiry("https://cdn/x.m4s?deadline=1700001800&upsig=x", now)
+	if !got.Equal(want) {
+		t.Fatalf("应读取 deadline，得到 %v 期望 %v", got, want)
+	}
+	got = streamExpiry("https://cdn/x.m4s?expires=1700001800", now)
+	if !got.Equal(want) {
+		t.Fatalf("应读取 expires，得到 %v 期望 %v", got, want)
+	}
+	got = streamExpiry("https://cdn/x.m4s", now)
+	if !got.Equal(now.Add(2 * time.Hour)) {
+		t.Fatalf("无参数应回退 2 小时，得到 %v", got)
+	}
+	// 明显不合理的过期时间（过去或太远）应忽略。
+	got = streamExpiry("https://cdn/x.m4s?deadline=1", now)
+	if !got.Equal(now.Add(2 * time.Hour)) {
+		t.Fatalf("过去时间应回退，得到 %v", got)
 	}
 }

@@ -24,7 +24,7 @@ func TestParseLRC(t *testing.T) {
 }
 
 func TestActiveIndex(t *testing.T) {
-	lines := []Line{{0, "a"}, {1000, "b"}, {2500, "c"}}
+	lines := []Line{{StartMS: 0, Text: "a"}, {StartMS: 1000, Text: "b"}, {StartMS: 2500, Text: "c"}}
 	cases := []struct{ pos, want int }{
 		{-1, -1}, {0, 0}, {999, 0}, {1000, 1}, {2499, 1}, {2500, 2}, {99999, 2},
 	}
@@ -39,10 +39,13 @@ func TestActiveIndex(t *testing.T) {
 }
 
 func TestCloneOffset(t *testing.T) {
-	lines := []Line{{1000, "a"}}
+	lines := []Line{{StartMS: 1000, Text: "a", Translation: "译"}}
 	shifted := Clone(lines, 500)
 	if shifted[0].StartMS != 1500 {
 		t.Fatalf("偏移未生效: %+v", shifted[0])
+	}
+	if shifted[0].Translation != "译" {
+		t.Fatalf("Clone 应保留译文: %+v", shifted[0])
 	}
 	if lines[0].StartMS != 1000 {
 		t.Fatal("Clone 不应改动原切片")

@@ -89,3 +89,14 @@ func TestHeadroomMath(t *testing.T) {
 		t.Fatalf("dbToGain 应复用 dsp: %v", got)
 	}
 }
+
+func TestEmitAfterCloseIsSafe(t *testing.T) {
+	e := &Engine{events: make(chan Event, 1), state: StateIdle}
+	if err := e.Close(); err != nil {
+		t.Fatalf("关闭失败: %v", err)
+	}
+	e.emit(Event{Type: EventEnded, State: StateEnded})
+	if err := e.Close(); err != nil {
+		t.Fatalf("重复关闭应安全: %v", err)
+	}
+}

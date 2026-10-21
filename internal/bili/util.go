@@ -23,7 +23,7 @@ func stripEm(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// parseClock 把 "mm:ss" 或 "hh:mm:ss" 解析成秒。
+// parseClock 把「mm:ss」或「hh:mm:ss」解析成秒。
 func parseClock(s string) int {
 	parts := strings.Split(strings.TrimSpace(s), ":")
 	total := 0

@@ -4,8 +4,8 @@ import (
 	"time"
 
 	"github.com/sheyiyuan/zero-beat/internal/audio"
-	"github.com/sheyiyuan/zero-beat/internal/bili"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
+	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
@@ -13,6 +13,7 @@ import (
 //
 // 它走的是真实的 View 代码路径，所以截图与运行时完全一致。
 func RenderDemo(name string, width, height int) string {
+	applyTheme(resolveThemeMode(nil).palette())
 	songs := []store.Song{
 		{ID: "d1", Source: "bilibili", BVID: "BV1", Page: 1, Title: "【官方 MV】Never Gonna Give You Up", Artist: "Rick Astley", Duration: 213},
 		{ID: "d2", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星", Artist: "不才", Duration: 287},
@@ -21,23 +22,29 @@ func RenderDemo(name string, width, height int) string {
 		{ID: "d5", Source: "bilibili", BVID: "BV5", Page: 1, Title: "海底", Artist: "一支榴莲", Duration: 246},
 		{ID: "d6", Source: "bilibili", BVID: "BV6", Page: 1, Title: "像风一样", Artist: "薛之谦", Duration: 232},
 		{ID: "d7", Source: "bilibili", BVID: "BV7", Page: 1, Title: "光年之外", Artist: "G.E.M. 邓紫棋", Duration: 235},
+		{ID: "netease:1431292823:1", Source: "netease", RemoteID: "1431292823", Page: 1, Title: "夜航星 (Night Voyager)", Artist: "蔡明希（不才） / 三体宇宙", Album: "我的三体之章北海传 原声音乐集", Duration: 304},
 	}
 
 	m := &Model{
-		width:    width,
-		height:   height,
-		view:     viewLibrary,
-		volume:   0.76,
-		compDB:   2,
-		mode:     modeSequence,
-		state:    audio.StatePlaying,
-		position: 84 * time.Second,
-		duration: 287 * time.Second,
-		user:     bili.User{Name: "Sheyiyuan", LoggedIn: true},
+		width:       width,
+		height:      height,
+		view:        viewLibrary,
+		volume:      0.76,
+		compDB:      2,
+		mode:        modeSequence,
+		state:       audio.StatePlaying,
+		position:    84 * time.Second,
+		duration:    287 * time.Second,
+		loginSource: source.Bilibili,
+		users: map[source.ID]source.User{
+			source.Bilibili: {Name: "Sheyiyuan", LoggedIn: true},
+			source.NetEase:  {Name: "云村用户", LoggedIn: true},
+		},
 	}
 	m.playlists = []store.Playlist{
-		{ID: "f1", Title: "我喜欢的音乐", Kind: "remote", Count: 128},
-		{ID: "f2", Title: "通勤路上", Kind: "remote", Count: 42},
+		{ID: dailyPlaylistID, Source: "netease", Title: "每日推荐", Kind: "remote", Count: 30},
+		{ID: "bili-fav-1", Source: "bilibili", Title: "我喜欢的音乐", Kind: "remote", Count: 128},
+		{ID: "netease-pl-9", Source: "netease", Title: "云村收藏", Kind: "remote", Count: 42},
 		{ID: "local-default", Title: "本地歌单", Kind: "local", Count: 7},
 	}
 	m.songs = songs
@@ -48,11 +55,13 @@ func RenderDemo(name string, width, height int) string {
 	m.queueCursor = 1
 
 	m.searchKeyword = "周杰伦"
-	m.searchResults = []bili.SearchItem{
-		{BVID: "BV1xx411c7mD", Title: "稻香", Author: "周杰伦", Duration: 223, Play: 4839201},
-		{BVID: "BV1fx411N7bU", Title: "晴天", Author: "周杰伦", Duration: 269, Play: 3921044},
-		{BVID: "BV1Ks411J7bH", Title: "夜曲", Author: "周杰伦", Duration: 226, Play: 2817233},
-		{BVID: "BV1Ws411i7Rk", Title: "以父之名", Author: "周杰伦", Duration: 341, Play: 1502881},
+	m.searchPage = 1
+	m.searchPages = 5
+	m.searchResults = []source.Candidate{
+		{Track: source.Track{Source: source.Bilibili, ExternalID: "BV1xx411c7mD", Page: 1, Title: "稻香", Artist: "周杰伦", Duration: 223}, Play: 4839201},
+		{Track: source.Track{Source: source.NetEase, ExternalID: "1858094998", Page: 1, Title: "稻香", Artist: "周杰伦", Album: "魔杰座", Duration: 223}},
+		{Track: source.Track{Source: source.Bilibili, ExternalID: "BV1fx411N7bU", Page: 1, Title: "晴天", Artist: "周杰伦", Duration: 269}, Play: 3921044},
+		{Track: source.Track{Source: source.NetEase, ExternalID: "186016", Page: 1, Title: "晴天", Artist: "周杰伦", Album: "叶惠美", Duration: 269}},
 	}
 	m.lyricLines = []lyrics.Line{
 		{StartMS: 0, Text: "夜航星"},
@@ -69,21 +78,41 @@ func RenderDemo(name string, width, height int) string {
 		{StartMS: 76000, Text: "夜航星 请带我回家"},
 	}
 	m.lyricIdx = 10
+	m.lyricLoaded = true
 	m.demoQuality = "192k"
 
 	switch name {
 	case "search":
 		m.view = viewSearch
+		m.searchMode = searchSource
 	case "queue":
 		m.view = viewQueue
 	case "lyrics":
 		m.view = viewLyrics
+		m.lyricSource = "B站字幕"
 	case "help":
 		m.view = viewHelp
 	case "login":
 		m.view = viewLogin
-		m.qrStatus = "用 B 站 App 扫码登录"
-		m.setQRCode("https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=8f3c1d2e4b5a69788796a5b4c3d2e1f0&source=main-fe-header")
+		m.loginSource = source.NetEase
+		m.qrSource = source.NetEase
+		m.qrStatus = "等待扫码"
+		m.setQRCode("https://music.163.com/login?codekey=8f3c1d2e4b5a69788796a5b4c3d2e1f0")
+	case "clip":
+		m.setActiveClip(m.current.ID, store.Clip{StartMS: 30000, EndMS: 120000})
+		m.position = 84 * time.Second
+		m.clip = &clipState{songID: m.current.ID, startMS: 30000, endMS: 120000}
+	case "picker":
+		m.picker = &targetPickerState{
+			mode: targetPickerAddSong,
+			song: *m.current,
+			items: []playlistTarget{
+				{ID: "local-default", Title: "本地歌单", Kind: "local", Count: 7},
+				{ID: "mix-1", Title: "通勤合集", Kind: "mixin", Count: 38},
+				{ID: "bili-fav-1", Title: "我喜欢的音乐", Kind: "remote", Source: "bilibili", RemoteID: "1", Count: 128, Cloud: true},
+				{Title: "＋ 新建本地歌单并加入", Create: true},
+			},
+		}
 	default:
 		m.view = viewLibrary
 	}

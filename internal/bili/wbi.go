@@ -1,6 +1,7 @@
 package bili
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -102,7 +103,7 @@ func (c *Client) currentMixinKey() (string, error) {
 	if c.wbiKey != "" && time.Since(c.wbiTime) < 6*time.Hour {
 		return c.wbiKey, nil
 	}
-	env, err := c.rawEnvelope(contextBackground(), apiHost+"/x/web-interface/nav", "https://www.bilibili.com")
+	env, err := c.rawEnvelope(context.Background(), apiHost+"/x/web-interface/nav", "https://www.bilibili.com")
 	if err != nil {
 		return "", fmt.Errorf("bilibili: 获取 WBI 签名素材: %w", err)
 	}

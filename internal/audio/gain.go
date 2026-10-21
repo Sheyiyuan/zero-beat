@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"io"
 	"math"
-	"sync"
 	"sync/atomic"
 
 	"github.com/sheyiyuan/zero-beat/internal/audio/dsp"
@@ -19,9 +18,6 @@ type gainReader struct {
 	gainBits atomic.Uint64 // math.Float64bits
 	read     atomic.Int64  // 已读字节数
 	eof      atomic.Bool
-
-	mu  sync.Mutex
-	buf []byte
 }
 
 func newGainReader(src io.Reader) *gainReader {

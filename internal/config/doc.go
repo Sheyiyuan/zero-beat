@@ -1,5 +1,4 @@
-// Package config 负责加载与保存 TOML 配置。
+// Package config 负责数据目录与文件路径（默认 ~/.config/zero-beat）。
 //
-// 与 v1 的差异：v1 把播放设置塞进 PlayerSetting.config（map[string]any），
-// 这里改为强类型 TOML，便于校验与迁移。
+// 播放设置保存在 SQLite 的 settings 表里，这里不解析 TOML，只保证目录存在且权限为 0700。
 package config

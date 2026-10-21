@@ -110,6 +110,7 @@ func (c *Client) doSearch(ctx context.Context, params url.Values) ([]SearchItem,
 // VideoInfo 拉取视频与分 P 信息。
 func (c *Client) VideoInfo(ctx context.Context, bvid string) (Video, error) {
 	var data struct {
+		Aid      int64  `json:"aid"`
 		BVID     string `json:"bvid"`
 		Title    string `json:"title"`
 		Pic      string `json:"pic"`
@@ -128,6 +129,7 @@ func (c *Client) VideoInfo(ctx context.Context, bvid string) (Video, error) {
 		return Video{}, err
 	}
 	v := Video{
+		Aid:      data.Aid,
 		BVID:     data.BVID,
 		Title:    data.Title,
 		Cover:    normalizeURL(data.Pic),
@@ -203,31 +205,58 @@ func (c *Client) PlayURL(ctx context.Context, bvid string, cid int64, quality Qu
 		Headers:    map[string]string{"Referer": videoReferer(bvid), "User-Agent": defaultUA},
 		Codec:      track.Codecs,
 		DurationMS: durationMS,
-		ExpiresAt:  time.Now().Add(2 * time.Hour),
+		ExpiresAt:  streamExpiry(streamURL, time.Now()),
 		Quality:    track.Quality,
 		BVID:       bvid,
 		CID:        cid,
 	}, nil
 }
 
-// pickAudio 选择音轨：优先满足音质偏好，其次保证编码可解（优先 mp4a.40.2）。
+// streamExpiry 从 CDN 地址里的 deadline/expires 读出真实过期时间；读不到时保守按 2 小时算。
+func streamExpiry(rawURL string, now time.Time) time.Time {
+	fallback := now.Add(2 * time.Hour)
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fallback
+	}
+	q := u.Query()
+	for _, key := range []string{"deadline", "expires"} {
+		v := q.Get(key)
+		if v == "" {
+			continue
+		}
+		sec, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			continue
+		}
+		t := time.Unix(sec, 0)
+		if t.After(now.Add(time.Minute)) && t.Before(now.Add(12*time.Hour)) {
+			return t
+		}
+	}
+	return fallback
+}
+
+// pickAudio 选择音轨：
+//   - 自动：有 FLAC 就取 FLAC，否则取带宽最大的 AAC-LC；
+//   - AAC 优先：忽略 FLAC，取带宽最大的 AAC-LC；
+//   - 无损：只接受 FLAC，没有则明确报错，避免「以为听的是无损」。
 func pickAudio(dash dashData, quality Quality) (AudioTrack, error) {
-	if quality != QualityHigh && dash.Flac != nil && dash.Flac.Audio != nil && dash.Flac.Audio.BaseURL != "" {
-		a := dash.Flac.Audio
-		return AudioTrack{
-			ID: a.ID, URL: a.BaseURL, BackupURL: a.BackupURL, Bandwidth: a.Bandwidth,
-			Codecs: a.Codecs, MimeType: a.MimeType, Quality: "FLAC",
-		}, nil
+	flac := flacTrack(dash)
+	if quality == QualityAuto && flac != nil {
+		return *flac, nil
+	}
+	if quality == QualityLossless {
+		if flac == nil {
+			return AudioTrack{}, fmt.Errorf("bilibili: 该视频没有可用的无损音轨")
+		}
+		return *flac, nil
 	}
 
 	candidates := dash.Audio
 	if len(candidates) == 0 {
-		if dash.Flac != nil && dash.Flac.Audio != nil {
-			a := dash.Flac.Audio
-			return AudioTrack{
-				ID: a.ID, URL: a.BaseURL, BackupURL: a.BackupURL, Bandwidth: a.Bandwidth,
-				Codecs: a.Codecs, MimeType: a.MimeType, Quality: "FLAC",
-			}, nil
+		if flac != nil {
+			return *flac, nil
 		}
 		return AudioTrack{}, fmt.Errorf("bilibili: 没有可用音轨")
 	}
@@ -266,6 +295,17 @@ func pickAudio(dash dashData, quality Quality) (AudioTrack, error) {
 		MimeType:  best.MimeType,
 		Quality:   labelForTrack(best.ID, best.Codecs),
 	}, nil
+}
+
+func flacTrack(dash dashData) *AudioTrack {
+	if dash.Flac == nil || dash.Flac.Audio == nil || dash.Flac.Audio.BaseURL == "" {
+		return nil
+	}
+	a := dash.Flac.Audio
+	return &AudioTrack{
+		ID: a.ID, URL: a.BaseURL, BackupURL: a.BackupURL, Bandwidth: a.Bandwidth,
+		Codecs: a.Codecs, MimeType: a.MimeType, Quality: "FLAC",
+	}
 }
 
 func labelForTrack(id int, codecs string) string {

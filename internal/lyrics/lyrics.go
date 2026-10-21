@@ -10,10 +10,11 @@ import (
 	"strings"
 )
 
-// Line 是一行带起始时间的歌词。
+// Line 是一行带起始时间的歌词；Translation 是该行译文（没有则为空）。
 type Line struct {
-	StartMS int
-	Text    string
+	StartMS     int
+	Text        string
+	Translation string
 }
 
 var lrcTag = regexp.MustCompile(`\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]`)
@@ -84,7 +85,8 @@ func Clone(lines []Line, offsetMS int) []Line {
 	}
 	out := make([]Line, len(lines))
 	for i, l := range lines {
-		out[i] = Line{StartMS: l.StartMS + offsetMS, Text: l.Text}
+		out[i] = l
+		out[i].StartMS += offsetMS
 	}
 	return out
 }

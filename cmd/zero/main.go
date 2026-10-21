@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,11 +19,16 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/bili"
 	"github.com/sheyiyuan/zero-beat/internal/config"
+	"github.com/sheyiyuan/zero-beat/internal/keymap"
+	"github.com/sheyiyuan/zero-beat/internal/netease"
+	"github.com/sheyiyuan/zero-beat/internal/source"
+	bilibilisource "github.com/sheyiyuan/zero-beat/internal/source/bilibili"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 	"github.com/sheyiyuan/zero-beat/internal/tui"
 )
 
-const version = "0.1.0"
+// version 由发布流水线通过 -ldflags "-X main.version=..." 注入。
+var version = "0.4.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -49,11 +55,15 @@ func run(args []string) error {
 		return runTUI()
 	case "play":
 		if fs.NArg() < 2 {
-			return errors.New("用法: zero play <BV号或视频链接>")
+			return errors.New("用法: zero play <BV号/链接或网易云歌曲 ID/链接>")
 		}
 		return runPlay(fs.Arg(1))
 	case "login":
-		return runLogin()
+		name := "bilibili"
+		if fs.NArg() >= 2 {
+			name = fs.Arg(1)
+		}
+		return runLogin(name)
 	case "demo":
 		name := ""
 		if fs.NArg() >= 2 {
@@ -61,6 +71,14 @@ func run(args []string) error {
 		}
 		fmt.Println(tui.RenderDemo(name, 100, 30))
 		return nil
+	case "download":
+		return runDownload(fs.Args()[1:])
+	case "clean-playlists":
+		return runCleanPlaylists()
+	case "keymap":
+		return runKeymap(fs.Args()[1:])
+	case "theme":
+		return runTheme(fs.Args()[1:])
 	default:
 		usage(fs)
 		return fmt.Errorf("未知子命令 %q", cmd)
@@ -68,13 +86,18 @@ func run(args []string) error {
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintf(os.Stderr, `zero %s —— 跨平台音乐终端播放器（B 站）
+	fmt.Fprintf(os.Stderr, `zero %s —— 跨平台音乐终端播放器（B 站 + 网易云）
 
 用法:
   zero                  启动终端界面
-  zero play <BV号/链接>  直接播放（headless，便于验证音频链路）
+  zero play <BV号/链接或网易云 ID>  直接播放（headless，便于验证音频链路）
   zero login            在终端里扫码登录并保存 cookie
-  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help）
+  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker）
+  zero download <目标...>  下载单曲（支持 -j 并发、Range 续传）
+  zero clean-playlists  清空已导入的远端歌单，保留本地歌单
+  zero theme [auto|dark|light]  查看/设置主题（auto 读 COLORFGBG）
+  zero keymap --check   校验 ~/.config/zero-beat/keymap.toml
+  zero keymap --init    生成默认快捷键配置
   zero --version        打印版本
 
 数据目录: ~/.config/zero-beat/（数据库与登录态）
@@ -92,15 +115,23 @@ func openStore() (*store.Store, error) {
 	return store.Open(path)
 }
 
-func newClient(st *store.Store) *bili.Client {
-	client := bili.New()
-	if payload, err := st.LoadAccount("bilibili"); err == nil {
-		var cookies map[string]string
-		if err := json.Unmarshal(payload, &cookies); err == nil {
-			client.SetCookies(cookies)
-		}
+func loadSession(st *store.Store, src source.Source) {
+	payload, err := st.LoadAccount(string(src.ID()))
+	if err != nil {
+		return
 	}
-	return client
+	var cookies map[string]string
+	if err := json.Unmarshal(payload, &cookies); err == nil {
+		src.SetSession(cookies)
+	}
+}
+
+func newSources(st *store.Store) *source.Registry {
+	bilisrc := bilibilisource.New(bili.New())
+	loadSession(st, bilisrc)
+	ncm := netease.New()
+	loadSession(st, ncm)
+	return source.NewRegistry(bilisrc, ncm)
 }
 
 func runTUI() error {
@@ -116,15 +147,89 @@ func runTUI() error {
 	}
 	defer engine.Close()
 
-	model := tui.New(newClient(st), st, engine)
+	model := tui.New(newSources(st), st, engine)
 	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err
 }
 
+func runKeymap(args []string) error {
+	path, err := config.KeymapPath()
+	if err != nil {
+		return err
+	}
+	initFile, force := false, false
+	for _, a := range args {
+		switch a {
+		case "--init", "init":
+			initFile = true
+		case "--force", "-f":
+			force = true
+		case "--check", "check":
+		default:
+			return fmt.Errorf("未知 keymap 参数 %q", a)
+		}
+	}
+	if initFile {
+		if _, err := os.Stat(path); err == nil && !force {
+			return fmt.Errorf("%s 已存在；加 --force 覆盖", path)
+		}
+		if err := os.WriteFile(path, []byte(keymap.ExampleTOML()), 0o600); err != nil {
+			return fmt.Errorf("写入快捷键配置: %w", err)
+		}
+		fmt.Println("已生成快捷键配置：" + path)
+		return nil
+	}
+	if _, err := keymap.Load(path); err != nil {
+		return err
+	}
+	fmt.Println("快捷键配置 OK：" + path)
+	return nil
+}
+
+func runCleanPlaylists() error {
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.DeleteRemotePlaylists(); err != nil {
+		return err
+	}
+	fmt.Println("已清空已导入的远端歌单；本地歌单保留。回到曲库按 f 重新导入。")
+	return nil
+}
+
+func runTheme(args []string) error {
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	if len(args) == 0 {
+		fmt.Printf("当前主题设置：%s\n", st.Setting("theme", "auto"))
+		fmt.Println("可用值：auto / dark / light；auto 读取 COLORFGBG，识别不了时用 dark。")
+		fmt.Println("临时覆盖：ZERO_THEME=light|dark|auto zero")
+		return nil
+	}
+
+	v := strings.ToLower(strings.TrimSpace(args[0]))
+	switch v {
+	case "auto", "dark", "light":
+	default:
+		return errors.New("用法: zero theme [auto|dark|light]")
+	}
+	if err := st.SetSetting("theme", v); err != nil {
+		return err
+	}
+	fmt.Printf("主题已设为 %s，重启终端界面生效。\n", v)
+	return nil
+}
+
 // runPlay 是最小可用的 headless 播放器，用来验证解析 + 解码 + 输出链路。
 func runPlay(input string) error {
-	bvid, err := bili.ParseBVID(input)
+	ref, err := parseDownloadTarget(input, 0)
 	if err != nil {
 		return err
 	}
@@ -141,14 +246,11 @@ func runPlay(input string) error {
 	defer engine.Close()
 
 	ctx := context.Background()
-	client := newClient(st)
-
-	info, err := client.VideoInfo(ctx, bvid)
-	if err != nil {
-		return err
+	src := newSources(st).Get(ref.Source)
+	if src == nil {
+		return fmt.Errorf("未知音源 %q", ref.Source)
 	}
-	page := info.Pages[0]
-	stream, err := client.PlayURL(ctx, bvid, page.CID, bili.QualityAuto)
+	track, stream, err := resolveDownload(ctx, src, ref, source.QualityAuto)
 	if err != nil {
 		return err
 	}
@@ -174,19 +276,19 @@ func runPlay(input string) error {
 		URL:        stream.URL,
 		Headers:    stream.Headers,
 		Codec:      stream.Codec,
-		DurationMS: stream.DurationMS,
+		DurationMS: stream.Duration.Milliseconds(),
 		ExpiresAt:  stream.ExpiresAt,
 		Quality:    stream.Quality,
 	}); err != nil {
 		return err
 	}
 
-	fmt.Printf("▶ %s — %s\n", info.Title, info.Owner)
-	fmt.Printf("  音轨 %s（%s）· %s\n", stream.Quality, stream.Codec, page.Part)
+	fmt.Printf("▶ %s — %s\n", track.Title, track.Artist)
+	fmt.Printf("  音轨 %s（%s）· %s\n", stream.Quality, stream.Codec, track.Source.Label())
 
-	total := time.Duration(stream.DurationMS) * time.Millisecond
+	total := stream.Duration
 	if total == 0 {
-		total = time.Duration(page.Duration) * time.Second
+		total = time.Duration(track.Duration) * time.Second
 	}
 
 	sig := make(chan os.Signal, 1)
@@ -210,17 +312,20 @@ func runPlay(input string) error {
 	}
 }
 
-func runLogin() error {
+func runLogin(name string) error {
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
-	client := newClient(st)
+	src := newSources(st).GetString(sourceName(name))
+	if src == nil {
+		return fmt.Errorf("未知音源 %q（可选 bilibili / netease）", name)
+	}
 	ctx := context.Background()
 
-	qr, err := client.StartQRLogin(ctx)
+	qr, err := src.StartQRLogin(ctx)
 	if err != nil {
 		return err
 	}
@@ -228,30 +333,41 @@ func runLogin() error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("用 B 站 App 扫码登录：")
+	fmt.Printf("用 %s 扫码登录：\n", src.Name())
 	fmt.Println(code.ToSmallString(false))
 
 	for {
-		status, err := client.PollQRLogin(ctx, qr.Key)
+		status, err := src.PollQRLogin(ctx, qr.Key)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("\r状态：%s        ", status.Message)
 		if status.LoggedIn {
-			payload, err := json.Marshal(client.Cookies())
+			payload, err := json.Marshal(src.Session())
 			if err != nil {
 				return err
 			}
-			if err := st.SaveAccount("bilibili", payload); err != nil {
+			if err := st.SaveAccount(string(src.ID()), payload); err != nil {
 				return err
 			}
 			fmt.Println("\n登录成功，cookie 已保存到本地")
 			return nil
 		}
-		if status.Code == 86038 {
-			return errors.New("二维码已失效，请重新运行 zero login")
+		if status.Expired {
+			return fmt.Errorf("二维码已失效，请重新运行 zero login %s", name)
 		}
 		time.Sleep(2 * time.Second)
+	}
+}
+
+func sourceName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "netease", "ncm", "网易云", "wangyiyun":
+		return string(source.NetEase)
+	case "bilibili", "bili", "b站":
+		return string(source.Bilibili)
+	default:
+		return ""
 	}
 }
 
