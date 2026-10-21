@@ -5,7 +5,7 @@
 
 ## 决策
 
-1. 新仓库独立，但 `internal/{models,db,lyrics,netguard,services}` 以搬迁改造的方式进来，不做"重新想一遍业务"。
+1. 新仓库独立，但 `internal/{models,db,lyrics,netguard,services}` 以搬迁改造的方式进来，不做「重新想一遍业务」。
 2. v1 仓库冻结，只修 bug。
 3. 提供 v1 数据库导入器，导入幂等、支持 `--dry-run`、导入前自动备份。
 
