@@ -219,6 +219,9 @@ type Model struct {
 	marqueeSong   string
 	marqueeOffset int
 
+	// listScroll 记录每个列表当前窗口起点；只在光标移出窗口时滚动。
+	listScroll map[listScrollKey]int
+
 	prompt            promptKind
 	promptInput       string
 	pendingPlaylistID string

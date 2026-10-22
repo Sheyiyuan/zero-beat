@@ -472,7 +472,7 @@ func (m *Model) renderLibrary(h int) []string {
 		if m.libraryFocus == focusPlaylists {
 			side[0] = st.accent.Render(padRight("   歌单", sideW))
 		}
-		start, end := windowRange(len(m.playlists), m.playlistIdx, h-1)
+		start, end := m.windowRangeKeep(scrollLibraryPlaylists, len(m.playlists), m.playlistIdx, h-1)
 		for i := start; i < end; i++ {
 			p := m.playlists[i]
 			side[1+i-start] = m.renderPlaylistRow(playlistRowSpec{
@@ -509,7 +509,7 @@ func (m *Model) renderLibrary(h int) []string {
 			main = append(main, st.dim.Render(" 按 ? 搜索音源，选中后按 a 加入歌单"))
 		}
 	} else {
-		start, end := windowRange(len(m.songs), m.songIdx, h-1)
+		start, end := m.windowRangeKeep(scrollLibrarySongs, len(m.songs), m.songIdx, h-1)
 		for i := start; i < end; i++ {
 			main = append(main, m.songRow(i, mainW))
 		}
@@ -643,7 +643,7 @@ func (m *Model) renderSearch(h int) []string {
 			out = append(out, st.dim.Render(" 结果里 enter 直接播放，a 加入歌单，A 加入队列"))
 			return out
 		}
-		start, end := windowRange(len(m.searchResults), m.searchIdx, h-2)
+		start, end := m.windowRangeKeep(scrollSearchSource, len(m.searchResults), m.searchIdx, h-2)
 		for i := start; i < end; i++ {
 			item := m.searchResults[i]
 			extra := ""
@@ -679,7 +679,7 @@ func (m *Model) renderSearch(h int) []string {
 		out = append(out, st.dim.Render(" r 切换当前歌单/本地全部；enter 播放，a 加入歌单"))
 		return out
 	}
-	start, end := windowRange(len(m.localResults), m.searchIdx, h-2)
+	start, end := m.windowRangeKeep(scrollSearchLocal, len(m.localResults), m.searchIdx, h-2)
 	for i := start; i < end; i++ {
 		song := m.localResults[i]
 		out = append(out, m.renderSongRow(songRowSpec{
@@ -707,7 +707,7 @@ func (m *Model) renderQueue(h int) []string {
 		out = append(out, "", st.dim.Render(" 队列是空的：在曲库或搜索里按 enter 播放"))
 		return out
 	}
-	start, end := windowRange(len(m.queue), m.queueCursor, h-1)
+	start, end := m.windowRangeKeep(scrollQueue, len(m.queue), m.queueCursor, h-1)
 	for i := start; i < end; i++ {
 		s := m.queue[i]
 		out = append(out, m.renderSongRow(songRowSpec{
@@ -754,7 +754,7 @@ func (m *Model) renderDownloads(h int) []string {
 		out = append(out, st.dim.Render(" 在曲库或搜索里按 w / W 下载后会自动出现在这里"))
 		return out
 	}
-	start, end := windowRange(len(m.downloadItems), m.downloadIdx, h-1)
+	start, end := m.windowRangeKeep(scrollDownloads, len(m.downloadItems), m.downloadIdx, h-1)
 	for i := start; i < end; i++ {
 		out = append(out, m.downloadRow(i, m.width))
 	}
@@ -809,7 +809,7 @@ func (m *Model) renderFolders(h int) []string {
 		out = append(out, st.dim.Render(" 已添加的不会重复出现；s 切换音源，r 重新读取"))
 		return out
 	}
-	start, end := windowRange(len(m.folderItems), m.folderIdx, h-1)
+	start, end := m.windowRangeKeep(scrollFolders, len(m.folderItems), m.folderIdx, h-1)
 	for i := start; i < end; i++ {
 		p := m.folderItems[i]
 		// ▶ 只表示正在播放；导入页的光标只用蓝底。

@@ -1197,3 +1197,98 @@ func TestMarqueeSpeed(t *testing.T) {
 		t.Fatalf("第二次应到 4 列: %d", m.marqueeOffset)
 	}
 }
+
+// TestListScrollOnlyWhenCursorLeavesWindow 验证列表只在光标移出窗口时滚动，
+// 不会像旧实现（windowRange 居中）那样每换一行就整屏重排。
+func TestListScrollOnlyWhenCursorLeavesWindow(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.view = viewLibrary
+	m.libraryFocus = focusSongs
+	m.songs = make([]store.Song, 60)
+	for i := range m.songs {
+		m.songs[i] = store.Song{
+			ID: fmt.Sprintf("bilibili:BV%d:1", i), Source: "bilibili",
+			BVID: fmt.Sprintf("BV%d", i), Page: 1,
+			Title: fmt.Sprintf("歌曲 %d", i), Artist: "歌手", Duration: 100,
+		}
+	}
+	songHeight := m.bodyHeight() - 1
+
+	m.songIdx = 0
+	m.renderLibrary(m.bodyHeight())
+	if got := m.listScroll[scrollLibrarySongs]; got != 0 {
+		t.Fatalf("初始窗口应从 0 开始，实际 %d", got)
+	}
+
+	// 在窗口内移动：不滚动。
+	m.songIdx = 3
+	m.renderLibrary(m.bodyHeight())
+	if got := m.listScroll[scrollLibrarySongs]; got != 0 {
+		t.Fatalf("光标在窗口内时不应滚动，实际 %d", got)
+	}
+
+	// 光标移出窗口下沿：只滚到刚好露出光标，不居中。
+	m.songIdx = songHeight + 2
+	m.renderLibrary(m.bodyHeight())
+	want := m.songIdx - songHeight + 1
+	if got := m.listScroll[scrollLibrarySongs]; got != want {
+		t.Fatalf("移出窗口应最小滚动到 %d，实际 %d", want, got)
+	}
+
+	// 回到顶部：窗口跟随回到 0。
+	m.songIdx = 0
+	m.renderLibrary(m.bodyHeight())
+	if got := m.listScroll[scrollLibrarySongs]; got != 0 {
+		t.Fatalf("回到首行时窗口应回到 0，实际 %d", got)
+	}
+}
+
+// TestRightClickSongKeepsMenuAnchored 验证右键歌曲时列表不再重排：
+// 菜单位置仍贴着被点的那一行。
+func TestRightClickSongKeepsMenuAnchored(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.view = viewLibrary
+	m.libraryFocus = focusSongs
+	m.songs = make([]store.Song, 60)
+	for i := range m.songs {
+		m.songs[i] = store.Song{
+			ID: fmt.Sprintf("bilibili:BV%d:1", i), Source: "bilibili",
+			BVID: fmt.Sprintf("BV%d", i), Page: 1,
+			Title: fmt.Sprintf("歌曲 %d", i), Artist: "歌手", Duration: 100,
+		}
+	}
+	// 先把光标挪到窗口底部附近，让窗口滚动起来。
+	m.songIdx = 30
+	m.renderLibrary(m.bodyHeight())
+	startBefore := m.listScroll[scrollLibrarySongs]
+
+	// 取当前可见的最后一首歌的命中区，右键它。
+	var zone hitZone
+	for _, z := range m.hitZones() {
+		if z.target == hitLibrarySong {
+			zone = z
+		}
+	}
+	if zone.index != m.songIdx && zone.index < 0 {
+		t.Fatal("未找到可见歌曲行")
+	}
+	rowY := zone.y
+	clicked := zone.index
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 5, Y: rowY, Button: tea.MouseRight})
+	mm := updated.(*Model)
+	if mm.menu == nil || mm.menu.kind != menuSong {
+		t.Fatalf("右键歌曲应打开歌曲菜单，实际 %+v", mm.menu)
+	}
+	if mm.songIdx != clicked {
+		t.Fatalf("右键应选中被点的歌曲 %d，实际 %d", clicked, mm.songIdx)
+	}
+	if got := mm.listScroll[scrollLibrarySongs]; got != startBefore {
+		t.Fatalf("右键单行不应导致列表滚动：%d -> %d", startBefore, got)
+	}
+	if mm.menu.y != rowY {
+		t.Fatalf("菜单应贴着被点的行：menu.y=%d row.y=%d", mm.menu.y, rowY)
+	}
+}
