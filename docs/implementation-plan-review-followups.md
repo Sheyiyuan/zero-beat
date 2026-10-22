@@ -37,7 +37,10 @@
 
 ## 2. P0：阻断修复（按依赖顺序，一项一提交）
 
-### P0-1 `playSearchResult` 索引错位（回归，最高优先级）
+> 状态：**P0-1 ~ P0-4 已落地**（提交 `d98c2b3` / `650360d` / `561f41d` / `2602dab`），P0-5 见上一轮。
+> 每项都先写复现测试（确认在旧代码上失败），再改实现转绿。
+
+### P0-1 `playSearchResult` 索引错位（回归，最高优先级）✅
 
 - 文件：`internal/tui/model.go:1776-1789`
 - 改法：闭包内不要读 Model 的 `m.queue` 长度，用 `Enqueue` 的返回值：
@@ -47,7 +50,7 @@
 - 测试：`internal/tui/model_test.go` 加 `TestPlaySearchResultAppendsAndSelects`：搜索源结果入队后 `len(queue)==L+1` 且 `queueIdx==L`；再断言 `advance()` 取到的是下一首而不是同一首。
 - 验收：复现用例（审查时已确认失败：期望索引 2、实际 1）转绿。
 
-### P0-2 切歌缓冲期的引擎事件守卫（回归，用户可见跳歌）
+### P0-2 切歌缓冲期的引擎事件守卫（回归，用户可见跳歌）✅
 
 - 文件：`internal/player/playback.go:252-270`（`HandleEvent`）、`internal/tui/model.go:706-725`
 - 改法：把 main 里 TUI 的守卫下沉到控制器（TUI 保持薄）：
@@ -63,7 +66,7 @@
 - 测试：`internal/player/controller_test.go` 加「Awaiting 期间 Failed/Ended 不改变状态、不返回 Retry/Ended」；`internal/tui` 加一条「BeginPlay 后立即喂 EventEnded，`queueIdx` 不变」。
 - 验收：审查时的控制器级复现用例转绿；连续快速按 `n` 切歌不再跳过整首。
 
-### P0-3 歌词滚动负起点跳变
+### P0-3 歌词滚动负起点跳变 ✅
 
 - 文件：`internal/tui/lyrics_nav.go:58-74`
 - 改法：两次 clamp 的下界都用 `min(0, base)`：
@@ -75,14 +78,14 @@
 - 测试：`internal/tui/lyrics_nav_test.go` 加 `lyricIdx=0` 的用例（`↓` 只移动 1 行、`↑` 能回到居中）与短歌词（`len(rows) < bodyHeight`）用例。
 - 验收：歌曲开头按 `↓` 不再从居中跳到顶部，`↑` 能原路返回。
 
-### P0-4 模态层级：搜索输入态 × 关于弹窗
+### P0-4 模态层级：搜索输入态 × 关于弹窗 ✅
 
 - 文件：`internal/tui/mouse.go:36-56`、`internal/tui/model.go:823-831`
 - 改法：① 页头三个分支（`hitAbout/hitPageMenu/hitAccount`）先 `m.searchEditing = false`；② `handleKey` 里把 `helpPopup/aboutPopup` 判断提到 `searchEditing` 之前。
 - 测试：`internal/tui/mouse_test.go` / `view_test.go` 加「输入态点 zero → 弹窗打开且 `searchEditing==false`；按一次 esc 关闭弹窗」。
 - 验收：弹窗提示与按键行为一致，不再需要连按 3 次 esc。
 
-### P0-5 老 keymap 配置整份失效
+### P0-5 老 keymap 配置整份失效 ✅
 
 - 文件：`internal/keymap/keymap.go`（`Load`/`build`）、`internal/tui/model.go:248-296`、`README.md` 自定义快捷键一节
 - 现状：旧 `zero keymap --init` 生成的文件含 `right = ["right","l"]`，与新增默认 `lyrics_view = ["l"]` 冲突 → `Load` 失败 → **整份回退默认**（实测报 `按键 "l" 同时绑定到 right 和 lyrics_view`）。
