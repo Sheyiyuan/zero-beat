@@ -20,8 +20,9 @@ type DownloadResult struct {
 	Err  error
 }
 
-// DownloadSong 解析音频并落盘到默认下载目录；progress 可为 nil。
-func (s *Service) DownloadSong(ctx context.Context, song store.Song, quality source.Quality, progress func(done, total int64)) DownloadResult {
+// DownloadSong 解析音频并落盘到默认下载目录；force 为 true 时覆盖已有文件，
+// progress 可为 nil。
+func (s *Service) DownloadSong(ctx context.Context, song store.Song, quality source.Quality, force bool, progress func(done, total int64)) DownloadResult {
 	song = store.NormalizeSong(song)
 	track, stream, err := s.Stream(ctx, song, quality)
 	if err != nil {
@@ -47,7 +48,7 @@ func (s *Service) DownloadSong(ctx context.Context, song store.Song, quality sou
 	if duration == 0 && merged.Duration > 0 {
 		duration = time.Duration(merged.Duration) * time.Second
 	}
-	res, err := download.Run(ctx, t, stream, outPath, false, onProgress)
+	res, err := download.Run(ctx, t, stream, outPath, force, onProgress)
 	if err != nil {
 		path := outPath
 		if res.Path != "" {

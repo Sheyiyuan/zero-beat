@@ -17,11 +17,19 @@ const (
 	Running
 )
 
+// Job 是一次下载的参数，在入队（界面协程）时快照，
+// 后台 goroutine 只读它，不再回读界面状态。
+type Job struct {
+	Quality int  // 音质档位；downloader 不依赖 source 包，按整数透传
+	Force   bool // 忽略已有文件（补全 0 字节/损坏文件）
+}
+
 // Task 是任务快照。
 type Task struct {
 	ID    int
 	Song  store.Song
 	Title string
+	Job   Job
 	State State
 	Done  int64
 	Total int64
@@ -41,7 +49,7 @@ type Event struct {
 }
 
 // Runner 执行一次下载；由 app.Service 提供。
-type Runner func(ctx context.Context, song store.Song, progress func(done, total int64)) (path string, size int64, err error)
+type Runner func(ctx context.Context, song store.Song, job Job, progress func(done, total int64)) (path string, size int64, err error)
 
 type task struct {
 	Task
@@ -72,7 +80,7 @@ func New(max int, run Runner) *Manager {
 func (m *Manager) Events() <-chan Event { return m.events }
 
 // Add 加入一首歌；同一首歌重复加入时返回已有 ID 和 false。
-func (m *Manager) Add(song store.Song, title string) (int, bool) {
+func (m *Manager) Add(song store.Song, title string, job Job) (int, bool) {
 	song = store.NormalizeSong(song)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -80,7 +88,7 @@ func (m *Manager) Add(song store.Song, title string) (int, bool) {
 		return id, false
 	}
 	m.seq++
-	t := &task{Task: Task{ID: m.seq, Song: song, Title: title, State: Queued}}
+	t := &task{Task: Task{ID: m.seq, Song: song, Title: title, Job: job, State: Queued}}
 	m.tasks = append(m.tasks, t)
 	m.bySong[song.ID] = t.ID
 	return t.ID, true
@@ -145,7 +153,7 @@ func (m *Manager) runTask(ctx context.Context, t *task) {
 		m.mu.Unlock()
 		m.emit(Event{ID: t.ID, Done: done, Total: total}, false)
 	}
-	path, size, err := m.run(ctx, t.Song, progress)
+	path, size, err := m.run(ctx, t.Song, t.Job, progress)
 	m.mu.Lock()
 	t.Path = path
 	t.Err = err

@@ -13,14 +13,14 @@ func song(id string) store.Song {
 }
 
 func TestManagerAddsDedupesAndRemoves(t *testing.T) {
-	mgr := New(2, func(context.Context, store.Song, func(int64, int64)) (string, int64, error) {
+	mgr := New(2, func(context.Context, store.Song, Job, func(int64, int64)) (string, int64, error) {
 		return "", 0, nil
 	})
-	id, ok := mgr.Add(song("a"), "A")
+	id, ok := mgr.Add(song("a"), "A", Job{})
 	if !ok || id == 0 {
 		t.Fatalf("首次加入失败: id=%d ok=%v", id, ok)
 	}
-	if _, ok := mgr.Add(song("a"), "A"); ok {
+	if _, ok := mgr.Add(song("a"), "A", Job{}); ok {
 		t.Fatal("重复歌曲不应再次加入")
 	}
 	if !mgr.Has("fake:a:1") || mgr.Len() != 1 {
@@ -33,11 +33,11 @@ func TestManagerAddsDedupesAndRemoves(t *testing.T) {
 }
 
 func TestManagerRunsAndEmitsFinished(t *testing.T) {
-	mgr := New(1, func(ctx context.Context, s store.Song, progress func(int64, int64)) (string, int64, error) {
+	mgr := New(1, func(ctx context.Context, s store.Song, _ Job, progress func(int64, int64)) (string, int64, error) {
 		progress(5, 5)
 		return "/tmp/" + s.Title, 5, nil
 	})
-	id, _ := mgr.Add(song("a"), "A")
+	id, _ := mgr.Add(song("a"), "A", Job{})
 	mgr.Start()
 
 	deadline := time.After(2 * time.Second)
@@ -65,7 +65,7 @@ done:
 func TestManagerConcurrencyLimitAndCancel(t *testing.T) {
 	started := make(chan struct{}, 3)
 	block := make(chan struct{})
-	mgr := New(2, func(ctx context.Context, _ store.Song, _ func(int64, int64)) (string, int64, error) {
+	mgr := New(2, func(ctx context.Context, _ store.Song, _ Job, _ func(int64, int64)) (string, int64, error) {
 		started <- struct{}{}
 		select {
 		case <-ctx.Done():
@@ -75,7 +75,7 @@ func TestManagerConcurrencyLimitAndCancel(t *testing.T) {
 		}
 	})
 	for _, id := range []string{"a", "b", "c"} {
-		mgr.Add(song(id), id)
+		mgr.Add(song(id), id, Job{})
 	}
 	mgr.Start()
 	<-started
@@ -98,4 +98,21 @@ func TestManagerConcurrencyLimitAndCancel(t *testing.T) {
 	}
 	mgr.CancelAll()
 	close(block)
+}
+
+// TestManagerKeepsJobSnapshot 验证任务在入队时快照下载参数（音质/强制重下），
+// 后台 goroutine 只读快照，不依赖界面状态。
+func TestManagerKeepsJobSnapshot(t *testing.T) {
+	mgr := New(1, func(context.Context, store.Song, Job, func(int64, int64)) (string, int64, error) {
+		return "", 0, nil
+	})
+	_, ok := mgr.Add(song("a"), "A", Job{Quality: 2, Force: true})
+	if !ok {
+		t.Fatal("入队失败")
+	}
+	task := mgr.Tasks()[0]
+	if task.Job.Quality != 2 || !task.Job.Force {
+		t.Fatalf("任务应保留下载参数快照，实际 %+v", task.Job)
+	}
+	mgr.CancelAll()
 }

@@ -17,7 +17,7 @@ import (
 // testDownloads 返回一个不会真正下载、但会保持 Running 的管理器，便于断言队列状态。
 func testDownloads(t *testing.T) *downloader.Manager {
 	t.Helper()
-	mgr := downloader.New(2, func(ctx context.Context, song store.Song, progress func(done, total int64)) (string, int64, error) {
+	mgr := downloader.New(2, func(ctx context.Context, song store.Song, job downloader.Job, progress func(done, total int64)) (string, int64, error) {
 		<-ctx.Done()
 		return "", 0, ctx.Err()
 	})
@@ -81,7 +81,7 @@ func TestDownloadProgressLineAndBodyHeight(t *testing.T) {
 	mgr := testDownloads(t)
 	m.downloads = mgr
 	song := store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}
-	id, _ := mgr.Add(song, "夜航星")
+	id, _ := mgr.Add(song, "夜航星", downloader.Job{})
 	mgr.Start()
 	mgr.SetProgress(id, 3<<20, 10<<20)
 
@@ -151,7 +151,7 @@ func TestDownloadLineHiddenOnHelpAndLogin(t *testing.T) {
 	m := fixtureModel()
 	mgr := testDownloads(t)
 	m.downloads = mgr
-	if _, ok := mgr.Add(store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}, "夜航星"); !ok {
+	if _, ok := mgr.Add(store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}, "夜航星", downloader.Job{}); !ok {
 		t.Fatal("加入任务失败")
 	}
 	for _, v := range []view{viewHelp, viewLogin} {
@@ -222,11 +222,32 @@ func TestDownloadLineProgressFormat(t *testing.T) {
 	m := fixtureModel()
 	mgr := testDownloads(t)
 	m.downloads = mgr
-	id, _ := mgr.Add(store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}, "夜航星")
+	id, _ := mgr.Add(store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}, "夜航星", downloader.Job{})
 	mgr.Start()
 	mgr.SetProgress(id, 1<<20, 4<<20)
 	line, ok := m.downloadLineText()
 	if !ok || !strings.Contains(ansi.Strip(line), "25%") {
 		t.Fatalf("下载进度格式不符: %q", ansi.Strip(line))
+	}
+}
+
+// TestDownloadJobSnapshotsQualityAndForce 验证入队时快照音质（后台协程不读
+// Model 字段）以及补全缺失文件时带 force。
+func TestDownloadJobSnapshotsQualityAndForce(t *testing.T) {
+	m := fixtureModel()
+	m.downloads = testDownloads(t)
+	m.songIdx = 0
+	m.quality = source.QualityLossless
+	updated, _ := m.Update(keyPress("W", 'W'))
+	mm := updated.(*Model)
+	tasks := mm.downloads.Tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("应入队一个任务，实际 %d", len(tasks))
+	}
+	if tasks[0].Job.Quality != int(source.QualityLossless) {
+		t.Fatalf("任务音质应为入队快照，实际 %+v", tasks[0].Job)
+	}
+	if tasks[0].Job.Force {
+		t.Fatalf("文件正常时不应强制重下，实际 %+v", tasks[0].Job)
 	}
 }

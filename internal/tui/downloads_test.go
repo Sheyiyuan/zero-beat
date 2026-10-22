@@ -189,6 +189,9 @@ func TestDownloadsRedownloadMissingWithW(t *testing.T) {
 	if len(tasks) != 1 || tasks[0].Song.ID != song.ID {
 		t.Fatalf("W 应把缺失歌曲加入下载队列: %+v", tasks)
 	}
+	if !tasks[0].Job.Force {
+		t.Fatalf("文件缺失时 W 应强制重下，实际 %+v", tasks[0].Job)
+	}
 	if cmd == nil {
 		t.Fatal("重新下载应返回 tea.Cmd")
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/sheyiyuan/zero-beat/internal/download"
 	"github.com/sheyiyuan/zero-beat/internal/downloader"
+	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
@@ -20,8 +21,9 @@ type downloadEventMsg struct{ ev downloader.Event }
 // downloadManager 懒加载下载管理器；测试不启动真实下载时也能构造 Model。
 func (m *Model) downloadManager() *downloader.Manager {
 	if m.downloads == nil {
-		m.downloads = downloader.New(maxConcurrentDownloads, func(ctx context.Context, song store.Song, progress func(done, total int64)) (string, int64, error) {
-			res := m.service().DownloadSong(ctx, song, m.quality, progress)
+		m.downloads = downloader.New(maxConcurrentDownloads, func(ctx context.Context, song store.Song, job downloader.Job, progress func(done, total int64)) (string, int64, error) {
+			// job 是入队时的快照：后台协程不读 Model 字段（quality 会变）。
+			res := m.service().DownloadSong(ctx, song, source.Quality(job.Quality), job.Force, progress)
 			return res.Path, res.Size, res.Err
 		})
 	}
@@ -55,7 +57,14 @@ func (m *Model) startSelectedDownload() tea.Cmd {
 		m.setNotice("当前页面没有选中项；按 w 下载正在播放", true)
 		return nil
 	}
-	return m.enqueueDownload(song, "开始下载：")
+	job := downloader.Job{Quality: int(m.quality)}
+	// 下载管理页对「文件缺失」的行强制重下，否则会被 ErrExists 拦住。
+	if m.view == viewDownloads {
+		if item, ok := m.selectedDownload(); ok && item.missing {
+			job.Force = true
+		}
+	}
+	return m.enqueueDownloadJob(song, "开始下载：", job)
 }
 
 func (m *Model) selectedDownloadSong() (store.Song, bool) {
@@ -88,6 +97,10 @@ func (m *Model) selectedDownloadSong() (store.Song, bool) {
 }
 
 func (m *Model) enqueueDownload(raw store.Song, verb string) tea.Cmd {
+	return m.enqueueDownloadJob(raw, verb, downloader.Job{Quality: int(m.quality)})
+}
+
+func (m *Model) enqueueDownloadJob(raw store.Song, verb string, job downloader.Job) tea.Cmd {
 	song := store.NormalizeSong(raw)
 	if song.ExternalID() == "" {
 		m.setNotice("这首缺少音源 ID，无法下载", true)
@@ -102,7 +115,7 @@ func (m *Model) enqueueDownload(raw store.Song, verb string) tea.Cmd {
 	if title == "" {
 		title = song.ExternalID()
 	}
-	id, added := mgr.Add(song, title)
+	id, added := mgr.Add(song, title, job)
 	if !added {
 		m.setNotice("已在下载队列："+title, false)
 		return nil
@@ -144,7 +157,7 @@ func (m *Model) startPlaylistDownload() tea.Cmd {
 			skipped++
 			continue
 		}
-		if _, ok := mgr.Add(song, title); ok {
+		if _, ok := mgr.Add(song, title, downloader.Job{Quality: int(m.quality)}); ok {
 			added++
 		} else {
 			skipped++

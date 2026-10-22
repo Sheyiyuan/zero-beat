@@ -87,7 +87,8 @@ func Run(ctx context.Context, track source.Track, stream source.Stream, outPath 
 		return Result{}, errors.New("download: 输出路径为空")
 	}
 	if !force {
-		if _, err := os.Stat(outPath); err == nil {
+		// 0 字节文件视为下载失败留下的空壳：允许重新下载，而不是永远 ErrExists。
+		if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
 			return Result{Path: outPath}, ErrExists
 		}
 	}
