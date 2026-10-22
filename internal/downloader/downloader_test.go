@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -115,4 +116,63 @@ func TestManagerKeepsJobSnapshot(t *testing.T) {
 		t.Fatalf("任务应保留下载参数快照，实际 %+v", task.Job)
 	}
 	mgr.CancelAll()
+}
+
+// TestManagerCancelQueuedAndRunning 验证取消语义：排队任务直接移除、
+// 运行中任务取消 ctx 后以 Failed 状态保留、并发槽位回收。
+func TestManagerCancelQueuedAndRunning(t *testing.T) {
+	block := make(chan struct{})
+	mgr := New(1, func(ctx context.Context, _ store.Song, _ Job, _ func(int64, int64)) (string, int64, error) {
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-block:
+			return "p", 1, nil
+		}
+	})
+	runningID, _ := mgr.Add(song("a"), "a", Job{})
+	queuedID, _ := mgr.Add(song("b"), "b", Job{})
+	mgr.Start()
+	if !mgr.Cancel(queuedID) {
+		t.Fatal("排队任务应可取消")
+	}
+	if mgr.Len() != 1 {
+		t.Fatalf("取消排队任务后应只剩运行中的一条，实际 %d", mgr.Len())
+	}
+	if !mgr.CancelSong("fake:a:1") {
+		t.Fatal("运行中任务应可按歌曲取消")
+	}
+	select {
+	case ev := <-mgr.Events():
+		if !ev.Finished || !errors.Is(ev.Err, context.Canceled) {
+			t.Fatalf("取消应产生 Finished + context.Canceled，实际 %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待取消完成事件超时")
+	}
+	mgr.Remove(runningID)
+	close(block)
+}
+
+// TestManagerRecoversRunnerPanic 验证 Runner panic 不会拖垮进程，
+// 任务变成失败并发出完成事件。
+func TestManagerRecoversRunnerPanic(t *testing.T) {
+	mgr := New(1, func(context.Context, store.Song, Job, func(int64, int64)) (string, int64, error) {
+		panic("boom")
+	})
+	id, _ := mgr.Add(song("a"), "a", Job{})
+	mgr.Start()
+	select {
+	case ev := <-mgr.Events():
+		if !ev.Finished || ev.Err == nil {
+			t.Fatalf("panic 应转成失败事件，实际 %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("等待 panic 完成事件超时")
+	}
+	task := mgr.Tasks()[0]
+	if task.State != Failed || task.Err == nil {
+		t.Fatalf("panic 后任务应为 Failed，实际 %+v", task)
+	}
+	mgr.Remove(id)
 }

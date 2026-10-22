@@ -3,6 +3,7 @@ package downloader
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ type State int
 const (
 	Queued State = iota
 	Running
+	Failed // 失败任务保留在列表里，等界面提示或用户重试/清除
 )
 
 // Job 是一次下载的参数，在入队（界面协程）时快照，
@@ -153,17 +155,31 @@ func (m *Manager) runTask(ctx context.Context, t *task) {
 		m.mu.Unlock()
 		m.emit(Event{ID: t.ID, Done: done, Total: total}, false)
 	}
-	path, size, err := m.run(ctx, t.Song, t.Job, progress)
+	path, size, err := runSafely(ctx, m.run, t.Song, t.Job, progress)
 	m.mu.Lock()
 	t.Path = path
 	t.Err = err
+	if err != nil {
+		t.State = Failed
+	}
 	m.running--
 	delete(m.bySong, t.Song.ID)
 	m.mu.Unlock()
 	m.emit(Event{ID: t.ID, Path: path, Size: size, Err: err, Finished: true}, true)
 	m.mu.Lock()
+	// 失败任务还留在列表里，后续排队任务继续跑（取消的槽位要立刻补上）。
 	m.startLocked()
 	m.mu.Unlock()
+}
+
+// runSafely 把 Runner 的 panic 转成普通错误，避免一个坏任务拖垮整个进程。
+func runSafely(ctx context.Context, run Runner, song store.Song, job Job, progress func(done, total int64)) (path string, size int64, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("下载任务 panic: %v", r)
+		}
+	}()
+	return run(ctx, song, job, progress)
 }
 
 func (m *Manager) emit(ev Event, must bool) {
@@ -194,15 +210,54 @@ func (m *Manager) Remove(id int) {
 	}
 }
 
-// CancelAll 取消所有排队/运行中的任务。
-func (m *Manager) CancelAll() {
+// Cancel 取消一个任务：排队中的直接移除，运行中的取消 ctx 并等待完成事件。
+func (m *Manager) Cancel(id int) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for _, t := range m.tasks {
+	for i, t := range m.tasks {
+		if t.ID != id {
+			continue
+		}
+		delete(m.bySong, t.Song.ID)
+		if t.State == Queued {
+			m.tasks = append(m.tasks[:i], m.tasks[i+1:]...)
+			return true
+		}
 		if t.cancel != nil {
 			t.cancel()
 		}
+		return true
 	}
+	return false
+}
+
+// CancelSong 按歌曲 ID 取消任务。
+func (m *Manager) CancelSong(songID string) bool {
+	m.mu.Lock()
+	id, ok := m.bySong[songID]
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	return m.Cancel(id)
+}
+
+// CancelAll 取消所有任务：排队中的直接移除，运行中的取消 ctx。
+func (m *Manager) CancelAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.tasks[:0]
+	for _, t := range m.tasks {
+		if t.State == Queued {
+			delete(m.bySong, t.Song.ID)
+			continue
+		}
+		if t.cancel != nil {
+			t.cancel()
+		}
+		kept = append(kept, t)
+	}
+	m.tasks = kept
 }
 
 // Len 返回任务数。
