@@ -106,7 +106,7 @@ func (m *Model) helpLines() []string {
 	add(m.helpKeys(keymap.LyricsView), "打开歌词")
 	add(m.helpKeys(keymap.New), "打开命令面板（新建歌单 / 关于等）")
 	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
-	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/删除/查看缺失文件）")
+	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/取消/删除/查看缺失文件）")
 	add(joinKeys(m.helpKeys(keymap.MixEdit), m.helpKeys(keymap.Unlock)), "编辑混合歌单引用 / 解锁同步歌单（歌单焦点）")
 	add(m.helpKeys(keymap.MergePlaylist), "把当前歌单以引用混入混合歌单（曲库）")
 	add(joinKeys(m.helpKeys(keymap.PlayNext), m.helpKeys(keymap.Enqueue)), "插到下一首播放 / 追加到队列末尾（歌曲焦点）")
