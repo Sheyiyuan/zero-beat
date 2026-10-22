@@ -89,7 +89,7 @@ func (m *Model) openPlaylistMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 	p := m.playlists[zone.index]
 	cmd := m.selectHit(zone)
 	items := []menuItem{
-		{label: "打开歌单", hint: "enter", act: actPlaylistOpen},
+		{label: "播放歌单", hint: "enter", act: actPlaylistPlay},
 		{label: "下载整个歌单", hint: m.firstKey(keymap.DownloadSelected), act: actPlaylistDownload},
 	}
 	switch p.Kind {

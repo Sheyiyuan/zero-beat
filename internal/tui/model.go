@@ -222,9 +222,12 @@ type Model struct {
 	prompt            promptKind
 	promptInput       string
 	pendingPlaylistID string
-	pendingAddSong    *store.Song
-	pendingDownloadID string
-	helpOffset        int
+	// pendingPlayPlaylist 为 true 时，当前歌单曲目载入完成后自动从头播放
+	// （右键菜单「播放歌单」在异步载入期间点下时会置位）。
+	pendingPlayPlaylist bool
+	pendingAddSong      *store.Song
+	pendingDownloadID   string
+	helpOffset          int
 
 	sleepUntil time.Time
 	sleepSlot  int
@@ -436,6 +439,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.songs = msg.items
 		if m.songIdx >= len(m.songs) {
 			m.songIdx = max(0, len(m.songs)-1)
+		}
+		if m.pendingPlayPlaylist {
+			m.pendingPlayPlaylist = false
+			if len(m.songs) == 0 {
+				m.setNotice("这个歌单还是空的", false)
+				return m, nil
+			}
+			return m, m.playPlaylistFromStart()
 		}
 		return m, nil
 
@@ -1764,6 +1775,37 @@ func (m *Model) ensureStored(song store.Song) store.Song {
 
 func (m *Model) searchResultSong(idx int) store.Song {
 	return app.SongFromTrack(m.searchResults[idx].Track)
+}
+
+// playPlaylistFromMenu 播放右键菜单选中的歌单：必要时先切过去，
+// 曲目还在异步载入时等 songsMsg 到达后自动从头播放。
+func (m *Model) playPlaylistFromMenu(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.playlists) {
+		return nil
+	}
+	m.libraryFocus = focusPlaylists
+	if idx != m.playlistIdx {
+		cmd := m.selectPlaylist(idx)
+		m.pendingPlayPlaylist = true
+		m.setNotice("歌单载入中，载入后自动播放…", false)
+		return cmd
+	}
+	if m.songsBusy {
+		m.pendingPlayPlaylist = true
+		m.setNotice("歌单载入中，载入后自动播放…", false)
+		return nil
+	}
+	return m.playPlaylistFromStart()
+}
+
+// playPlaylistFromStart 从当前歌单第一首开始播放。
+func (m *Model) playPlaylistFromStart() tea.Cmd {
+	if len(m.songs) == 0 {
+		m.setNotice("这个歌单还是空的", false)
+		return nil
+	}
+	m.songIdx = 0
+	return m.playPlaylistIndex(0)
 }
 
 func (m *Model) playPlaylistIndex(idx int) tea.Cmd {

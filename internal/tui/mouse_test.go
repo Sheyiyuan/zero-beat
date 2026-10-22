@@ -439,3 +439,88 @@ func TestViewMouseCaptureCanBeDisabled(t *testing.T) {
 		t.Fatalf("默认应启用鼠标点击/滚轮，实际 %v", got)
 	}
 }
+
+// TestPlaylistMenuPlaysSelectedPlaylist 验证右键歌单菜单的「播放歌单」真的开始播放，
+// 而不是只重新选中一次（旧实现在已选中时直接 return nil，表现为点啥都没发生）。
+func TestPlaylistMenuPlaysSelectedPlaylist(t *testing.T) {
+	m := fixtureModel()
+	m.playlistIdx = 1 // 「本地歌单」，已选中、曲目已载入
+	m.songIdx = 0
+	m.libraryFocus = focusSongs
+
+	var zone hitZone
+	found := false
+	for _, z := range m.hitZones() {
+		if z.target == hitLibraryPlaylist && z.index == 1 {
+			zone, found = z, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("未找到歌单命中区")
+	}
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseRight})
+	mm := updated.(*Model)
+	if mm.menu == nil || mm.menu.kind != menuPlaylist {
+		t.Fatalf("右键歌单应打开歌单菜单，实际 %+v", mm.menu)
+	}
+	itemIdx := -1
+	for i, item := range mm.menu.items {
+		if item.act == actPlaylistPlay {
+			itemIdx = i
+		}
+	}
+	if itemIdx < 0 {
+		t.Fatal("歌单菜单缺少「播放歌单」项")
+	}
+	if got := mm.menu.items[itemIdx].label; got != "播放歌单" {
+		t.Fatalf("菜单文案应为「播放歌单」，实际 %q", got)
+	}
+	mm.menu.idx = itemIdx
+	updated, cmd := mm.applyMenu()
+	mm = updated.(*Model)
+	if cmd == nil {
+		t.Fatal("播放歌单应返回播放命令")
+	}
+	if mm.current == nil || mm.current.ID != mm.songs[0].ID {
+		t.Fatalf("应从歌单第一首开始播放，实际 %+v", mm.current)
+	}
+	if mm.queueIdx != 0 || len(mm.queue) != len(mm.songs) {
+		t.Fatalf("队列应载入整个歌单：idx=%d len=%d", mm.queueIdx, len(mm.queue))
+	}
+	if mm.playingPlaylistID != mm.playlists[1].ID {
+		t.Fatalf("应记录正在播放的来源歌单，实际 %q", mm.playingPlaylistID)
+	}
+}
+
+// TestPlaylistMenuPlayWaitsForSongs 曲目还在载入时点「播放歌单」，
+// 等 songsMsg 到达后自动从头播放。
+func TestPlaylistMenuPlayWaitsForSongs(t *testing.T) {
+	m := fixtureModel()
+	m.playlistIdx = 0
+	m.songsBusy = true
+	m.songs = nil
+
+	if cmd := m.playPlaylistFromMenu(0); cmd != nil {
+		t.Fatal("载入中不应立刻起播")
+	}
+	if !m.pendingPlayPlaylist {
+		t.Fatal("载入中应记下待播放标记")
+	}
+
+	items := []store.Song{
+		{ID: "bilibili:BV1:1", Source: "bilibili", BVID: "BV1", Page: 1, Title: "甲", Duration: 10},
+		{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "乙", Duration: 10},
+	}
+	updated, cmd := m.Update(songsMsg{playlistID: m.playlists[0].ID, items: items})
+	mm := updated.(*Model)
+	if mm.pendingPlayPlaylist {
+		t.Fatal("载入完成后应清掉待播放标记")
+	}
+	if cmd == nil {
+		t.Fatal("载入完成后应自动起播")
+	}
+	if mm.current == nil || mm.current.ID != items[0].ID || mm.queueIdx != 0 {
+		t.Fatalf("应从第一首起播，实际 current=%+v idx=%d", mm.current, mm.queueIdx)
+	}
+}

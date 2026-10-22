@@ -30,7 +30,7 @@ const (
 	actAddPlaylist
 	actDownload
 	actRemove
-	actPlaylistOpen
+	actPlaylistPlay
 	actPlaylistDownload
 	actPlaylistRename
 	actPlaylistMix
@@ -264,9 +264,8 @@ func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd
 			return m, m.removeSelected()
 		}
 		return m, nil
-	case actPlaylistOpen:
-		m.libraryFocus = focusPlaylists
-		return m, m.selectPlaylist(menu.playlistIdx)
+	case actPlaylistPlay:
+		return m, m.playPlaylistFromMenu(menu.playlistIdx)
 	case actPlaylistDownload:
 		m.libraryFocus = focusPlaylists
 		m.playlistIdx = menu.playlistIdx
