@@ -62,7 +62,7 @@
 
 依赖：
 
-- **Go 1.26+**（仅源码构建需要）
+- **Go 1.26.10+**（仅源码构建需要；Go 1.21+ 默认的 GOTOOLCHAIN=auto 会自动下载对应工具链）
 - **ffmpeg**（负责解码 AAC / HE-AAC / FLAC）
 - 可用的音频输出：Linux 上 PulseAudio/PipeWire，macOS CoreAudio（Windows 未适配，仅提供交叉编译产物）
 - 网易云协议层：`go-musicfox/netease-music`（Go module 自动拉取，无需额外系统依赖）
