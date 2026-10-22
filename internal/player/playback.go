@@ -227,9 +227,17 @@ func (c *Controller) Seek(ctx context.Context, delta time.Duration, clip store.C
 		c.state.PlaybackState = audio.StateBuffering
 		return SeekResult{Action: ToggleNeedPlay, Song: *c.state.Current, StartAt: target, Clamped: clamped}
 	}
+	wasPaused := c.engine.State() == audio.StatePaused
 	if err := c.engine.Seek(ctx, target); err != nil {
 		c.state.PlaybackState = audio.StateBuffering
 		return SeekResult{Action: ToggleNeedPlay, Song: *c.state.Current, StartAt: target, Clamped: clamped, Err: err}
+	}
+	// 跳转不改变播放状态：暂停中仍保持暂停，播放中仍是播放，按钮与引擎一致。
+	if wasPaused {
+		c.engine.Pause()
+		c.state.PlaybackState = audio.StatePaused
+	} else {
+		c.state.PlaybackState = audio.StatePlaying
 	}
 	c.state.ResumeAt = 0
 	c.Persist()

@@ -25,17 +25,22 @@ type fakeEngine struct {
 func newFakeEngine() *fakeEngine {
 	return &fakeEngine{state: audio.StateIdle, events: make(chan audio.Event)}
 }
-func (f *fakeEngine) Events() <-chan audio.Event                      { return f.events }
-func (f *fakeEngine) State() audio.State                              { return f.state }
-func (f *fakeEngine) SetVolume(v float64)                             { f.volume = v }
-func (f *fakeEngine) SetCompensationDB(v float64)                     { f.comp = v }
-func (f *fakeEngine) Pause()                                          { f.state = audio.StatePaused }
-func (f *fakeEngine) Resume()                                         { f.state = audio.StatePlaying }
-func (f *fakeEngine) Stop()                                           { f.state = audio.StateIdle; f.stream = audio.Stream{} }
-func (f *fakeEngine) Position() time.Duration                         { return f.position }
-func (f *fakeEngine) Duration() time.Duration                         { return f.duration }
-func (f *fakeEngine) CurrentStream() audio.Stream                     { return f.stream }
-func (f *fakeEngine) Seek(_ context.Context, pos time.Duration) error { f.position = pos; return nil }
+func (f *fakeEngine) Events() <-chan audio.Event  { return f.events }
+func (f *fakeEngine) State() audio.State          { return f.state }
+func (f *fakeEngine) SetVolume(v float64)         { f.volume = v }
+func (f *fakeEngine) SetCompensationDB(v float64) { f.comp = v }
+func (f *fakeEngine) Pause()                      { f.state = audio.StatePaused }
+func (f *fakeEngine) Resume()                     { f.state = audio.StatePlaying }
+func (f *fakeEngine) Stop()                       { f.state = audio.StateIdle; f.stream = audio.Stream{} }
+func (f *fakeEngine) Position() time.Duration     { return f.position }
+func (f *fakeEngine) Duration() time.Duration     { return f.duration }
+func (f *fakeEngine) CurrentStream() audio.Stream { return f.stream }
+func (f *fakeEngine) Seek(_ context.Context, pos time.Duration) error {
+	// 真实引擎 Seek 会重建 ffmpeg 进程并进入播放态，控制器必须自己把暂停恢复回来。
+	f.state = audio.StatePlaying
+	f.position = pos
+	return nil
+}
 func (f *fakeEngine) PlayAt(_ context.Context, s audio.Stream, at time.Duration) error {
 	f.state = audio.StatePlaying
 	f.stream = s
@@ -222,5 +227,46 @@ func TestHandleEventIgnoredWhileAwaiting(t *testing.T) {
 	c.state.Awaiting = false
 	if res := c.HandleEvent(audio.Event{Type: audio.EventEnded}); !res.Ended {
 		t.Fatalf("非缓冲态的 Ended 应照常处理，实际 %+v", res)
+	}
+}
+
+// TestSeekKeepsPausedState 验证暂停时跳转不会开始播放，且状态仍是暂停；
+// 播放中跳转则保持播放。用户按 ←/→ 或 x/v 调进度时按钮不能骗人。
+func TestSeekKeepsPausedState(t *testing.T) {
+	eng := newFakeEngine()
+	c := New(eng, &fakeSaver{})
+	current := queueSongs("a")[0]
+	c.Load(State{
+		Queue:         queueSongs("a"),
+		Index:         0,
+		Current:       &current,
+		PlaybackState: audio.StatePaused,
+		Position:      10 * time.Second,
+		Duration:      time.Minute,
+	})
+	eng.state = audio.StatePaused
+	eng.stream = audio.Stream{URL: "https://x/a.mp3", DurationMS: 60000, ExpiresAt: time.Now().Add(time.Hour)}
+
+	if res := c.Seek(context.Background(), 5*time.Second, store.Clip{}, false); res.Action != ToggleNone {
+		t.Fatalf("暂停时跳转应直接生效，实际 %+v", res)
+	}
+	if got := c.EngineState(); got != audio.StatePaused {
+		t.Fatalf("暂停中跳转后引擎应仍是暂停，实际 %v", got)
+	}
+	if got := c.Export().PlaybackState; got != audio.StatePaused {
+		t.Fatalf("暂停中跳转后界面状态应为暂停，实际 %v", got)
+	}
+
+	// 播放中跳转保持播放。
+	eng.state = audio.StatePlaying
+	c.state.PlaybackState = audio.StatePlaying
+	if res := c.Seek(context.Background(), -2*time.Second, store.Clip{}, false); res.Action != ToggleNone {
+		t.Fatalf("播放中跳转应直接生效，实际 %+v", res)
+	}
+	if got := c.EngineState(); got != audio.StatePlaying {
+		t.Fatalf("播放中跳转后应保持播放，实际 %v", got)
+	}
+	if got := c.Export().PlaybackState; got != audio.StatePlaying {
+		t.Fatalf("播放中跳转后界面状态应为播放，实际 %v", got)
 	}
 }
