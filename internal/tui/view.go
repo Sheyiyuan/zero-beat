@@ -846,7 +846,8 @@ func (m *Model) lyricWindow(h int) ([]lyricRow, int) {
 	}
 	start := current - h/2
 	if m.lyricScroll != 0 {
-		start = clampInt(start+m.lyricScroll, 0, max(0, len(rows)-h))
+		// 手动滚动时同样保留负起点（顶部留白），否则滚一次就会贴顶跳变。
+		start = clampInt(start+m.lyricScroll, min(0, start), max(0, len(rows)-h))
 	}
 	return rows, start
 }

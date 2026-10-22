@@ -65,10 +65,12 @@ func (m *Model) scrollLyrics(delta int) {
 		return
 	}
 	base := current - h/2
-	start := base + m.lyricScroll
+	// 歌曲开头 / 短歌词时 base 为负（靠顶部留白实现居中）。下界必须允许这个
+	// 负起点，否则一次 ↓ 会被 clamp 到 0、视觉上直接跳到顶部，↑ 也回不去。
+	lo := min(0, base)
 	maxStart := m.lyricMaxStart()
-	start = clampInt(start, 0, maxStart)
-	start = clampInt(start+delta, 0, maxStart)
+	start := clampInt(base+m.lyricScroll, lo, maxStart)
+	start = clampInt(start+delta, lo, maxStart)
 	m.lyricScroll = start - base
 	m.lyricScrollAt = time.Now()
 }

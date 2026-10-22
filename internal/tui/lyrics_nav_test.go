@@ -70,3 +70,54 @@ func TestLyricsScrollReturnsToFocusAfterFiveSeconds(t *testing.T) {
 		t.Fatalf("5 秒无操作后应回到焦点，实际 %d，期望 %d", got, before)
 	}
 }
+
+// TestLyricsScrollFromTopMovesOneLine 验证歌曲开头（base 为负、靠顶部留白居中）
+// 时按 ↓ 只移动一行，↑ 能原路返回，而不是一次跳到顶部。
+func TestLyricsScrollFromTopMovesOneLine(t *testing.T) {
+	m := lyricScrollModel()
+	m.lyricIdx = 0
+	m.resetLyricScroll()
+	base := lyricStart(m)
+	if base >= 0 {
+		t.Fatalf("当前句在开头时窗口起点应为负（顶部留白），实际 %d", base)
+	}
+
+	m.scrollLyrics(1)
+	if got := lyricStart(m); got != base+1 {
+		t.Fatalf("开头按 ↓ 应只下移一行：%d -> %d", base, got)
+	}
+	m.scrollLyrics(-1)
+	if got := lyricStart(m); got != base {
+		t.Fatalf("开头按 ↑ 应回到居中视图：%d，期望 %d", got, base)
+	}
+	m.scrollLyrics(1)
+	m.scrollLyrics(1)
+	if got := lyricStart(m); got != base+2 {
+		t.Fatalf("连续两行 ↓ 应累计两行：%d，期望 %d", got, base+2)
+	}
+}
+
+// TestLyricsScrollShortLyrics 验证歌词行数少于正文高度时也能逐行滚动、到底停住、
+// 再逐行滚回居中。
+func TestLyricsScrollShortLyrics(t *testing.T) {
+	m := lyricScrollModel()
+	m.lyricLines = m.lyricLines[:12]
+	m.lyricIdx = 5
+	m.resetLyricScroll()
+	base := lyricStart(m)
+
+	m.scrollLyrics(1)
+	if got := lyricStart(m); got != base+1 {
+		t.Fatalf("短歌词开头按 ↓ 应下移一行：%d -> %d", base, got)
+	}
+	for i := 0; i < 20; i++ {
+		m.scrollLyrics(1)
+	}
+	if got := lyricStart(m); got != 0 {
+		t.Fatalf("滚到底应停在 0，实际 %d", got)
+	}
+	m.scrollLyrics(-1)
+	if got := lyricStart(m); got != -1 {
+		t.Fatalf("底端按 ↑ 应逐行回退，实际 %d", got)
+	}
+}
