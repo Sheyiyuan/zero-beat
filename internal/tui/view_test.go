@@ -29,6 +29,10 @@ func fixtureModel() *Model {
 		mode:        modeSequence,
 		state:       audio.StatePlaying,
 		loginSource: source.Bilibili,
+		sources: source.NewRegistry(
+			&fakeSource{id: source.Bilibili, name: "Bilibili", mark: "B", lyricName: "B 站字幕"},
+			&fakeSource{id: source.NetEase, name: "网易云", mark: "云", lyricName: "网易云歌词"},
+		),
 	}
 	m.playlists = []store.Playlist{
 		{ID: "bili-fav-1", Title: "我喜欢的音乐", Kind: "remote", Count: 2},
@@ -564,7 +568,7 @@ func TestPaletteOverlayAndCreateBlank(t *testing.T) {
 	m.openPalette()
 	frame := m.View().Content
 	body := ansi.Strip(frame)
-	for _, want := range []string{"新建空白歌单", "同步 B 站收藏夹", "新建混合歌单", "╭"} {
+	for _, want := range []string{"新建空白歌单", "同步 Bilibili 歌单/收藏夹", "新建混合歌单", "╭"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("命令面板缺少 %q：\n%s", want, body)
 		}

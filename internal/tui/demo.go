@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"context"
 	"time"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/source"
@@ -26,6 +28,10 @@ func RenderDemo(name string, width, height int) string {
 	}
 
 	m := &Model{
+		sources: source.NewRegistry(
+			demoSource{id: source.Bilibili, name: "Bilibili", mark: "B", lyric: "B 站字幕", login: "B 站 App"},
+			demoSource{id: source.NetEase, name: "网易云", mark: "云", lyric: "网易云歌词", login: "网易云音乐 App"},
+		),
 		width:       width,
 		height:      height,
 		view:        viewLibrary,
@@ -42,7 +48,7 @@ func RenderDemo(name string, width, height int) string {
 		},
 	}
 	m.playlists = []store.Playlist{
-		{ID: dailyPlaylistID, Source: "netease", Title: "每日推荐", Kind: "remote", Count: 30},
+		{ID: app.DailyPlaylistID(source.NetEase), Source: "netease", Title: "每日推荐", Kind: "remote", Count: 30},
 		{ID: "bili-fav-1", Source: "bilibili", Title: "我喜欢的音乐", Kind: "remote", Count: 128},
 		{ID: "netease-pl-9", Source: "netease", Title: "云村收藏", Kind: "remote", Count: 42},
 		{ID: "local-default", Title: "本地歌单", Kind: "local", Count: 7},
@@ -118,3 +124,48 @@ func RenderDemo(name string, width, height int) string {
 	}
 	return m.View().Content
 }
+
+// demoSource 只提供展示信息，保证脚本截图不依赖真实网络客户端。
+type demoSource struct {
+	id    source.ID
+	name  string
+	mark  string
+	lyric string
+	login string
+}
+
+func (d demoSource) ID() source.ID           { return d.id }
+func (d demoSource) Name() string            { return d.name }
+func (d demoSource) Mark() string            { return d.mark }
+func (d demoSource) LyricName() string       { return d.lyric }
+func (d demoSource) LoginAppName() string    { return d.login }
+func (d demoSource) Caps() source.Capability { return 0 }
+func (d demoSource) LoggedIn() bool          { return true }
+func (d demoSource) User() source.User       { return source.User{Name: d.name, LoggedIn: true} }
+func (d demoSource) Account(context.Context) (source.User, error) {
+	return d.User(), nil
+}
+func (d demoSource) StartQRLogin(context.Context) (source.QRCode, error) {
+	return source.QRCode{}, nil
+}
+func (d demoSource) PollQRLogin(context.Context, string) (source.LoginStatus, error) {
+	return source.LoginStatus{}, nil
+}
+func (d demoSource) Search(context.Context, string, int) (source.SearchPage, error) {
+	return source.SearchPage{}, nil
+}
+func (d demoSource) Resolve(context.Context, source.Ref, source.Quality) (source.Resolved, error) {
+	return source.Resolved{}, nil
+}
+func (d demoSource) Lyrics(context.Context, source.Ref) ([]lyrics.Line, string, error) {
+	return nil, d.lyric, nil
+}
+func (d demoSource) RemotePlaylists(context.Context) ([]source.Playlist, error) {
+	return nil, nil
+}
+func (d demoSource) PlaylistTracks(context.Context, string) ([]source.Track, error) {
+	return nil, nil
+}
+func (d demoSource) Session() map[string]string   { return nil }
+func (d demoSource) SetSession(map[string]string) {}
+func (d demoSource) Logout()                      {}

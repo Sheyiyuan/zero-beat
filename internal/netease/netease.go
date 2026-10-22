@@ -94,6 +94,43 @@ func (c *Client) ID() source.ID { return source.NetEase }
 // Name 实现 source.Source。
 func (c *Client) Name() string { return "网易云" }
 
+// Mark 实现 source.Source。
+func (c *Client) Mark() string { return "云" }
+
+// Aliases 实现 source.Aliased。
+func (c *Client) Aliases() []string { return []string{"netease", "ncm", "网易云", "wangyiyun"} }
+
+// LyricName 实现 source.LyricNamer。
+func (c *Client) LyricName() string { return "网易云歌词" }
+
+// LoginAppName 实现 source.LoginNamer。
+func (c *Client) LoginAppName() string { return "网易云音乐 App" }
+
+// ParseTarget 实现 source.TargetParser：网易云歌曲链接或纯数字 ID。
+func (c *Client) ParseTarget(input string, _ int) (source.Ref, bool, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return source.Ref{}, false, nil
+	}
+	if u, err := url.Parse(input); err == nil && u.Host != "" {
+		if !strings.Contains(strings.ToLower(u.Host), "music.163.com") {
+			return source.Ref{}, false, nil
+		}
+		id := strings.TrimSpace(u.Query().Get("id"))
+		if id == "" {
+			return source.Ref{}, false, nil
+		}
+		if _, err := strconv.ParseInt(id, 10, 64); err != nil {
+			return source.Ref{}, true, fmt.Errorf("netease: 歌曲 ID 无效: %s", id)
+		}
+		return source.Ref{Source: source.NetEase, ExternalID: id, Page: 1}, true, nil
+	}
+	if _, err := strconv.ParseInt(input, 10, 64); err != nil {
+		return source.Ref{}, false, nil
+	}
+	return source.Ref{Source: source.NetEase, ExternalID: input, Page: 1}, true, nil
+}
+
 // Caps 实现 source.Source。
 func (c *Client) Caps() source.Capability {
 	return source.CapSearch | source.CapRemotePlaylists | source.CapOfficialLyrics |
@@ -407,7 +444,7 @@ func parseSearch(body []byte, page, limit int) (source.SearchPage, error) {
 		}
 		out.Candidates = append(out.Candidates, source.Candidate{
 			Track: s.track(),
-			Fee:   s.Fee,
+			VIP:   s.Fee == 1 || s.Fee == 4,
 		})
 	}
 	out.Pages = (data.Result.SongCount + limit - 1) / limit

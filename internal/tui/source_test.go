@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
@@ -14,6 +15,8 @@ import (
 type fakeSource struct {
 	id         source.ID
 	name       string
+	mark       string
+	lyricName  string
 	user       source.User
 	logged     bool
 	search     source.SearchPage
@@ -33,8 +36,22 @@ type fakeSource struct {
 	writeErr   error
 }
 
-func (f *fakeSource) ID() source.ID { return f.id }
-func (f *fakeSource) Name() string  { return f.name }
+func (f *fakeSource) ID() source.ID     { return f.id }
+func (f *fakeSource) Name() string      { return f.name }
+func (f *fakeSource) LyricName() string { return f.lyricName }
+func (f *fakeSource) Mark() string {
+	if f.mark != "" {
+		return f.mark
+	}
+	switch f.id {
+	case source.Bilibili:
+		return "B"
+	case source.NetEase:
+		return "云"
+	default:
+		return "?"
+	}
+}
 func (f *fakeSource) Caps() source.Capability {
 	caps := source.CapSearch | source.CapRemotePlaylists | source.CapOfficialLyrics | source.CapPlaylistWrite
 	if len(f.daily) > 0 {
@@ -83,7 +100,7 @@ func (f *fakeSource) Logout()                      { f.logged = false }
 
 func twoFakes() (*fakeSource, *fakeSource, *source.Registry) {
 	b := &fakeSource{
-		id: source.Bilibili, name: "Bilibili", logged: true,
+		id: source.Bilibili, name: "Bilibili", mark: "B", lyricName: "B 站字幕", logged: true,
 		user: source.User{Name: "B 用户", LoggedIn: true},
 		search: source.SearchPage{Page: 1, Pages: 2, Candidates: []source.Candidate{
 			{Track: source.Track{Source: source.Bilibili, ExternalID: "BV1", Page: 1, Title: "B1", Artist: "ba", Duration: 100}},
@@ -92,7 +109,7 @@ func twoFakes() (*fakeSource, *fakeSource, *source.Registry) {
 		tracks:    []source.Track{{Source: source.Bilibili, ExternalID: "BV1", Page: 1, Title: "B1", Artist: "ba", Duration: 100}},
 	}
 	n := &fakeSource{
-		id: source.NetEase, name: "网易云", logged: true,
+		id: source.NetEase, name: "网易云", mark: "云", lyricName: "网易云歌词", logged: true,
 		user: source.User{Name: "云用户", LoggedIn: true},
 		search: source.SearchPage{Page: 1, Pages: 3, Candidates: []source.Candidate{
 			{Track: source.Track{Source: source.NetEase, ExternalID: "2", Page: 1, Title: "N1", Artist: "na", Album: "专辑", Duration: 200}},
@@ -190,7 +207,7 @@ func TestLoadPlaylistsAndSongsFromSources(t *testing.T) {
 	if _, ok := found["bili-fav-1"]; ok {
 		t.Fatalf("B 站收藏夹不应自动同步: %+v", msg.items)
 	}
-	daily, ok := found[dailyPlaylistID]
+	daily, ok := found[app.DailyPlaylistID(source.NetEase)]
 	if !ok {
 		t.Fatalf("网易云日推入口缺失: %+v", msg.items)
 	}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,21 @@ func (s Song) ExternalID() string {
 		return s.RemoteID
 	}
 	return s.BVID
+}
+
+// NormalizeSong 补齐派生字段。它不猜音源：Source 由调用方或数据库负责，
+// 避免在通用层里写死某个平台。
+func NormalizeSong(song Song) Song {
+	if song.Page <= 0 {
+		song.Page = 1
+	}
+	if song.RemoteID == "" {
+		song.RemoteID = song.BVID
+	}
+	if song.ID == "" {
+		song.ID = SongID(song.Source, song.ExternalID(), song.Page)
+	}
+	return song
 }
 
 // Playlist 是一个歌单，Kind 为「remote」（某音源的远端歌单/收藏夹镜像）或「local」。
@@ -263,19 +279,9 @@ func SongID(source, externalID string, page int) string {
 
 // UpsertSong 写入或更新一首歌，返回落库后的记录。
 func (s *Store) UpsertSong(song Song) (Song, error) {
-	externalID := song.ExternalID()
-	if song.Source == "" || externalID == "" {
+	song = NormalizeSong(song)
+	if song.Source == "" || song.ExternalID() == "" {
 		return Song{}, fmt.Errorf("store: 歌曲缺少来源或外部 ID")
-	}
-	if song.Page <= 0 {
-		song.Page = 1
-	}
-	song.RemoteID = externalID
-	if song.BVID == "" && song.Source == "bilibili" {
-		song.BVID = externalID
-	}
-	if song.ID == "" {
-		song.ID = SongID(song.Source, externalID, song.Page)
 	}
 	if song.AddedAt.IsZero() {
 		song.AddedAt = time.Now()
@@ -829,19 +835,9 @@ func (s *Store) ReplacePlaylistSongs(playlistID string, songs []Song) error {
 		return fmt.Errorf("store: 清空歌单: %w", err)
 	}
 	for i, song := range songs {
-		if song.Page <= 0 {
-			song.Page = 1
-		}
-		externalID := song.ExternalID()
-		if externalID == "" {
+		song = NormalizeSong(song)
+		if song.Source == "" || song.ExternalID() == "" {
 			return fmt.Errorf("store: 歌曲缺少来源或外部 ID")
-		}
-		song.RemoteID = externalID
-		if song.BVID == "" && song.Source == "bilibili" {
-			song.BVID = externalID
-		}
-		if song.ID == "" {
-			song.ID = SongID(song.Source, externalID, song.Page)
 		}
 		added := song.AddedAt
 		if added.IsZero() {
@@ -946,6 +942,19 @@ func (s *Store) Setting(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// SettingInt 读取整数设置项；缺失或格式错误时返回 fallback。
+func (s *Store) SettingInt(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(s.Setting(key, ""))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback, fmt.Errorf("store: 设置 %s 不是整数: %w", key, err)
+	}
+	return n, nil
 }
 
 // SetSetting 写入设置项。

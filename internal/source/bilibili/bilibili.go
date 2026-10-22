@@ -4,6 +4,7 @@ package bilibili
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -29,6 +30,37 @@ func (s *Source) ID() source.ID { return source.Bilibili }
 
 // Name 实现 source.Source。
 func (s *Source) Name() string { return "Bilibili" }
+
+// Mark 实现 source.Source。
+func (s *Source) Mark() string { return "B" }
+
+// Aliases 实现 source.Aliased。
+func (s *Source) Aliases() []string { return []string{"bilibili", "bili", "b站"} }
+
+// LyricName 实现 source.LyricNamer。
+func (s *Source) LyricName() string { return "B 站字幕" }
+
+// LoginAppName 实现 source.LoginNamer。
+func (s *Source) LoginAppName() string { return "B 站 App" }
+
+// ParseTarget 实现 source.TargetParser：BV 号、av 号与 B 站视频链接。
+func (s *Source) ParseTarget(input string, pageOverride int) (source.Ref, bool, error) {
+	bvid, err := bili.ParseBVID(input)
+	if err != nil {
+		return source.Ref{}, false, nil
+	}
+	page := 1
+	if pageOverride > 0 {
+		page = pageOverride
+	} else if u, uerr := url.Parse(input); uerr == nil && u.Host != "" {
+		if v := u.Query().Get("p"); v != "" {
+			if n, aerr := strconv.Atoi(v); aerr == nil && n > 0 {
+				page = n
+			}
+		}
+	}
+	return source.Ref{Source: source.Bilibili, ExternalID: bvid, Page: page}, true, nil
+}
 
 // Caps 实现 source.Source。
 func (s *Source) Caps() source.Capability {

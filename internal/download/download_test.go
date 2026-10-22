@@ -18,19 +18,16 @@ import (
 func TestExt(t *testing.T) {
 	cases := []struct {
 		codec string
-		src   source.ID
 		want  string
 	}{
-		{"mp4a.40.2", source.Bilibili, ".m4a"},
-		{"flac", source.Bilibili, ".flac"},
-		{"mp3", source.NetEase, ".mp3"},
-		{"flac", source.NetEase, ".flac"},
-		{"", source.NetEase, ".mp3"},
-		{"", source.Bilibili, ".m4a"},
+		{"mp4a.40.2", ".m4a"},
+		{"flac", ".flac"},
+		{"mp3", ".mp3"},
+		{"", ".m4a"},
 	}
 	for _, c := range cases {
-		if got := Ext(c.codec, c.src); got != c.want {
-			t.Fatalf("Ext(%q,%s) = %q，期望 %q", c.codec, c.src, got, c.want)
+		if got := Ext(c.codec); got != c.want {
+			t.Fatalf("Ext(%q) = %q，期望 %q", c.codec, got, c.want)
 		}
 	}
 }

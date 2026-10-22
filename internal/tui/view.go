@@ -225,18 +225,8 @@ func lyricProgress(lines []lyrics.Line, idx, posMS, durationMS int) float64 {
 
 // platformLyricName 返回当前歌曲所在平台提供的歌词名称，用于空状态提示。
 func (m *Model) platformLyricName() string {
-	if m.current != nil {
-		switch source.ID(m.current.Source) {
-		case source.Bilibili:
-			return "B 站字幕"
-		case source.NetEase:
-			return "网易云歌词"
-		}
-		if m.sources != nil {
-			if src := m.sources.GetString(m.current.Source); src != nil {
-				return src.Name() + "歌词"
-			}
-		}
+	if m.current != nil && m.sources != nil {
+		return m.sources.LyricName(source.ID(m.current.Source))
 	}
 	return "平台歌词"
 }
@@ -272,7 +262,7 @@ func (m *Model) renderNowPlaying() string {
 	}
 	meta := fmt.Sprintf("%s · %s · %s", quality, m.mode.String(), volume)
 	if m.current != nil && m.current.Source != "" {
-		meta = source.ID(m.current.Source).Label() + " · " + meta
+		meta = m.sourceName(source.ID(m.current.Source)) + " · " + meta
 	}
 	if tag := m.clipTag(); tag != "" {
 		meta += " · " + tag
@@ -408,7 +398,7 @@ func (m *Model) renderLibrary(h int) []string {
 			}
 			prefix := marker + " "
 			if p.Kind == "remote" && p.Source != "" {
-				prefix = marker + " " + padRight(source.ID(p.Source).Mark(), 2) + " "
+				prefix = marker + " " + padRight(m.sourceMark(source.ID(p.Source)), 2) + " "
 			}
 			label := fmt.Sprintf("%s%s", prefix, p.Title)
 			if p.Count > 0 {
@@ -487,7 +477,7 @@ func (m *Model) songRow(i, width int) string {
 	}
 	// 序号固定 3 列，超过 99 首时也只压缩标题宽度，保持 1/2/3 位对齐。
 	idx := fmt.Sprintf("%3d", i+1)
-	tag := padRight("["+source.ID(s.Source).Mark()+"]", 4)
+	tag := padRight("["+m.sourceMark(source.ID(s.Source))+"]", 4)
 	artistW := 14
 	titleW := width - artistW - 19
 	if titleW < 8 {
@@ -570,7 +560,7 @@ func (m *Model) renderSearch(h int) []string {
 	if m.searchMode == searchSource {
 		sourceName := "全部"
 		if m.searchSource != "" {
-			sourceName = m.searchSource.Label()
+			sourceName = m.sourceName(m.searchSource)
 			if m.sources != nil {
 				if src := m.sources.Get(m.searchSource); src != nil {
 					sourceName = src.Name()
@@ -617,7 +607,7 @@ func (m *Model) renderSearch(h int) []string {
 			if item.Play > 0 {
 				play = fmt.Sprintf("%s 播放", comma(item.Play))
 			}
-			if item.Source == source.NetEase && (item.Fee == 1 || item.Fee == 4) {
+			if item.VIP {
 				play = strings.TrimSpace("VIP " + play)
 			}
 			if play == "" && item.Album != "" {
@@ -629,7 +619,7 @@ func (m *Model) renderSearch(h int) []string {
 			if titleW < 10 {
 				titleW = 10
 			}
-			tag := padRight("["+item.Source.Mark()+"]", 4)
+			tag := padRight("["+m.sourceMark(item.Source)+"]", 4)
 			title := item.Title
 			if item.Artist != "" {
 				title += "  ·  " + item.Artist
@@ -661,7 +651,7 @@ func (m *Model) renderSearch(h int) []string {
 			artistW = 8
 			titleW = m.width - artistW - 18
 		}
-		tag := padRight("["+source.ID(song.Source).Mark()+"]", 4)
+		tag := padRight("["+m.sourceMark(source.ID(song.Source))+"]", 4)
 		row := " " + st.dim.Render(tag) + " " + padRight(song.Title, titleW) + " " +
 			padRight(truncate(song.Artist, artistW), artistW) + " " + padLeft(dur, 5)
 		row = padRight(row, m.width)
@@ -692,7 +682,7 @@ func (m *Model) renderQueue(h int) []string {
 			marker = "▶ "
 		}
 		dur := formatDuration(time.Duration(s.Duration) * time.Second)
-		tag := padRight("["+source.ID(s.Source).Mark()+"]", 4)
+		tag := padRight("["+m.sourceMark(source.ID(s.Source))+"]", 4)
 		artistW := 16
 		titleW := m.width - artistW - 19
 		if titleW < 8 {
@@ -719,7 +709,7 @@ func (m *Model) renderQueue(h int) []string {
 // ---- 收藏夹选择 ----
 
 func (m *Model) renderFolders(h int) []string {
-	name := m.folderSource.Label()
+	name := m.sourceName(m.folderSource)
 	if src := m.sources.Get(m.folderSource); src != nil {
 		name = src.Name()
 	}
@@ -868,12 +858,14 @@ func (m *Model) qrLinesFor(h int) []string {
 }
 
 func (m *Model) renderLogin(h int) []string {
-	name := m.loginSource.Label()
-	if src := m.sources.Get(m.loginSource); src != nil {
-		name = src.Name()
+	name := m.sourceName(m.loginSource)
+	if m.sources != nil {
+		if src := m.sources.Get(m.loginSource); src != nil {
+			name = src.Name()
+		}
 	}
 	accounts := m.accountStatusLines()
-	panelTitle := st.muted.Render(" 账户 · B站 + 网易云 · s 切换登录源")
+	panelTitle := st.muted.Render(" 账户 · 多音源 · " + m.firstKey(keymap.Source) + " 切换登录源")
 
 	if u, ok := m.userFor(m.loginSource); ok {
 		return m.renderLoggedIn(h, u, name)
@@ -924,7 +916,7 @@ func (m *Model) renderLogin(h int) []string {
 		"  "+st.accent.Render("扫码登录 "+name),
 		"  "+st.accent.Render(status),
 		"",
-		"  "+st.text.Render("1. 打开 "+loginAppName(m.loginSource)),
+		"  "+st.text.Render("1. 打开 "+m.loginAppName(m.loginSource)),
 		"  "+st.text.Render("2. 右上角「扫一扫」"),
 		"  "+st.text.Render("3. 确认登录"),
 		"",
@@ -986,7 +978,7 @@ func (m *Model) renderLoggedIn(h int, u source.User, sourceName string) []string
 		"",
 		"  " + st.dim.Render(m.firstKey(keymap.Logout)+" 退出当前账号 · "+m.firstKey(keymap.Up)+"/"+m.firstKey(keymap.Down)+" 切换账号"),
 	}
-	right := []string{st.muted.Render(" 账户 · B站 + 网易云 · " + m.firstKey(keymap.Source) + " 切换登录源")}
+	right := []string{st.muted.Render(" 账户 · 多音源 · " + m.firstKey(keymap.Source) + " 切换登录源")}
 	right = append(right, m.accountStatusLines()...)
 	right = append(right,
 		"",
@@ -1016,15 +1008,13 @@ func (m *Model) renderLoggedIn(h int, u source.User, sourceName string) []string
 
 // accountStatusLines 同时列出两个平台的登录状态，不随当前扫码源切换而隐藏。
 func (m *Model) accountStatusLines() []string {
-	ids := []source.ID{source.Bilibili, source.NetEase}
+	var ids []source.ID
 	if m.sources != nil {
-		if got := m.sources.IDs(); len(got) > 0 {
-			ids = got
-		}
+		ids = m.sources.IDs()
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		name := id.Label()
+		name := m.sourceName(id)
 		var src source.Source
 		if m.sources != nil {
 			src = m.sources.Get(id)

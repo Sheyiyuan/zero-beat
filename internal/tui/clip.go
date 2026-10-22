@@ -130,7 +130,7 @@ func (m *Model) loadClip(songID string) store.Clip {
 	if m.store == nil || songID == "" {
 		return store.Clip{}
 	}
-	clip, err := m.store.Clip(songID)
+	clip, err := m.service().Clip(songID)
 	if err != nil {
 		return store.Clip{}
 	}
@@ -390,7 +390,7 @@ func (m *Model) saveClip() tea.Cmd {
 		return nil
 	}
 	songID := c.songID
-	if err := m.store.SetClip(songID, clip); err != nil {
+	if err := m.service().SaveClip(songID, clip); err != nil {
 		m.clip.err = err.Error()
 		return nil
 	}

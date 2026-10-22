@@ -3,20 +3,20 @@ package tui
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"math/rand"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/config"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/lrclib"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
+	"github.com/sheyiyuan/zero-beat/internal/player"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
@@ -37,9 +37,6 @@ const (
 var viewNames = []string{"曲库", "搜索", "队列", "歌词", "帮助", "登录", "导入歌单", "混合歌单"}
 
 var defaultKeys = keymap.Default()
-
-// dailyPlaylistID 是网易云「每日推荐」的固定歌单 ID。
-const dailyPlaylistID = "netease-daily"
 
 // remotePlaylistsCleanupMarker 标记「清空旧远端歌单镜像」的一次性维护已执行。
 const remotePlaylistsCleanupMarker = "maintenance.remote_playlists.cleared_v1"
@@ -168,8 +165,7 @@ type Model struct {
 	playRequest    int
 
 	// 下一首预解析结果；只缓存一首，过期或队列变化即作废。
-	prefetchID     string
-	prefetchStream *source.Stream
+	prefetch player.Prefetch
 
 	lyricBase     []lyrics.Line
 	lyricLines    []lyrics.Line
@@ -255,20 +251,19 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 		}
 	}
 	m := &Model{
-		ctx:         context.Background(),
-		sources:     sources,
-		store:       st,
-		engine:      engine,
-		quality:     source.QualityAuto,
-		keys:        keys,
-		volume:      0.8,
-		mode:        modeSequence,
-		state:       audio.StateIdle,
-		searchPage:  1,
-		loginSource: source.Bilibili,
-		lrclib:      lrclib.New(),
-		users:       map[source.ID]source.User{},
-		qrCache:     map[source.ID]*qrCacheEntry{},
+		ctx:        context.Background(),
+		sources:    sources,
+		store:      st,
+		engine:     engine,
+		quality:    source.QualityAuto,
+		keys:       keys,
+		volume:     0.8,
+		mode:       modeSequence,
+		state:      audio.StateIdle,
+		searchPage: 1,
+		lrclib:     lrclib.New(),
+		users:      map[source.ID]source.User{},
+		qrCache:    map[source.ID]*qrCacheEntry{},
 	}
 	if sources != nil {
 		for _, src := range sources.All() {
@@ -280,19 +275,12 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 			m.loginSource = ids[0]
 		}
 	}
-	if v, err := strconv.ParseFloat(st.Setting("volume", "0.8"), 64); err == nil {
-		m.volume = v
-	}
-	if v, err := strconv.ParseFloat(st.Setting("comp_db", "0"), 64); err == nil {
-		m.compDB = v
-	}
-	if v, err := strconv.Atoi(st.Setting("mode", "0")); err == nil && v >= 0 && v <= 2 {
-		m.mode = playMode(v)
-	}
-	if v, err := strconv.Atoi(st.Setting("quality", "0")); err == nil {
-		m.quality = source.ParseQuality(v)
-	}
-	m.playingPlaylistID = st.Setting("playing_playlist", "")
+	prefs := app.New(sources, st, nil).Preferences()
+	m.volume = prefs.Volume
+	m.compDB = prefs.CompDB
+	m.mode = playMode(prefs.Mode)
+	m.quality = prefs.Quality
+	m.playingPlaylistID = prefs.PlayingPlaylist
 	engine.SetVolume(m.volume)
 	engine.SetCompensationDB(m.compDB)
 	if cleaned {
@@ -506,7 +494,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case playlistAddMsg:
 		if msg.err != nil {
-			m.setError(fmt.Errorf("加入云端歌单失败（%s · %s）：%w", source.ID(msg.target.Source).Label(), msg.target.Title, msg.err))
+			m.setError(fmt.Errorf("加入云端歌单失败（%s · %s）：%w", m.sourceName(source.ID(msg.target.Source)), msg.target.Title, msg.err))
 			return m, nil
 		}
 		imported := false
@@ -554,18 +542,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case prefetchMsg:
 		if msg.err == nil && msg.songID != "" && msg.songID == m.nextQueueSongID() {
 			s := msg.stream
-			m.prefetchID = msg.songID
-			m.prefetchStream = &s
-			// 把预解析补出的 CID / 封面 / 时长写回队列条目，切歌后歌词才能走 B 站字幕。
+			m.prefetch.Set(msg.songID, s)
+			// 把预解析补出的 CID / 封面 / 时长写回队列条目，切歌后歌词才能走平台字幕。
 			if msg.song.ID != "" {
 				for i := range m.queue {
-					if normalizeSong(m.queue[i]).ID == msg.songID {
+					if store.NormalizeSong(m.queue[i]).ID == msg.songID {
 						m.queue[i] = msg.song
 						break
 					}
 				}
 				// 分 P 回退时 ID 可能变化，缓存键跟着改，否则 takePrefetch 会错过。
-				m.prefetchID = normalizeSong(msg.song).ID
+				m.prefetch.Set(store.NormalizeSong(msg.song).ID, s)
 			}
 		}
 		return m, nil
@@ -643,7 +630,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ascii:        ascii,
 			asciiCompact: compact,
 			path:         path,
-			status:       "用 " + loginAppName(msg.source) + " 扫码登录",
+			status:       "用 " + m.loginAppName(msg.source) + " 扫码登录",
 			expiresAt:    time.Now().Add(qrCacheTTL),
 		}
 		m.qrCache[msg.source] = entry
@@ -675,9 +662,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			label := "登录成功"
 			if src != nil {
 				label = src.Name() + " 登录成功"
-				if payload, err := json.Marshal(src.Session()); err == nil {
-					_ = m.store.SaveAccount(string(src.ID()), payload)
-				}
+				_ = m.service().SaveAccount(src.ID(), src.Session())
 			}
 			m.setNotice(label, false)
 			m.view = viewLibrary
@@ -785,14 +770,14 @@ func (m *Model) handleStream(msg streamMsg) (tea.Model, tea.Cmd) {
 
 // startStream 把已解析的音频流交给引擎，并刷新界面状态。
 func (m *Model) startStream(song store.Song, stream source.Stream, startAt time.Duration) tea.Cmd {
-	song = normalizeSong(song)
+	song = store.NormalizeSong(song)
 	if m.clip != nil && m.clip.songID != song.ID {
 		m.clip = nil
 	}
 	m.awaitingStream = false
 	// 解析可能补出标题/CID/封面，同步回队列，切歌面板与重启恢复都用得上。
 	for i := range m.queue {
-		if normalizeSong(m.queue[i]).ID == song.ID {
+		if store.NormalizeSong(m.queue[i]).ID == song.ID {
 			m.queue[i] = song
 			break
 		}
@@ -1256,7 +1241,7 @@ func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
 		if m.libraryFocus == focusSongs {
 			return m, m.needPlaylistFocus()
 		}
-		if p, ok := m.currentPlaylist(); ok && p.Kind == "remote" && p.ID != dailyPlaylistID {
+		if p, ok := m.currentPlaylist(); ok && p.Kind == "remote" && !app.IsDailyPlaylist(p) {
 			m.beginPrompt(promptUnlockPlaylist)
 			return m, nil
 		}
@@ -1411,7 +1396,7 @@ func (m *Model) runLocalSearch() tea.Cmd {
 		m.localResults = nil
 		return nil
 	}
-	songs, err := m.store.SearchSongs(keyword, 500)
+	songs, err := m.service().SearchSongs(keyword, 500)
 	if err != nil {
 		m.setError(err)
 		return nil
@@ -1430,7 +1415,7 @@ func (m *Model) playLocalResult(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(m.localResults) {
 		return nil
 	}
-	song := normalizeSong(m.localResults[idx])
+	song := store.NormalizeSong(m.localResults[idx])
 	queue := append([]store.Song(nil), m.localResults...)
 	queueIdx := idx
 	if m.searchMode == searchLocalPlaylist {
@@ -1498,10 +1483,7 @@ func (m *Model) cycleSearchSource() tea.Cmd {
 	m.searchSource = order[(idx+1)%len(order)]
 	label := "全部音源"
 	if m.searchSource != "" {
-		label = m.searchSource.Label()
-		if src := m.sources.Get(m.searchSource); src != nil {
-			label = src.Name()
-		}
+		label = m.sourceName(m.searchSource)
 	}
 	m.searchPage = 1
 	m.searchPages = 0
@@ -1640,7 +1622,7 @@ func (m *Model) handleFolderKey(key tea.Key) (tea.Model, tea.Cmd) {
 
 func (m *Model) defaultFolderSource() source.ID {
 	if m.sources == nil {
-		return source.Bilibili
+		return ""
 	}
 	if src := m.sources.Get(m.folderSource); src != nil && src.LoggedIn() && src.Caps().Has(source.CapRemotePlaylists) {
 		return m.folderSource
@@ -1658,7 +1640,7 @@ func (m *Model) defaultFolderSource() source.ID {
 			return src.ID()
 		}
 	}
-	return source.Bilibili
+	return ""
 }
 
 func (m *Model) switchFolderSource() tea.Cmd {
@@ -1689,9 +1671,13 @@ func (m *Model) switchFolderSource() tea.Cmd {
 }
 
 func (m *Model) openFolders(srcID source.ID) tea.Cmd {
+	if m.sources == nil {
+		m.setNotice("没有可用的音源", true)
+		return nil
+	}
 	src := m.sources.Get(srcID)
 	if src == nil || !src.LoggedIn() {
-		m.setNotice("请先登录 "+srcID.Label()+" 再浏览歌单", true)
+		m.setNotice("请先登录 "+m.sourceName(srcID)+" 再浏览歌单", true)
 		return nil
 	}
 	m.folderSource = srcID
@@ -1710,13 +1696,7 @@ func (m *Model) addSelectedFolder() tea.Cmd {
 		return nil
 	}
 	p := m.folderItems[m.folderIdx]
-	if _, err := m.store.EnsurePlaylist(store.Playlist{
-		ID:       p.ID,
-		Source:   string(p.Source),
-		Title:    p.Title,
-		Kind:     "remote",
-		RemoteID: p.RemoteID,
-	}); err != nil {
+	if _, err := m.service().ImportRemotePlaylist(p); err != nil {
 		m.setError(err)
 		return nil
 	}
@@ -1764,38 +1744,12 @@ func (m *Model) helpViewport() int {
 
 // ---- 动作 ----
 
-func normalizeSong(song store.Song) store.Song {
-	if song.Source == "" {
-		song.Source = "bilibili"
-	}
-	if song.Page <= 0 {
-		song.Page = 1
-	}
-	if song.RemoteID == "" {
-		song.RemoteID = song.BVID
-	}
-	if song.BVID == "" && song.Source == "bilibili" {
-		song.BVID = song.RemoteID
-	}
-	if song.ID == "" {
-		song.ID = store.SongID(song.Source, song.ExternalID(), song.Page)
-	}
-	return song
-}
-
 func (m *Model) ensureStored(song store.Song) store.Song {
-	song = normalizeSong(song)
-	if m.store == nil {
-		return song
-	}
-	if stored, err := m.store.UpsertSong(song); err == nil {
-		return stored
-	}
-	return song
+	return m.service().UpsertSong(song)
 }
 
 func (m *Model) searchResultSong(idx int) store.Song {
-	return normalizeSong(songFromTrack(m.searchResults[idx].Track))
+	return app.SongFromTrack(m.searchResults[idx].Track)
 }
 
 func (m *Model) playPlaylistIndex(idx int) tea.Cmd {
@@ -1804,7 +1758,7 @@ func (m *Model) playPlaylistIndex(idx int) tea.Cmd {
 	}
 	queue := make([]store.Song, len(m.songs))
 	for i := range m.songs {
-		queue[i] = normalizeSong(m.songs[i])
+		queue[i] = store.NormalizeSong(m.songs[i])
 	}
 	m.setPlayingPlaylist(m.currentPlaylistID())
 	m.loadQueue(queue, idx)
@@ -1842,7 +1796,7 @@ func (m *Model) playSearchResult(idx int) tea.Cmd {
 }
 
 func (m *Model) playSong(song store.Song) tea.Cmd {
-	song = normalizeSong(song)
+	song = store.NormalizeSong(song)
 	m.state = audio.StateBuffering
 	m.current = &song
 	m.position = 0
@@ -1877,9 +1831,7 @@ func (m *Model) setMode(next playMode) {
 	if next == modeShuffle {
 		m.startShuffleQueue()
 	}
-	if m.store != nil {
-		_ = m.store.SetSetting("mode", strconv.Itoa(int(m.mode)))
-	}
+	m.service().SaveMode(int(m.mode))
 	m.invalidatePrefetch()
 	label := m.mode.String()
 	if next == modeShuffle && len(m.queue) > 1 {
@@ -1916,68 +1868,15 @@ func (m *Model) restoreShuffleQueue() {
 	if m.current != nil {
 		currentID = m.current.ID
 	}
-	counts := make(map[string]int, len(m.queue))
-	for _, song := range m.queue {
-		song = normalizeSong(song)
-		counts[song.ID]++
-	}
-	restored := make([]store.Song, 0, len(m.queue))
-	appendSong := func(song store.Song) {
-		song = normalizeSong(song)
-		if counts[song.ID] <= 0 {
-			return
-		}
-		restored = append(restored, song)
-		counts[song.ID]--
-	}
-	for _, song := range m.shuffleBase {
-		appendSong(song)
-	}
-	for _, song := range m.queue {
-		appendSong(song)
-	}
-	m.queue = restored
+	m.queue, m.queueIdx, m.queueCursor = player.Restore(m.queue, m.shuffleBase, currentID, m.shuffleBaseIdx)
 	m.shuffleBase = nil
-	m.queueIdx = m.findQueueIndex(currentID)
-	if m.queueIdx < 0 {
-		m.queueIdx = clampInt(m.shuffleBaseIdx, 0, max(0, len(m.queue)-1))
-	}
-	m.queueCursor = m.queueIdx
 	m.invalidatePrefetch()
 	m.persistQueue()
 }
 
 func (m *Model) shuffleQueueKeeping(id string) {
-	if len(m.queue) < 2 {
-		m.queueIdx = clampInt(m.queueIdx, 0, max(0, len(m.queue)-1))
-		m.queueCursor = m.queueIdx
-		return
-	}
-	if m.shuffleFn != nil {
-		m.shuffleFn(m.queue)
-	} else {
-		rand.Shuffle(len(m.queue), func(i, j int) {
-			m.queue[i], m.queue[j] = m.queue[j], m.queue[i]
-		})
-	}
-	if idx := m.findQueueIndex(id); idx >= 0 {
-		m.queueIdx = idx
-	}
-	m.queueIdx = clampInt(m.queueIdx, 0, len(m.queue)-1)
-	m.queueCursor = m.queueIdx
+	m.queue, m.queueIdx, m.queueCursor = player.Shuffle(m.queue, id, m.queueIdx, m.shuffleFn)
 	m.invalidatePrefetch()
-}
-
-func (m *Model) findQueueIndex(id string) int {
-	if id == "" {
-		return -1
-	}
-	for i := range m.queue {
-		if m.queue[i].ID == id {
-			return i
-		}
-	}
-	return -1
 }
 
 // loadQueue 用新歌单/新搜索结果替换队列；随机模式下保存原始顺序并洗牌。
@@ -1985,7 +1884,7 @@ func (m *Model) loadQueue(queue []store.Song, idx int) {
 	m.shuffleBase = nil
 	m.queue = make([]store.Song, len(queue))
 	for i := range queue {
-		m.queue[i] = normalizeSong(queue[i])
+		m.queue[i] = store.NormalizeSong(queue[i])
 	}
 	if len(m.queue) == 0 {
 		m.queueIdx = 0
@@ -2013,10 +1912,7 @@ func (m *Model) advance() tea.Cmd {
 	if m.mode == modeLoopOne && m.current != nil {
 		return m.playSong(*m.current)
 	}
-	next := m.queueIdx + 1
-	if next >= len(m.queue) {
-		next = 0
-	}
+	next := player.NextIndex(m.queueIdx, len(m.queue))
 	m.queueIdx = next
 	m.queueCursor = next
 	if m.mode == modeSequence {
@@ -2036,10 +1932,7 @@ func (m *Model) rewind() tea.Cmd {
 	if len(m.queue) == 0 {
 		return nil
 	}
-	prev := m.queueIdx - 1
-	if prev < 0 {
-		prev = len(m.queue) - 1
-	}
+	prev := player.PrevIndex(m.queueIdx, len(m.queue))
 	m.queueIdx = prev
 	m.queueCursor = prev
 	m.invalidatePrefetch()
@@ -2167,9 +2060,7 @@ func (m *Model) changeVolume(delta float64) {
 	if m.engine != nil {
 		m.engine.SetVolume(m.volume)
 	}
-	if m.store != nil {
-		_ = m.store.SetSetting("volume", strconv.FormatFloat(m.volume, 'f', 2, 64))
-	}
+	m.service().SaveVolume(m.volume)
 	m.setNotice(fmt.Sprintf("音量 %d%%", int(m.volume*100)), false)
 }
 
@@ -2191,9 +2082,7 @@ func (m *Model) toggleMute() {
 
 func (m *Model) cycleQuality() {
 	m.quality = source.Quality((int(m.quality) + 1) % 3)
-	if m.store != nil {
-		_ = m.store.SetSetting("quality", strconv.Itoa(int(m.quality)))
-	}
+	m.service().SaveQuality(m.quality)
 	m.invalidatePrefetch()
 	m.setNotice("音质偏好："+m.qualityPrefLabel()+"（下一首生效）", false)
 }
@@ -2222,9 +2111,7 @@ func (m *Model) changeComp(delta float64) {
 	if m.engine != nil {
 		m.engine.SetCompensationDB(m.compDB)
 	}
-	if m.store != nil {
-		_ = m.store.SetSetting("comp_db", strconv.FormatFloat(m.compDB, 'f', 1, 64))
-	}
+	m.service().SaveCompDB(m.compDB)
 	m.setNotice(fmt.Sprintf("音量补偿 %+.0f dB", m.compDB), false)
 }
 
@@ -2300,42 +2187,7 @@ func (m *Model) insertNext(song store.Song) tea.Cmd {
 		m.setNotice("这首歌正在播放", false)
 		return nil
 	}
-	insertAt := 0
-	if m.current != nil {
-		insertAt = m.queueIdx + 1
-	}
-	if insertAt > len(m.queue) {
-		insertAt = len(m.queue)
-	}
-	for i := 0; i < len(m.queue); i++ {
-		if m.queue[i].ID != song.ID {
-			continue
-		}
-		if i < insertAt {
-			insertAt--
-		}
-		if i < m.queueIdx {
-			m.queueIdx--
-		}
-		m.queue = append(m.queue[:i], m.queue[i+1:]...)
-		break
-	}
-	if insertAt < 0 {
-		insertAt = 0
-	}
-	if insertAt > len(m.queue) {
-		insertAt = len(m.queue)
-	}
-	m.queue = append(m.queue, store.Song{})
-	copy(m.queue[insertAt+1:], m.queue[insertAt:])
-	m.queue[insertAt] = song
-	m.queueCursor = insertAt
-	if m.queueIdx < 0 {
-		m.queueIdx = 0
-	}
-	if m.queueIdx >= len(m.queue) {
-		m.queueIdx = len(m.queue) - 1
-	}
+	m.queue, m.queueIdx, m.queueCursor = player.InsertNext(m.queue, m.queueIdx, m.queueCursor, m.current != nil, song)
 	m.invalidatePrefetch()
 	m.persistQueue()
 	m.setNotice("下一首播放："+song.Title, false)
@@ -2343,18 +2195,11 @@ func (m *Model) insertNext(song store.Song) tea.Cmd {
 }
 
 func (m *Model) moveQueueItem(delta int) tea.Cmd {
-	i := m.queueCursor
-	j := i + delta
-	if i < 0 || i >= len(m.queue) || j < 0 || j >= len(m.queue) {
+	queue, idx, cursor := player.Move(m.queue, m.queueIdx, m.queueCursor, delta)
+	if cursor == m.queueCursor && idx == m.queueIdx {
 		return nil
 	}
-	m.queue[i], m.queue[j] = m.queue[j], m.queue[i]
-	if m.queueIdx == i {
-		m.queueIdx = j
-	} else if m.queueIdx == j {
-		m.queueIdx = i
-	}
-	m.queueCursor = j
+	m.queue, m.queueIdx, m.queueCursor = queue, idx, cursor
 	m.invalidatePrefetch()
 	m.persistQueue()
 	return nil
@@ -2371,25 +2216,7 @@ func (m *Model) playQueueItemNext() tea.Cmd {
 		return nil
 	}
 	item := m.queue[cursor]
-	m.queue = append(m.queue[:cursor], m.queue[cursor+1:]...)
-
-	insertAt := 0
-	if m.current != nil {
-		if cursor < m.queueIdx {
-			m.queueIdx--
-		}
-		insertAt = m.queueIdx + 1
-	}
-	if insertAt > len(m.queue) {
-		insertAt = len(m.queue)
-	}
-	m.queue = append(m.queue, store.Song{})
-	copy(m.queue[insertAt+1:], m.queue[insertAt:])
-	m.queue[insertAt] = item
-	m.queueCursor = insertAt
-	if m.queueIdx >= len(m.queue) {
-		m.queueIdx = max(0, len(m.queue)-1)
-	}
+	m.queue, m.queueIdx, m.queueCursor = player.MoveToNext(m.queue, m.queueIdx, cursor, m.current != nil)
 	m.invalidatePrefetch()
 	m.persistQueue()
 	m.setNotice("下一首播放："+item.Title, false)
@@ -2404,8 +2231,8 @@ func (m *Model) removeSelected() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	song := normalizeSong(m.songs[m.songIdx])
-	if err := m.store.RemoveSongFromPlaylist(p.ID, song.ID); err != nil {
+	song := store.NormalizeSong(m.songs[m.songIdx])
+	if err := m.service().RemoveSongFromPlaylist(p.ID, song.ID); err != nil {
 		m.setError(err)
 		return nil
 	}
@@ -2421,13 +2248,11 @@ func (m *Model) removeSelected() tea.Cmd {
 }
 
 func (m *Model) removeQueueItem() tea.Cmd {
-	if m.queueCursor < 0 || m.queueCursor >= len(m.queue) {
+	queue, idx, cursor, removed, removingCurrent := player.Remove(m.queue, m.queueIdx, m.queueCursor)
+	if len(queue) == len(m.queue) {
 		return nil
 	}
-	cursor := m.queueCursor
-	removed := m.queue[cursor]
-	removingCurrent := cursor == m.queueIdx
-	m.queue = append(m.queue[:cursor], m.queue[cursor+1:]...)
+	m.queue, m.queueIdx, m.queueCursor = queue, idx, cursor
 	m.invalidatePrefetch()
 
 	if removingCurrent {
@@ -2452,23 +2277,11 @@ func (m *Model) removeQueueItem() tea.Cmd {
 			m.setNotice("已移除当前曲目，队列已空", false)
 			return nil
 		}
-		idx := min(cursor, len(m.queue)-1)
-		m.queueIdx = idx
-		m.queueCursor = idx
 		m.persistQueue()
 		m.setNotice("已移除当前曲目，播放下一首", false)
-		return m.playSong(m.queue[idx])
+		return m.playSong(m.queue[m.queueIdx])
 	}
 
-	if cursor < m.queueIdx {
-		m.queueIdx--
-	}
-	if m.queueIdx >= len(m.queue) {
-		m.queueIdx = max(0, len(m.queue)-1)
-	}
-	if m.queueCursor >= len(m.queue) {
-		m.queueCursor = max(0, len(m.queue)-1)
-	}
 	m.persistQueue()
 	m.setNotice("已从队列移除："+removed.Title, false)
 	return nil
@@ -2476,14 +2289,7 @@ func (m *Model) removeQueueItem() tea.Cmd {
 
 // clearQueue 清空待播队列，但保留正在播放/暂停的当前曲目，避免「清空即静音」的意外。
 func (m *Model) clearQueue() {
-	if m.current != nil {
-		m.queue = []store.Song{*m.current}
-		m.queueIdx = 0
-	} else {
-		m.queue = nil
-		m.queueIdx = 0
-	}
-	m.queueCursor = 0
+	m.queue, m.queueIdx, m.queueCursor = player.Clear(m.current)
 	m.invalidatePrefetch()
 	m.persistQueue()
 	if m.current != nil {
@@ -2494,36 +2300,23 @@ func (m *Model) clearQueue() {
 }
 
 func (m *Model) takePrefetch(song store.Song) (source.Stream, bool) {
-	song = normalizeSong(song)
-	if m.prefetchStream == nil || m.prefetchID != song.ID {
-		return source.Stream{}, false
-	}
-	s := *m.prefetchStream
-	expired := !s.ExpiresAt.IsZero() && time.Until(s.ExpiresAt) < 2*time.Minute
-	m.invalidatePrefetch()
-	if expired {
-		return source.Stream{}, false
-	}
-	return s, true
+	song = store.NormalizeSong(song)
+	return m.prefetch.Take(song.ID, time.Now())
 }
 
 func (m *Model) invalidatePrefetch() {
-	m.prefetchID = ""
-	m.prefetchStream = nil
+	m.prefetch.Clear()
 }
 
 func (m *Model) nextQueueSongID() string {
 	if m.mode != modeSequence || len(m.queue) < 2 {
 		return ""
 	}
-	next := m.queueIdx + 1
-	if next >= len(m.queue) {
-		next = 0
-	}
+	next := player.NextIndex(m.queueIdx, len(m.queue))
 	if next == m.queueIdx {
 		return ""
 	}
-	return normalizeSong(m.queue[next]).ID
+	return store.NormalizeSong(m.queue[next]).ID
 }
 
 // prefetchNextCmd 提前解析下一首，缩短切歌时「已缓冲」的等待。
@@ -2538,17 +2331,15 @@ func (m *Model) prefetchNextCmd() tea.Cmd {
 	if next == m.queueIdx {
 		return nil
 	}
-	song := normalizeSong(m.queue[next])
-	if m.prefetchID == song.ID && m.prefetchStream != nil {
-		if m.prefetchStream.ExpiresAt.IsZero() || time.Until(m.prefetchStream.ExpiresAt) > 2*time.Minute {
-			return nil
-		}
+	song := store.NormalizeSong(m.queue[next])
+	if m.prefetch.Matches(song.ID, time.Now()) {
+		return nil
 	}
-	sources, st, quality := m.sources, m.store, m.quality
+	svc, quality := m.service(), m.quality
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		resolved, stream, err := resolveSong(ctx, sources, st, song, quality)
+		resolved, stream, err := svc.Resolve(ctx, song, quality)
 		return prefetchMsg{songID: song.ID, song: resolved, stream: stream, err: err}
 	}
 }
@@ -2557,20 +2348,11 @@ func (m *Model) persistQueue() {
 	if m.store == nil {
 		return
 	}
-	ids := make([]string, 0, len(m.queue))
-	for _, s := range m.queue {
-		s = normalizeSong(s)
-		ids = append(ids, s.ID)
-	}
 	position := int64(m.position / time.Millisecond)
 	if m.position < 0 {
 		position = 0
 	}
-	_ = m.store.SaveQueue(store.QueueState{
-		IDs:      ids,
-		Index:    m.queueIdx,
-		Position: position,
-	})
+	_ = m.service().SaveQueue(m.queue, m.queueIdx, position)
 	m.lastPersist = time.Now()
 }
 
@@ -2633,18 +2415,19 @@ func (m *Model) commitPrompt() tea.Cmd {
 			m.setNotice("歌单名不能为空", true)
 			return nil
 		}
-		p, err := m.store.CreatePlaylist(input)
+		var p store.Playlist
+		var err error
+		if m.pendingAddSong != nil {
+			p, err = m.service().CreatePlaylistWithSong(input, *m.pendingAddSong)
+		} else {
+			p, err = m.service().CreatePlaylist(input)
+		}
 		if err != nil {
 			m.setError(err)
 			return nil
 		}
 		m.pendingPlaylistID = p.ID
 		if m.pendingAddSong != nil {
-			if err := m.store.AddSongToPlaylist(p.ID, *m.pendingAddSong); err != nil {
-				m.pendingAddSong = nil
-				m.setError(err)
-				return nil
-			}
 			m.pendingAddSong = nil
 			m.setNotice("已新建歌单并加入："+p.Title, false)
 		} else {
@@ -2660,7 +2443,7 @@ func (m *Model) commitPrompt() tea.Cmd {
 			m.setNotice("歌单名不能为空", true)
 			return nil
 		}
-		if err := m.store.RenamePlaylist(p.ID, input); err != nil {
+		if err := m.service().RenamePlaylist(p.ID, input); err != nil {
 			m.setError(err)
 			return nil
 		}
@@ -2672,7 +2455,7 @@ func (m *Model) commitPrompt() tea.Cmd {
 		if !ok {
 			return nil
 		}
-		if err := m.store.DeletePlaylist(p.ID); err != nil {
+		if err := m.service().DeletePlaylist(p.ID); err != nil {
 			m.setError(err)
 			return nil
 		}
@@ -2687,7 +2470,7 @@ func (m *Model) commitPrompt() tea.Cmd {
 		if !ok {
 			return nil
 		}
-		unlocked, err := m.store.UnlockPlaylist(p.ID)
+		unlocked, err := m.service().UnlockPlaylist(p.ID)
 		if err != nil {
 			m.setError(err)
 			return nil
@@ -2716,8 +2499,8 @@ func (m *Model) shiftLyrics(deltaMS int) tea.Cmd {
 	m.lyricOffsetMS = offset
 	m.lyricLines = lyrics.Clone(m.lyricBase, offset)
 	m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
-	if m.current != nil && m.store != nil {
-		_ = m.store.SetSetting("lyric_offset:"+m.current.ID, strconv.Itoa(offset))
+	if m.current != nil {
+		m.service().SaveLyricOffset(m.current.ID, offset)
 	}
 	m.setNotice(fmt.Sprintf("歌词偏移 %+.1f 秒", float64(offset)/1000), false)
 	return nil
@@ -2873,6 +2656,22 @@ func (m *Model) promptLine() string {
 	return ""
 }
 
+// sourceName 返回音源显示名；测试或极端情况下没有注册表时退回原始 ID。
+func (m *Model) sourceName(id source.ID) string {
+	if m.sources != nil {
+		return m.sources.Name(id)
+	}
+	return string(id)
+}
+
+// sourceMark 返回列表行短标记；未知音源用 ? 兜底。
+func (m *Model) sourceMark(id source.ID) string {
+	if m.sources != nil {
+		return m.sources.Mark(id)
+	}
+	return "?"
+}
+
 // userFor 返回某音源当前登录用户；优先使用已加载的账号信息，必要时回退到 Source。
 func (m *Model) userFor(srcID source.ID) (source.User, bool) {
 	if m.users != nil {
@@ -2889,15 +2688,13 @@ func (m *Model) userFor(srcID source.ID) (source.User, bool) {
 }
 
 func (m *Model) accountSummary() string {
-	ids := []source.ID{source.Bilibili, source.NetEase}
+	var ids []source.ID
 	if m.sources != nil {
-		if got := m.sources.IDs(); len(got) > 0 {
-			ids = got
-		}
+		ids = m.sources.IDs()
 	}
 	parts := make([]string, 0, len(ids))
 	for _, id := range ids {
-		name := id.Label()
+		name := m.sourceName(id)
 		var src source.Source
 		if m.sources != nil {
 			src = m.sources.Get(id)
@@ -2942,9 +2739,7 @@ func (m *Model) setPlayingPlaylist(id string) {
 		return
 	}
 	m.playingPlaylistID = id
-	if m.store != nil {
-		_ = m.store.SetSetting("playing_playlist", id)
-	}
+	m.service().SavePlayingPlaylist(id)
 }
 
 // logout 清除指定音源的 cookie、用户信息与远端歌单镜像。
@@ -2953,10 +2748,7 @@ func (m *Model) logout(srcID source.ID) tea.Cmd {
 	if src != nil {
 		src.Logout()
 	}
-	if m.store != nil {
-		_ = m.store.DeleteAccount(string(srcID))
-		_ = m.store.DeleteRemotePlaylistsBySource(string(srcID))
-	}
+	m.service().DeleteAccount(srcID)
 	if m.users != nil {
 		delete(m.users, srcID)
 	}
@@ -3002,15 +2794,11 @@ func (m *Model) switchLoginSource(delta int) tea.Cmd {
 	return m.ensureLoginQR()
 }
 
-func loginAppName(id source.ID) string {
-	switch id {
-	case source.Bilibili:
-		return "B 站 App"
-	case source.NetEase:
-		return "网易云音乐 App"
-	default:
-		return "手机 App"
+func (m *Model) loginAppName(id source.ID) string {
+	if m.sources != nil {
+		return m.sources.LoginAppName(id)
 	}
+	return "手机 App"
 }
 
 func (m *Model) shutdown() {

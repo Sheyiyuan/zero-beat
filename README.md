@@ -270,7 +270,9 @@ download_selected = ["W"]
 ```
 cmd/zero                 CLI：tui / play / download / login / demo / clean-playlists
 internal/tui             Bubble Tea v2 界面：模型、渲染、按键、命令
-internal/source          多音源契约、能力位、注册表
+internal/app             业务服务：搜索、取流、歌词、歌单同步、登录、队列恢复
+internal/player          队列算法：插入、移动、移除、清空、洗牌、恢复
+internal/source          多音源契约、能力位、注册表、平台元数据
 internal/source/bilibili B 站适配器：搜索、多 P、收藏夹、字幕、播放
 internal/netease         网易云客户端：基于 go-musicfox/netease-music 的 Source 适配
 internal/bili            B 站 API 客户端
@@ -282,7 +284,8 @@ internal/store           SQLite：歌曲、歌单、队列、设置、登录态
 internal/config          数据目录
 ```
 
-关键契约有两个：`source.Source`（TUI 只知道接口，不按平台名分支）与
+关键契约有三个：`source.Source`（TUI 只知道接口，不按平台名分支）、
+`app.Service`（业务不依赖 Bubble Tea）与
 `audio.Stream{URL, Headers, Codec, DurationMS, ExpiresAt, Quality}`。
 音源负责把 Referer、cookie、编码、过期时间压进 Stream，引擎只认它。
 

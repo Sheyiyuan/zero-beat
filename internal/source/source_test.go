@@ -7,10 +7,17 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 )
 
-type stub struct{ id ID }
+type stub struct {
+	id      ID
+	name    string
+	mark    string
+	aliases []string
+}
 
 func (s stub) ID() ID                                                     { return s.id }
-func (s stub) Name() string                                               { return s.id.Label() }
+func (s stub) Name() string                                               { return s.name }
+func (s stub) Mark() string                                               { return s.mark }
+func (s stub) Aliases() []string                                          { return s.aliases }
 func (s stub) Caps() Capability                                           { return CapSearch }
 func (s stub) LoggedIn() bool                                             { return false }
 func (s stub) User() User                                                 { return User{} }
@@ -27,12 +34,27 @@ func (s stub) SetSession(map[string]string)                               {}
 func (s stub) Logout()                                                    {}
 
 func TestRegistry(t *testing.T) {
-	r := NewRegistry(stub{Bilibili}, nil, stub{NetEase})
+	r := NewRegistry(
+		stub{id: Bilibili, name: "Bilibili", mark: "B", aliases: []string{"bili", "b站"}},
+		nil,
+		stub{id: NetEase, name: "网易云", mark: "云", aliases: []string{"ncm"}},
+	)
 	if len(r.All()) != 2 || r.Get(Bilibili) == nil || r.Get(NetEase) == nil {
 		t.Fatalf("注册表内容不符: %+v", r.All())
 	}
 	if r.GetString("netease") == nil || r.GetString("") != nil {
 		t.Fatal("字符串查找不符")
+	}
+	for _, name := range []string{"bilibili", "Bilibili", "bili", "b站", "netease", "网易云", "ncm"} {
+		if r.GetByName(name) == nil {
+			t.Fatalf("别名 %q 应能解析", name)
+		}
+	}
+	if r.Name(NetEase) != "网易云" || r.Mark(NetEase) != "云" {
+		t.Fatalf("展示信息不符: name=%q mark=%q", r.Name(NetEase), r.Mark(NetEase))
+	}
+	if r.Name("missing") != "missing" || r.Mark("missing") != "?" {
+		t.Fatal("未知音源应有兜底展示")
 	}
 	ids := r.IDs()
 	if len(ids) != 2 || ids[0] != Bilibili || ids[1] != NetEase {
@@ -40,10 +62,7 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
-func TestLabelsAndKeys(t *testing.T) {
-	if Bilibili.Label() != "Bilibili" || NetEase.Label() != "网易云" || Bilibili.Mark() != "B" || NetEase.Mark() != "云" {
-		t.Fatal("音源名称/标记不符")
-	}
+func TestKeysAndQuality(t *testing.T) {
 	ref := Ref{Source: NetEase, ExternalID: "1431292823", Page: 0}
 	if ref.Key() != "netease:1431292823:1" {
 		t.Fatalf("Ref.Key = %q", ref.Key())

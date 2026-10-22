@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/lrclib"
@@ -316,7 +317,7 @@ func TestDefaultLocalPlaylistIsCreatedOnlyOnce(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	if err := ensureDefaultPlaylist(st); err != nil {
+	if err := app.EnsureDefaultPlaylist(st); err != nil {
 		t.Fatalf("首次补默认歌单失败: %v", err)
 	}
 	if _, err := st.Playlist("local-default"); err != nil {
@@ -325,7 +326,7 @@ func TestDefaultLocalPlaylistIsCreatedOnlyOnce(t *testing.T) {
 	if err := st.DeletePlaylist("local-default"); err != nil {
 		t.Fatalf("默认歌单应允许删除: %v", err)
 	}
-	if err := ensureDefaultPlaylist(st); err != nil {
+	if err := app.EnsureDefaultPlaylist(st); err != nil {
 		t.Fatalf("再次检查失败: %v", err)
 	}
 	if _, err := st.Playlist("local-default"); err != store.ErrNotFound {

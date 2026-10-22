@@ -235,7 +235,14 @@ func playlistRowText(p store.Playlist, sideW int, playing bool) string {
 	}
 	prefix := marker + " "
 	if p.Kind == "remote" && p.Source != "" {
-		prefix = marker + " " + padRight(source.ID(p.Source).Mark(), 2) + " "
+		mark := "?"
+		switch source.ID(p.Source) {
+		case source.Bilibili:
+			mark = "B"
+		case source.NetEase:
+			mark = "云"
+		}
+		prefix = marker + " " + padRight(mark, 2) + " "
 	}
 	label := prefix + p.Title
 	if p.Count > 0 {

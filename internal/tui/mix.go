@@ -33,7 +33,7 @@ func (m *Model) openMixEditor(id string) tea.Cmd {
 		}
 	}
 	if id != "" {
-		refs, err := m.store.MixinRefs(id)
+		refs, err := m.service().MixinRefs(id)
 		if err != nil {
 			m.setError(err)
 			return nil
@@ -129,7 +129,7 @@ func (m *Model) commitMix() tea.Cmd {
 	}
 	if m.mix.editingID != "" {
 		id := m.mix.editingID
-		if err := m.store.SetMixinRefs(id, refs); err != nil {
+		if err := m.service().SetMixinRefs(id, refs); err != nil {
 			m.setError(err)
 			return nil
 		}
@@ -166,7 +166,7 @@ func (m *Model) renderMix(h int) []string {
 		}
 		src := "本地"
 		if p.Source != "" {
-			src = source.ID(p.Source).Label()
+			src = m.sourceName(source.ID(p.Source))
 		}
 		titleW := m.width - 18
 		if titleW < 8 {

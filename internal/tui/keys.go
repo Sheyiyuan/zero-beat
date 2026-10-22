@@ -95,7 +95,7 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.Left), m.helpKeys(keymap.Right)), "切换歌单 / 歌曲操作焦点（曲库）")
 	add(m.helpKeys(keymap.QueueView), "打开当前播放队列")
 	add(m.helpKeys(keymap.New), "打开新建命令面板")
-	add(m.helpKeys(keymap.Folders), "浏览并导入 B 站 / 网易云歌单")
+	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
 	add(joinKeys(m.helpKeys(keymap.MixEdit), m.helpKeys(keymap.Unlock)), "编辑混合歌单引用 / 解锁同步歌单（歌单焦点）")
 	add(m.helpKeys(keymap.MergePlaylist), "把当前歌单以引用混入混合歌单（曲库）")
 	add(joinKeys(m.helpKeys(keymap.PlayNext), m.helpKeys(keymap.Enqueue)), "插到下一首播放 / 追加到队列末尾（歌曲焦点）")
@@ -107,7 +107,7 @@ func (m *Model) helpLines() []string {
 
 	section("其它")
 	add(m.helpKeys(keymap.LocalSearch), "搜索当前歌单；r 切到本地全部")
-	add(m.helpKeys(keymap.Search), "搜索音源（B 站 / 网易云）")
+	add(m.helpKeys(keymap.Search), "搜索音源")
 	add(m.helpKeys(keymap.Source), "音源搜索换源；登录页切换登录源")
 	add(joinKeys(m.helpKeys(keymap.Login), m.helpKeys(keymap.Logout)), "登录管理 / 退出登录（登录页，W 仍兼容）")
 	add(m.helpKeys(keymap.LoginImage), "打开二维码图片（登录页）")
