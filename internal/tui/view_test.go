@@ -395,6 +395,36 @@ func TestLyricsEmptyHintNamesCurrentPlatform(t *testing.T) {
 	}
 }
 
+func TestPlaySearchResultAppendsAndSelects(t *testing.T) {
+	m := fixtureModel()
+	m.searchMode = searchSource
+	m.searchResults = []source.Candidate{{
+		Track: source.Track{
+			Source: source.Bilibili, ExternalID: "BV9", Page: 1,
+			Title: "新搜到的歌", Artist: "测试", Duration: 100,
+		},
+	}}
+	before := len(m.queue)
+	_ = m.playSearchResult(0)
+	if len(m.queue) != before+1 {
+		t.Fatalf("结果入队后队列应为 %d 首，实际 %d", before+1, len(m.queue))
+	}
+	if m.queueIdx != before {
+		t.Fatalf("当前索引应指向追加位置 %d，实际 %d", before, m.queueIdx)
+	}
+	if m.current == nil || m.current.ID != m.queue[before].ID {
+		t.Fatalf("当前曲目应为追加的搜索结果，实际 %+v", m.current)
+	}
+	// 顺序模式播完应回绕到队首，而不是重播刚播的这首。
+	_ = m.advance()
+	if m.queueIdx != 0 {
+		t.Fatalf("播完应回绕到队首，实际索引 %d", m.queueIdx)
+	}
+	if m.current == nil || m.current.ID != m.queue[0].ID {
+		t.Fatalf("播完应播放队首，实际 %+v", m.current)
+	}
+}
+
 func TestAdvanceWrapsAndRespectsLoopOne(t *testing.T) {
 	m := fixtureModel()
 	m.queueIdx = len(m.queue) - 1

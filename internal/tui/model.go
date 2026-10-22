@@ -1788,8 +1788,8 @@ func (m *Model) playSearchResult(idx int) tea.Cmd {
 	}
 	song := m.ensureStored(m.searchResultSong(idx))
 	m.withController(func(c *player.Controller) {
-		_ = c.Enqueue(song)
-		c.SetIndex(len(m.queue) - 1)
+		// Enqueue 返回追加位置；不要读 m.queue（闭包执行时它还是旧长度）。
+		c.SetIndex(c.Enqueue(song))
 	})
 	m.queueCursor = m.queueIdx
 	m.setPlayingPlaylist("")
