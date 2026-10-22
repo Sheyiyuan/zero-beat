@@ -1225,8 +1225,7 @@ func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
 				m.setNotice("这个歌单还是空的", false)
 				return m, nil
 			}
-			m.songIdx = 0
-			return m, m.playPlaylistIndex(0)
+			return m, m.playPlaylistFromStart()
 		}
 		if len(m.songs) == 0 {
 			return m, nil
@@ -1798,17 +1797,23 @@ func (m *Model) playPlaylistFromMenu(idx int) tea.Cmd {
 	return m.playPlaylistFromStart()
 }
 
-// playPlaylistFromStart 从当前歌单第一首开始播放。
+// playPlaylistFromStart 从当前歌单开始播放：随机模式下先整体洗牌，
+// 第一首也是随机的（不是固定播歌单第一首）。
 func (m *Model) playPlaylistFromStart() tea.Cmd {
 	if len(m.songs) == 0 {
 		m.setNotice("这个歌单还是空的", false)
 		return nil
 	}
 	m.songIdx = 0
-	return m.playPlaylistIndex(0)
+	return m.playPlaylistAt(0, true)
 }
 
+// playPlaylistIndex 从歌单第 idx 首开始播放（显式点歌时保留该曲目）。
 func (m *Model) playPlaylistIndex(idx int) tea.Cmd {
+	return m.playPlaylistAt(idx, false)
+}
+
+func (m *Model) playPlaylistAt(idx int, randomFirst bool) tea.Cmd {
 	if idx < 0 || idx >= len(m.songs) {
 		return nil
 	}
@@ -1817,7 +1822,12 @@ func (m *Model) playPlaylistIndex(idx int) tea.Cmd {
 		queue[i] = store.NormalizeSong(m.songs[i])
 	}
 	m.setPlayingPlaylist(m.currentPlaylistID())
-	m.loadQueue(queue, idx)
+	if randomFirst && m.mode == modeShuffle {
+		m.withController(func(c *player.Controller) { c.LoadQueueRandom(queue) })
+		m.queueCursor = m.queueIdx
+	} else {
+		m.loadQueue(queue, idx)
+	}
 	if p, ok := m.currentPlaylist(); ok {
 		queueLabel := "已载入队列"
 		if m.mode == modeShuffle {

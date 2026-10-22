@@ -270,3 +270,32 @@ func TestSeekKeepsPausedState(t *testing.T) {
 		t.Fatalf("播放中跳转后界面状态应为播放，实际 %v", got)
 	}
 }
+
+// TestLoadQueueRandomShufflesFirstSong 验证「随机播放歌单」先整体洗牌再播放，
+// 第一首也是随机的；而显式点歌（LoadQueue+idx）仍保留选中的曲目。
+func TestLoadQueueRandomShufflesFirstSong(t *testing.T) {
+	eng := newFakeEngine()
+	c := New(eng, &fakeSaver{})
+	c.SetShuffleFunc(reverse)
+	c.state.Mode = ModeShuffle
+
+	q := queueSongs("a", "b", "c", "d")
+	if !c.LoadQueueRandom(q) {
+		t.Fatal("非空队列应载入成功")
+	}
+	if got := c.Queue()[0].ID; got != "d" {
+		t.Fatalf("整队反向洗牌后第一首应为 d，实际 %s", got)
+	}
+	if c.Index() != 0 {
+		t.Fatalf("随机起播索引应为 0，实际 %d", c.Index())
+	}
+	if len(c.state.ShuffleBase) != 4 || c.state.ShuffleBase[0].ID != "a" {
+		t.Fatalf("应保存洗牌前顺序用于退出随机恢复，实际 %+v", c.state.ShuffleBase)
+	}
+
+	// 显式点歌仍以选中曲目为当前曲目（其余随机）。
+	c.LoadQueue(q, 2)
+	if got := c.Queue()[c.Index()].ID; got != "c" {
+		t.Fatalf("显式点歌应保留选中曲目 c，实际 %s", got)
+	}
+}

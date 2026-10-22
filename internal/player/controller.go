@@ -173,6 +173,29 @@ func (c *Controller) LoadQueue(queue []store.Song, idx int) {
 	c.state.Prefetch.Clear()
 }
 
+// LoadQueueRandom 用新队列替换并整体洗牌，索引归零——用于「随机播放歌单」，
+// 第一首也随机（LoadQueue 会保留指定曲目在原位，那是给显式点歌用的）。
+// 仅在随机模式下调用；返回 false 表示队列为空。
+func (c *Controller) LoadQueueRandom(queue []store.Song) bool {
+	if len(queue) == 0 {
+		c.LoadQueue(nil, 0)
+		return false
+	}
+	normalized := make([]store.Song, len(queue))
+	for i := range queue {
+		normalized[i] = store.NormalizeSong(queue[i])
+	}
+	c.state.Queue = append([]store.Song(nil), normalized...)
+	c.state.Index = 0
+	c.state.ShuffleBase = append([]store.Song(nil), normalized...)
+	c.state.ShuffleBaseIdx = 0
+	c.state.Prefetch.Clear()
+	// keepID 为空串：Shuffle 找不到要保留的曲目，整队一起洗。
+	c.shuffleKeeping("")
+	c.state.Index = 0
+	return true
+}
+
 // Enqueue 追加到队列末尾，返回新索引。
 func (c *Controller) Enqueue(song store.Song) int {
 	song = store.NormalizeSong(song)
