@@ -188,3 +188,39 @@ func TestControllerSeekAndPreview(t *testing.T) {
 		t.Fatalf("片段重播不符: %+v state=%v", eng.stream, c.EngineState())
 	}
 }
+
+// TestHandleEventIgnoredWhileAwaiting 验证切歌解析期间旧流的失败/结束事件
+// 被忽略：不切歌、不消耗重试次数；解析完成后事件恢复正常处理。
+func TestHandleEventIgnoredWhileAwaiting(t *testing.T) {
+	eng := newFakeEngine()
+	c := New(eng, &fakeSaver{})
+	song := queueSongs("a")[0]
+	c.LoadQueue(queueSongs("a", "b"), 0)
+	c.BeginPlay(song, 0, 0)
+	if !c.state.Awaiting {
+		t.Fatal("BeginPlay 后应处于等待解析状态")
+	}
+
+	if res := c.HandleEvent(audio.Event{Type: audio.EventEnded}); res.Ended || res.Retry || res.Err != nil {
+		t.Fatalf("缓冲态收到 Ended 应忽略，实际 %+v", res)
+	}
+	if c.state.PlaybackState != audio.StateBuffering {
+		t.Fatalf("缓冲态不应被改成 %v", c.state.PlaybackState)
+	}
+	res := c.HandleEvent(audio.Event{Type: audio.EventFailed, Err: errors.New("旧流失败")})
+	if res.Retry || res.Err != nil {
+		t.Fatalf("缓冲态收到 Failed 应忽略，实际 %+v", res)
+	}
+	if c.state.Retry != 0 {
+		t.Fatalf("不应提前消耗重试次数，实际 %d", c.state.Retry)
+	}
+	if got := c.EngineState(); got != audio.StateIdle {
+		t.Fatalf("忽略事件时不应停引擎，实际 %v", got)
+	}
+
+	// 解析完成后（非缓冲态）事件照常处理。
+	c.state.Awaiting = false
+	if res := c.HandleEvent(audio.Event{Type: audio.EventEnded}); !res.Ended {
+		t.Fatalf("非缓冲态的 Ended 应照常处理，实际 %+v", res)
+	}
+}

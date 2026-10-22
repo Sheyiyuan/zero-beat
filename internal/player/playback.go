@@ -250,6 +250,12 @@ type EventResult struct {
 
 // HandleEvent 更新播放状态；需要重试/切歌时由 TUI 发起后续命令。
 func (c *Controller) HandleEvent(ev audio.Event) EventResult {
+	// 切歌解析期间，旧流残留下来的失败/结束/停止事件不能打断新请求，
+	// 也不能提前消耗重试次数（main 里这条守卫在 TUI，重构后下沉到这里）。
+	if c.state.Awaiting &&
+		(ev.Type == audio.EventFailed || ev.Type == audio.EventEnded || ev.State == audio.StateIdle) {
+		return EventResult{}
+	}
 	switch ev.Type {
 	case audio.EventFailed:
 		if c.state.Current != nil && c.state.Retry < 1 {
