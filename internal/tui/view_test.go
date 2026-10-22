@@ -816,6 +816,18 @@ func TestMixinAndUnlockKeys(t *testing.T) {
 	}
 }
 
+// TestHelpLinesKeepLongKeyCombo 验证帮助页按键列按最长组合自适应，
+// 不再把「ctrl+u / PgUp / ctrl+d / PgDn」硬截成 20 列。
+func TestHelpLinesKeepLongKeyCombo(t *testing.T) {
+	m := fixtureModel()
+	m.view = viewHelp
+	body := ansi.Strip(strings.Join(m.helpLines(), "\n"))
+	if !strings.Contains(body, "ctrl+u / PgUp / ctrl+d") {
+		t.Fatalf("帮助页应完整显示翻页按键组合，实际：\n%s", body)
+	}
+	assertFrame(t, m.View().Content, 100, 30)
+}
+
 func TestHelpPopupAndAccountHint(t *testing.T) {
 	m := fixtureModel()
 	m.width, m.height = 100, 30

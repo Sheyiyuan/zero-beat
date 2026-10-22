@@ -62,15 +62,24 @@ func joinKeys(parts ...string) string {
 	return strings.Join(out, " / ")
 }
 
+// helpRow 是帮助页的一行：section 非空表示分节标题，否则为按键 + 说明。
+type helpRow struct {
+	section string
+	keys    string
+	desc    string
+}
+
 // helpLines 返回帮助页的完整内容；由 renderHelp 按窗口裁剪。
+//
+// 先收集再渲染：按键列宽按最长组合自适应（下限 12、上限 26），
+// 避免「ctrl+u / PgUp / ctrl+d / PgDn」这类组合被固定列宽截断。
 func (m *Model) helpLines() []string {
-	keyW := 20
-	out := []string{st.muted.Render(" 快捷键 · " + m.firstKey(keymap.Down) + " / " + m.firstKey(keymap.Up) + " 滚动 · 配置 ~/.config/zero-beat/keymap.toml")}
+	var rows []helpRow
 	add := func(keys, desc string) {
-		out = append(out, "  "+st.text.Render(padRight(keys, keyW))+st.muted.Render(desc))
+		rows = append(rows, helpRow{keys: keys, desc: desc})
 	}
 	section := func(title string) {
-		out = append(out, "", st.accent.Render(" "+title))
+		rows = append(rows, helpRow{section: title})
 	}
 
 	section("播放")
@@ -122,6 +131,25 @@ func (m *Model) helpLines() []string {
 	add(m.helpKeys(keymap.HelpPopup), "打开/关闭快捷键弹窗")
 	add(joinKeys(m.helpKeys(keymap.Back), "esc"), "返回曲库 / 取消输入；曲库首页打开关于")
 	add(joinKeys(m.helpKeys(keymap.Quit), "ctrl+c"), "退出")
+
+	keyW := 12
+	for _, row := range rows {
+		if w := visWidth(row.keys); w > keyW {
+			keyW = w
+		}
+	}
+	if keyW > 26 {
+		keyW = 26
+	}
+
+	out := []string{st.muted.Render(" 快捷键 · " + m.firstKey(keymap.Down) + " / " + m.firstKey(keymap.Up) + " 滚动 · 配置 ~/.config/zero-beat/keymap.toml")}
+	for _, row := range rows {
+		if row.section != "" {
+			out = append(out, "", st.accent.Render(" "+row.section))
+			continue
+		}
+		out = append(out, "  "+st.text.Render(padRight(row.keys, keyW))+st.muted.Render(row.desc))
+	}
 
 	out = append(out, "")
 	out = append(out, st.dim.Render(" 配置文件与数据库在 ~/.config/zero-beat/"))
