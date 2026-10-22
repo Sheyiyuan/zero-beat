@@ -204,14 +204,20 @@ func (m *Model) handleDownloadEvent(msg downloadEventMsg) (tea.Model, tea.Cmd) {
 		mgr.SetProgress(msg.ev.ID, msg.ev.Done, msg.ev.Total)
 		return m, waitDownloadEventCmd(mgr)
 	}
-	mgr.Remove(msg.ev.ID)
+	// 失败任务保留在 Manager 里（底部状态行会持续提示），其余情况移除。
 	if msg.ev.Err != nil {
-		if errors.Is(msg.ev.Err, download.ErrExists) {
+		switch {
+		case errors.Is(msg.ev.Err, download.ErrExists):
+			mgr.Remove(msg.ev.ID)
 			m.setNotice("已存在，跳过："+msg.ev.Path, false)
-		} else {
+		case errors.Is(msg.ev.Err, context.Canceled):
+			mgr.Remove(msg.ev.ID)
+			m.setNotice("已取消下载", false)
+		default:
 			m.setError(msg.ev.Err)
 		}
 	} else {
+		mgr.Remove(msg.ev.ID)
 		m.setNotice("已下载："+msg.ev.Path, false)
 	}
 	wait := waitDownloadEventCmd(mgr)
@@ -228,7 +234,7 @@ func (m *Model) cancelDownloads() {
 	}
 }
 
-// downloadLineText 渲染底部下载进度行；多个任务时只显示第一个运行中的任务。
+// downloadLineText 渲染底部下载进度行；失败任务优先提示（常驻直到打开下载页）。
 func (m *Model) downloadLineText() (string, bool) {
 	if m.downloads == nil {
 		return "", false
@@ -237,18 +243,32 @@ func (m *Model) downloadLineText() (string, bool) {
 	if len(tasks) == 0 || m.view == viewHelp || m.view == viewLogin {
 		return "", false
 	}
-	running, queued := 0, 0
+	running, queued, failed := 0, 0, 0
 	var primary *downloader.Task
+	var lastFailed *downloader.Task
 	for i := range tasks {
 		task := &tasks[i]
-		if task.State == downloader.Running {
+		switch task.State {
+		case downloader.Failed:
+			failed++
+			lastFailed = task
+		case downloader.Queued:
+			queued++
+		default:
 			running++
 			if primary == nil {
 				primary = task
 			}
-		} else {
-			queued++
 		}
+	}
+	if running == 0 && queued == 0 && lastFailed != nil {
+		name := truncate(lastFailed.Title, max(8, m.width/3))
+		text := st.err.Render(" ✗ ") + st.text.Render(name) +
+			st.err.Render(fmt.Sprintf("  下载失败 · 共 %d 个", failed))
+		if m.view != viewDownloads {
+			text += st.muted.Render(" · F 查看")
+		}
+		return text, true
 	}
 	if primary == nil {
 		primary = &tasks[0]
@@ -278,6 +298,9 @@ func (m *Model) downloadLineText() (string, bool) {
 		text += st.muted.Render("  " + download.HumanBytes(primary.Done))
 	default:
 		text += st.muted.Render("  准备中…")
+	}
+	if failed > 0 {
+		text += st.err.Render(fmt.Sprintf("  · %d 个失败", failed))
 	}
 	if extra := running + queued - 1; extra > 0 {
 		if m.width >= 50 {

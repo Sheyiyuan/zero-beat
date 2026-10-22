@@ -193,6 +193,21 @@ func (m *Manager) emit(ev Event, must bool) {
 	}
 }
 
+// ClearFinished 清除已失败的任务（界面确认展示过或重试前调用）。
+func (m *Manager) ClearFinished() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.tasks[:0]
+	for _, t := range m.tasks {
+		if t.State == Failed {
+			delete(m.bySong, t.Song.ID)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	m.tasks = kept
+}
+
 // Remove 移除一个任务（完成事件处理完后由界面调用）。
 func (m *Manager) Remove(id int) {
 	m.mu.Lock()

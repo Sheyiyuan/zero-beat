@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -249,5 +250,85 @@ func TestDownloadJobSnapshotsQualityAndForce(t *testing.T) {
 	}
 	if tasks[0].Job.Force {
 		t.Fatalf("文件正常时不应强制重下，实际 %+v", tasks[0].Job)
+	}
+}
+
+// TestCancelSelectedDownload 验证下载页 x 取消选中曲目的下载任务。
+func TestCancelSelectedDownload(t *testing.T) {
+	block := make(chan struct{})
+	mgr := downloader.New(1, func(ctx context.Context, _ store.Song, _ downloader.Job, _ func(int64, int64)) (string, int64, error) {
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-block:
+			return "p", 1, nil
+		}
+	})
+	t.Cleanup(func() {
+		mgr.CancelAll()
+		close(block)
+	})
+	a := store.NormalizeSong(store.Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "甲", Artist: "x", Duration: 10})
+	b := store.NormalizeSong(store.Song{Source: "bilibili", BVID: "BV2", Page: 1, Title: "乙", Artist: "y", Duration: 10})
+	m := fixtureModel()
+	m.downloads = mgr
+	m.view = viewDownloads
+	m.downloadItems = []downloadItem{
+		{entry: store.DownloadEntry{Download: store.Download{SongID: a.ID, Path: "/tmp/a.flac"}, Song: a}},
+		{entry: store.DownloadEntry{Download: store.Download{SongID: b.ID, Path: "/tmp/b.flac"}, Song: b}},
+	}
+	m.downloadIdx = 0
+	if _, ok := mgr.Add(a, "甲", downloader.Job{}); !ok {
+		t.Fatal("入队失败")
+	}
+	if _, ok := mgr.Add(b, "乙", downloader.Job{}); !ok {
+		t.Fatal("入队失败")
+	}
+	mgr.Start()
+
+	updated, _ := m.Update(keyPress("x", 'x'))
+	mm := updated.(*Model)
+	if !strings.Contains(mm.note.text, "已取消下载") {
+		t.Fatalf("x 应取消选中下载，实际提示 %q", mm.note.text)
+	}
+	if mgr.Has(a.ID) {
+		t.Fatal("取消后任务不应再在下载队列里")
+	}
+}
+
+// TestFailedDownloadKeepsTaskAndLine 验证失败任务保留、底部状态行常驻提示，
+// 进入下载页后清理。
+func TestFailedDownloadKeepsTaskAndLine(t *testing.T) {
+	mgr := downloader.New(1, func(context.Context, store.Song, downloader.Job, func(int64, int64)) (string, int64, error) {
+		return "", 0, errors.New("boom")
+	})
+	m := fixtureModel()
+	m.downloads = mgr
+	song := store.NormalizeSong(store.Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "失败曲", Artist: "x", Duration: 10})
+
+	cmd := m.enqueueDownload(song, "开始下载：")
+	if cmd == nil {
+		t.Fatal("应返回下载事件监听命令")
+	}
+	msg := cmd()
+	updated, _ := m.Update(msg)
+	mm := updated.(*Model)
+
+	tasks := mgr.Tasks()
+	if len(tasks) != 1 || tasks[0].State != downloader.Failed {
+		t.Fatalf("失败任务应保留为 Failed，实际 %+v", tasks)
+	}
+	if !strings.Contains(mm.note.text, "boom") {
+		t.Fatalf("应显示错误提示，实际 %q", mm.note.text)
+	}
+	line, ok := mm.downloadLineText()
+	if !ok || !strings.Contains(ansi.Strip(line), "下载失败") {
+		t.Fatalf("底部状态行应提示下载失败，实际 %q", ansi.Strip(line))
+	}
+
+	// 进入下载页视为用户已看到，清掉失败任务。
+	mm.openDownloads()
+	if mgr.Len() != 0 {
+		t.Fatalf("进入下载页应清理失败任务，剩余 %d", mgr.Len())
 	}
 }

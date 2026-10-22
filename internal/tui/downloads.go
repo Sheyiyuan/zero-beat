@@ -24,6 +24,10 @@ func (m *Model) openDownloads() tea.Cmd {
 	m.downloadIdx = 0
 	m.downloadsBusy = true
 	m.resetMarquee()
+	// 底部状态行已经提示过失败；进下载页即视为用户已看到，清掉失败任务。
+	if m.downloads != nil {
+		m.downloads.ClearFinished()
+	}
 	return m.loadDownloadsCmd()
 }
 
@@ -96,6 +100,16 @@ func (m *Model) handleDownloadsKey(key tea.Key) (tea.Model, tea.Cmd) {
 	case m.match(keymap.Refresh, key):
 		m.downloadsBusy = true
 		return m, m.loadDownloadsCmd()
+	case isKey(key, "x"):
+		return m, m.cancelSelectedDownload()
+	case isKey(key, "X"):
+		if m.downloads == nil || m.downloads.Len() == 0 {
+			m.setNotice("没有进行中的下载", false)
+			return m, nil
+		}
+		m.downloads.CancelAll()
+		m.setNotice("已取消全部下载", false)
+		return m, nil
 	case m.match(keymap.LoginImage, key):
 		item, ok := m.selectedDownload()
 		if !ok {
@@ -159,6 +173,21 @@ func (m *Model) deleteDownloadFile(id string) tea.Cmd {
 	m.setNotice("已删除本地文件", false)
 	m.downloadsBusy = true
 	return m.loadDownloadsCmd()
+}
+
+// cancelSelectedDownload 取消下载页选中歌曲对应的下载任务。
+func (m *Model) cancelSelectedDownload() tea.Cmd {
+	item, ok := m.selectedDownload()
+	if !ok {
+		m.setNotice("没有选中项", false)
+		return nil
+	}
+	if m.downloads == nil || !m.downloads.CancelSong(item.entry.Download.SongID) {
+		m.setNotice("选中的歌没有进行中的下载", false)
+		return nil
+	}
+	m.setNotice("已取消下载："+downloadTitle(item), false)
+	return nil
 }
 
 func (m *Model) downloadByID(id string) (downloadItem, bool) {
