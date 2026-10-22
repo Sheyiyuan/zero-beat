@@ -171,6 +171,23 @@ func (s *Service) Stream(ctx context.Context, song store.Song, quality source.Qu
 	return resolved.Track, resolved.Stream, nil
 }
 
+// DownloadedPath 返回已下载且文件仍然有效（存在且非空）的本地路径。
+// 与「本地优先」开关无关：下载完成与否只看索引和文件。
+func (s *Service) DownloadedPath(songID string) (string, bool) {
+	if s.store == nil || songID == "" {
+		return "", false
+	}
+	d, err := s.store.Download(songID)
+	if err != nil || d.Path == "" {
+		return "", false
+	}
+	info, err := os.Stat(d.Path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return "", false
+	}
+	return d.Path, true
+}
+
 // LocalStream 返回已下载文件的本地播放流；记录不存在或文件失效时返回 false。
 func (s *Service) LocalStream(song store.Song) (source.Stream, bool) {
 	if s.store == nil {

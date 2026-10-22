@@ -229,3 +229,60 @@ func TestDownloadsPlaybackRespectsLocalFirstSetting(t *testing.T) {
 		t.Fatalf("本地优先关闭时应走远程解析，实际 %+v", msg.stream)
 	}
 }
+
+// TestEnqueueSkipsDownloadedSong 验证已下载（文件仍有效）的歌曲不再入队，
+// 避免重复网络解析和 N 条「已存在」提示。
+func TestEnqueueSkipsDownloadedSong(t *testing.T) {
+	st := openFeatureStore(t)
+	song, _ := seedDownload(t, st, "已下载连击")
+	m := fixtureModel()
+	m.store = st
+	m.downloads = testDownloads(t)
+	m.view = viewLibrary
+	m.libraryFocus = focusSongs
+	m.songs = []store.Song{song}
+	m.songIdx = 0
+
+	if _, ok := m.service().DownloadedPath(song.ID); !ok {
+		t.Fatal("夹具文件应被判定为已下载")
+	}
+	cmd := m.startSelectedDownload()
+	if cmd != nil {
+		t.Fatal("已下载歌曲不应再发起下载")
+	}
+	if len(m.downloads.Tasks()) != 0 {
+		t.Fatalf("已下载歌曲不应入队: %+v", m.downloads.Tasks())
+	}
+	if !strings.Contains(m.note.text, "已下载，跳过") {
+		t.Fatalf("应提示已下载跳过，实际 %q", m.note.text)
+	}
+}
+
+// TestPlaylistDownloadSkipsDownloaded 验证整歌单下载会跳过已下载的曲目并提示数量。
+func TestPlaylistDownloadSkipsDownloaded(t *testing.T) {
+	st := openFeatureStore(t)
+	downloaded, _ := seedDownload(t, st, "歌单已下载")
+	pending, err := st.UpsertSong(store.Song{
+		Source: "bilibili", BVID: "BV待下", Page: 1, Title: "待下曲", Artist: "歌手", Duration: 100,
+	})
+	if err != nil {
+		t.Fatalf("写入歌曲失败: %v", err)
+	}
+	m := fixtureModel()
+	m.store = st
+	m.downloads = testDownloads(t)
+	m.songs = []store.Song{downloaded, pending}
+	m.libraryFocus = focusPlaylists
+
+	cmd := m.startPlaylistDownload()
+	if cmd == nil {
+		t.Fatal("应返回下载事件监听命令")
+	}
+	tasks := m.downloads.Tasks()
+	if len(tasks) != 1 || tasks[0].Song.ID != pending.ID {
+		t.Fatalf("应只入队未下载的歌曲，实际 %+v", tasks)
+	}
+	if !strings.Contains(m.note.text, "1 首已下载") {
+		t.Fatalf("提示应说明跳过 1 首已下载，实际 %q", m.note.text)
+	}
+}

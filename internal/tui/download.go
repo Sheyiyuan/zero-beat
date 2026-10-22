@@ -115,6 +115,13 @@ func (m *Model) enqueueDownloadJob(raw store.Song, verb string, job downloader.J
 	if title == "" {
 		title = song.ExternalID()
 	}
+	// 已下载且文件有效时直接跳过，避免无谓的重新解析与「已存在」提示。
+	if !job.Force {
+		if _, ok := m.service().DownloadedPath(song.ID); ok {
+			m.setNotice("已下载，跳过："+title, false)
+			return nil
+		}
+	}
 	id, added := mgr.Add(song, title, job)
 	if !added {
 		m.setNotice("已在下载队列："+title, false)
@@ -146,7 +153,7 @@ func (m *Model) startPlaylistDownload() tea.Cmd {
 		return nil
 	}
 	mgr := m.downloadManager()
-	added, skipped := 0, 0
+	added, skipped, downloaded := 0, 0, 0
 	for _, raw := range m.songs {
 		song := store.NormalizeSong(raw)
 		title := strings.TrimSpace(song.Title)
@@ -157,6 +164,10 @@ func (m *Model) startPlaylistDownload() tea.Cmd {
 			skipped++
 			continue
 		}
+		if _, ok := m.service().DownloadedPath(song.ID); ok {
+			downloaded++
+			continue
+		}
 		if _, ok := mgr.Add(song, title, downloader.Job{Quality: int(m.quality)}); ok {
 			added++
 		} else {
@@ -164,13 +175,24 @@ func (m *Model) startPlaylistDownload() tea.Cmd {
 		}
 	}
 	if added == 0 {
-		m.setNotice("没有可新增的下载任务（已在队列或缺少音源 ID）", false)
+		if downloaded > 0 {
+			m.setNotice(fmt.Sprintf("这个歌单的 %d 首都已下载，无需重复下载", downloaded), false)
+		} else {
+			m.setNotice("没有可新增的下载任务（已在队列或缺少音源 ID）", false)
+		}
 		return nil
 	}
 	mgr.Start()
 	msg := fmt.Sprintf("已加入歌单下载：%d 首", added)
-	if skipped > 0 {
-		msg += fmt.Sprintf("（跳过 %d 首）", skipped)
+	if downloaded > 0 || skipped > 0 {
+		var reasons []string
+		if downloaded > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d 首已下载", downloaded))
+		}
+		if skipped > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d 首已在队列或缺少音源 ID", skipped))
+		}
+		msg += "（跳过 " + strings.Join(reasons, "、") + "）"
 	}
 	m.setNotice(msg, false)
 	return waitDownloadEventCmd(mgr)
