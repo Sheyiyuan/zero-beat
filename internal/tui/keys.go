@@ -174,7 +174,7 @@ func (m *Model) hintLine() string {
 	case viewMix:
 		return "space 勾选 · enter 下一步 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 	case viewDownloads:
-		return "enter 播放 · " + m.firstKey(keymap.DownloadSelected) + " 重新下载 · " + m.firstKey(keymap.Remove) + " 移除记录 · " + m.firstKey(keymap.Delete) + " 删除文件 · " + m.firstKey(keymap.LoginImage) + " 打开目录 · " + m.firstKey(keymap.Refresh) + " 刷新 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
+		return "enter 播放 · " + m.firstKey(keymap.DownloadSelected) + " 重下 · x 取消 · X 全部取消 · " + m.firstKey(keymap.Remove) + " 移除记录 · " + m.firstKey(keymap.Delete) + " 删文件 · " + m.firstKey(keymap.LoginImage) + " 目录 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 	case viewLibrary:
 		if m.resumeAt > 0 && m.state == audio.StatePaused {
 			return "space 继续 · enter 播放 · H 帮助"
