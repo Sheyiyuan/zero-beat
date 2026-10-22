@@ -45,6 +45,7 @@ func run(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	tui.Version = version
 	if *showVersion || (fs.NArg() == 1 && fs.Arg(0) == "version") {
 		fmt.Printf("zero %s\n", version)
 		return nil

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/sheyiyuan/zero-beat/internal/downloader"
@@ -200,13 +202,19 @@ func TestLibraryFocusNavigation(t *testing.T) {
 		t.Fatal("默认焦点应在歌曲列表")
 	}
 
-	updated, _ := m.Update(keyPress("h", 'h'))
+	updated, _ := m.Update(keyPress("", tea.KeyLeft))
 	mm := updated.(*Model)
 	if mm.libraryFocus != focusPlaylists {
-		t.Fatal("h 应把焦点切到歌单")
+		t.Fatal("← 应把焦点切到歌单")
 	}
 	if mm.playlistIdx != 0 {
 		t.Fatalf("切到歌单焦点不应改变选中歌单: %d", mm.playlistIdx)
+	}
+
+	updated, _ = mm.Update(keyPress("", tea.KeyRight))
+	mm = updated.(*Model)
+	if mm.libraryFocus != focusSongs {
+		t.Fatal("→ 应把焦点切回歌曲")
 	}
 }
 

@@ -4,7 +4,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -55,9 +54,6 @@ type qrCacheEntry struct {
 	expiresAt    time.Time
 	fetching     bool
 }
-
-// cycleViews 是 Tab 轮转的顺序；搜索/帮助/登录用各自快捷键直达，不进轮转。
-var cycleViews = []view{viewLibrary, viewQueue, viewLyrics}
 
 type searchMode int
 
@@ -167,6 +163,8 @@ type Model struct {
 	lyricOffsetMS int
 	lyricSource   string
 	lyricLoaded   bool
+	lyricScroll   int
+	lyricScrollAt time.Time
 	lrclib        *lrclib.Client
 
 	searchEditing bool
@@ -192,6 +190,13 @@ type Model struct {
 	qrCache         map[source.ID]*qrCacheEntry
 	helpPopup       bool
 	helpPopupOffset int
+	aboutPopup      bool
+	menu            *menuState
+	lastClickAt     time.Time
+	lastClickX      int
+	lastClickY      int
+	lastClickTarget hitTarget
+	lastClickIndex  int
 
 	folderSource source.ID
 	folderItems  []source.Playlist
@@ -332,6 +337,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handlePaste(msg.Content)
 		return m, nil
 
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(tea.Mouse(msg))
+
+	case tea.MouseWheelMsg:
+		return m.handleMouseWheel(tea.Mouse(msg))
+
 	case downloadEventMsg:
 		return m.handleDownloadEvent(msg)
 
@@ -344,6 +355,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
 		}
 		m.advanceMarquee()
+		m.maybeResetLyricScroll(time.Now())
 		if m.note.text != "" && time.Since(m.note.at) > 4*time.Second {
 			m.note = notice{}
 		}
@@ -585,6 +597,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lyricLoaded = false
 			m.lyricLines = nil
 			m.lyricIdx = -1
+			m.resetLyricScroll()
 			if m.position > 0 {
 				m.setNotice(fmt.Sprintf("已恢复上次进度 %s · space 继续", formatDuration(m.position)), false)
 			} else {
@@ -782,6 +795,7 @@ func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Cl
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
+	m.resetLyricScroll()
 	quality := stream.Quality
 	if quality == "" {
 		quality = "未知音质"
@@ -791,6 +805,9 @@ func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Cl
 }
 
 func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
+	if m.menu != nil {
+		return m.handleMenuKey(key)
+	}
 	if m.palette != nil {
 		return m.handlePaletteKey(key)
 	}
@@ -809,12 +826,25 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 	if m.helpPopup {
 		return m.handleHelpPopupKey(key)
 	}
+	if m.aboutPopup {
+		return m.handleAboutKey(key)
+	}
 
 	switch {
 	case isCtrl(key, 'c'):
 		m.shutdown()
 		return m, tea.Quit
-	case key.Code == tea.KeyEscape || m.match(keymap.Back, key):
+	case key.Code == tea.KeyEscape:
+		if m.view == viewMix {
+			m.mix = nil
+		}
+		if m.view != viewLibrary {
+			m.view = viewLibrary
+			return m, nil
+		}
+		m.aboutPopup = true
+		return m, nil
+	case m.match(keymap.Back, key):
 		if m.view == viewMix {
 			m.mix = nil
 		}
@@ -826,8 +856,7 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		if m.view == viewMix {
 			m.mix = nil
 		}
-		m.view = m.nextView()
-		return m, m.onViewChanged()
+		return m.openPage((m.currentPage() + 1) % len(navPages))
 	case key.Code == tea.KeySpace || key.Text == " ":
 		if m.view == viewMix {
 			return m.handleMixKey(key)
@@ -838,6 +867,9 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case m.match(keymap.QueueView, key):
 		m.view = viewQueue
+		return m, m.onViewChanged()
+	case m.match(keymap.LyricsView, key):
+		m.view = viewLyrics
 		return m, m.onViewChanged()
 	case m.match(keymap.Downloads, key):
 		return m, m.openDownloads()
@@ -915,7 +947,7 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 	case viewQueue:
 		return m.handleQueueKey(key)
 	case viewLyrics:
-		return m.handleCommonPlaybackKey(key)
+		return m.handleLyricsKey(key)
 	case viewHelp:
 		return m.handleHelpKey(key)
 	case viewFolders:
@@ -1025,11 +1057,10 @@ func (m *Model) handleCommonPlaybackKey(key tea.Key) (tea.Model, tea.Cmd) {
 		}
 		m.moveBottom()
 		return m, nil
-	case isKey(key, "1"), isKey(key, "2"), isKey(key, "3"), isKey(key, "4"), isKey(key, "5"), isKey(key, "6"):
-		idx, _ := strconv.Atoi(key.Text)
-		if idx >= 1 && idx <= len(viewNames) {
-			m.view = view(idx - 1)
-			return m, m.onViewChanged()
+	case len(key.Text) == 1 && key.Text[0] >= '1' && key.Text[0] <= '9':
+		idx := int(key.Text[0] - '1')
+		if idx < len(navPages) {
+			return m.openPage(idx)
 		}
 	}
 	return m, nil
@@ -1112,20 +1143,17 @@ func (m *Model) onViewChanged() tea.Cmd {
 	if m.view == viewHelp {
 		m.helpOffset = 0
 	}
+	if m.view == viewLogin {
+		return m.ensureLoginQR()
+	}
+	if m.view == viewFolders && !m.folderBusy && len(m.folderItems) == 0 {
+		return m.openFolders(m.defaultFolderSource())
+	}
 	if m.view == viewDownloads && !m.downloadsBusy {
 		m.downloadsBusy = true
 		return m.loadDownloadsCmd()
 	}
 	return nil
-}
-
-func (m *Model) nextView() view {
-	for i, v := range cycleViews {
-		if v == m.view {
-			return cycleViews[(i+1)%len(cycleViews)]
-		}
-	}
-	return viewLibrary
 }
 
 func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
@@ -1482,6 +1510,10 @@ func (m *Model) handleSearchInput(key tea.Key) (tea.Model, tea.Cmd) {
 		m.shutdown()
 		return m, tea.Quit
 	}
+	if key.Code == tea.KeyTab {
+		m.searchEditing = false
+		return m.handleKey(key)
+	}
 	switch key.Code {
 	case tea.KeyEnter:
 		m.searchEditing = false
@@ -1767,6 +1799,7 @@ func (m *Model) playSong(song store.Song) tea.Cmd {
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
+	m.resetLyricScroll()
 	return m.playSongCmdAt(song, 0, 0)
 }
 
@@ -1855,6 +1888,11 @@ func (m *Model) togglePlayback() tea.Cmd {
 		return m.playSongCmdAt(res.Song, res.StartAt, 0)
 	}
 	return nil
+}
+
+// seekTo 跳到绝对位置；沿用 seekBy 的片段限制与过期续签逻辑。
+func (m *Model) seekTo(target time.Duration) tea.Cmd {
+	return m.seekBy(target - m.position)
 }
 
 // seekBy 跳转；地址临近过期时顺手续签，避免 seek 触发 403。
@@ -2080,6 +2118,7 @@ func (m *Model) removeQueueItem() tea.Cmd {
 			m.lyricIdx = -1
 			m.lyricSource = ""
 			m.lyricLoaded = false
+			m.resetLyricScroll()
 			m.queueCursor = 0
 			m.setPlayingPlaylist("")
 			m.persistQueue()

@@ -24,6 +24,7 @@ const (
 	LocalSearch      Action = "local_search"
 	Search           Action = "search"
 	QueueView        Action = "queue_view"
+	LyricsView       Action = "lyrics_view"
 	PlayPause        Action = "play_pause"
 	Next             Action = "next"
 	Previous         Action = "previous"
@@ -87,6 +88,7 @@ var Defaults = map[Action][]string{
 	LocalSearch:      {"/"},
 	Search:           {"?"},
 	QueueView:        {"c"},
+	LyricsView:       {"l"},
 	PlayPause:        {"space"},
 	Next:             {"]"},
 	Previous:         {"["},
@@ -105,10 +107,10 @@ var Defaults = map[Action][]string{
 	OffsetDown:       {"<"},
 	OffsetUp:         {">"},
 	OffsetReset:      {"0"},
-	Up:               {"up", "k"},
-	Down:             {"down", "j"},
-	Left:             {"left", "h"},
-	Right:            {"right", "l"},
+	Up:               {"up"},
+	Down:             {"down"},
+	Left:             {"left"},
+	Right:            {"right"},
 	Top:              {"g"},
 	Bottom:           {"G"},
 	PageUp:           {"ctrl+u", "pgup"},

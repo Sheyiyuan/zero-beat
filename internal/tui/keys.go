@@ -87,13 +87,14 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.OffsetDown), m.helpKeys(keymap.OffsetUp), m.helpKeys(keymap.OffsetReset)), "歌词偏移 0.5 秒 / 归零（任意视图）")
 
 	section("浏览")
-	add("Tab", "轮转曲库 / 队列 / 歌词")
-	add("1-6", "直达曲库、搜索、队列、歌词、帮助、登录")
+	add("Tab", "轮转全部视图（也可点页头页面名打开菜单）")
+	add("1-9", "直达曲库、本地搜索、音源搜索、队列、歌词、帮助、登录、导入歌单、下载")
 	add(joinKeys(m.helpKeys(keymap.Down), m.helpKeys(keymap.Up)), "上下移动")
 	add(joinKeys(m.helpKeys(keymap.Top), m.helpKeys(keymap.Bottom)), "跳到列表顶部 / 底部")
 	add(joinKeys(m.helpKeys(keymap.PageUp), m.helpKeys(keymap.PageDown)), "向上 / 向下翻页")
 	add(joinKeys(m.helpKeys(keymap.Left), m.helpKeys(keymap.Right)), "切换歌单 / 歌曲操作焦点（曲库）")
-	add(m.helpKeys(keymap.QueueView), "打开当前播放队列")
+	add(m.helpKeys(keymap.QueueView), "打开播放列表")
+	add(m.helpKeys(keymap.LyricsView), "打开歌词")
 	add(m.helpKeys(keymap.New), "打开新建命令面板")
 	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
 	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/删除/查看缺失文件）")
@@ -106,6 +107,12 @@ func (m *Model) helpLines() []string {
 	add(m.helpKeys(keymap.Delete), "清空队列；歌单焦点删除当前歌单")
 	add(joinKeys(m.helpKeys(keymap.Rename), m.helpKeys(keymap.Refresh)), "重命名歌单（歌单焦点）/ 刷新当前列表")
 
+	section("鼠标")
+	add("左键", "点击按钮、页头或列表项；双击歌曲播放；单击歌词跳到该句")
+	add("右键", "歌曲 / 歌单 / 歌词上下文菜单（菜单项旁标注快捷键）")
+	add("滚轮", "歌词页滚动；在底部播放状态行上调节音量")
+	add("歌词页", "↑/↓ 或滚轮滚动，5 秒无操作回到当前句")
+
 	section("其它")
 	add(m.helpKeys(keymap.LocalSearch), "搜索当前歌单；r 切到本地全部")
 	add(m.helpKeys(keymap.Search), "搜索音源")
@@ -113,7 +120,7 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.Login), m.helpKeys(keymap.Logout)), "登录管理 / 退出登录（登录页，W 仍兼容）")
 	add(m.helpKeys(keymap.LoginImage), "打开二维码图片（登录页）")
 	add(m.helpKeys(keymap.HelpPopup), "打开/关闭快捷键弹窗")
-	add(joinKeys(m.helpKeys(keymap.Back), "esc"), "返回曲库 / 取消输入")
+	add(joinKeys(m.helpKeys(keymap.Back), "esc"), "返回曲库 / 取消输入；曲库首页打开关于")
 	add(joinKeys(m.helpKeys(keymap.Quit), "ctrl+c"), "退出")
 
 	out = append(out, "")
@@ -145,9 +152,9 @@ func (m *Model) hintLine() string {
 			return "space 继续 · enter 播放 · H 帮助"
 		}
 		if m.libraryFocus == focusPlaylists {
-			return "↑/↓ 选歌单 · →/l 切到歌曲 · enter 播放歌单 · " + m.firstKey(keymap.DownloadSelected) + " 下载歌单 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
+			return "↑/↓ 选歌单 · → 切到歌曲 · enter 播放歌单 · " + m.firstKey(keymap.DownloadSelected) + " 下载歌单 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 		}
-		return "↑/↓ 选歌曲 · ←/h 切到歌单 · enter 播放 · " + m.firstKey(keymap.Download) + " 下载当前 · " + m.firstKey(keymap.DownloadSelected) + " 下载选中 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
+		return "↑/↓ 选歌曲 · ← 切到歌单 · enter 播放 · " + m.firstKey(keymap.Download) + " 下载当前 · " + m.firstKey(keymap.DownloadSelected) + " 下载选中 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 	case viewLyrics:
 		source := ""
 		if m.lyricOffsetMS != 0 {

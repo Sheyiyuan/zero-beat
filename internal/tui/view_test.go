@@ -199,9 +199,12 @@ func TestSearchEnterStartsSearch(t *testing.T) {
 	}
 }
 
-func TestTabCyclesViews(t *testing.T) {
+func TestTabCyclesPages(t *testing.T) {
 	m := fixtureModel()
-	want := []view{viewQueue, viewLyrics, viewLibrary}
+	want := []view{
+		viewSearch, viewSearch, viewQueue, viewLyrics, viewHelp, viewLogin,
+		viewFolders, viewDownloads, viewLibrary,
+	}
 	for i, w := range want {
 		updated, _ := m.Update(keyPress("", tea.KeyTab))
 		m = updated.(*Model)
@@ -209,13 +212,49 @@ func TestTabCyclesViews(t *testing.T) {
 			t.Fatalf("第 %d 次 Tab 应切到 %v，实际 %v", i+1, viewNames[w], viewNames[m.view])
 		}
 	}
+}
 
-	// 搜索页不参与轮转，Tab 回到曲库。
-	m.view = viewSearch
-	updated, _ := m.Update(keyPress("", tea.KeyTab))
+func TestHUnboundAndLOpensLyricsAndJKDoNotMove(t *testing.T) {
+	m := fixtureModel()
+	m.libraryFocus = focusSongs
+	m.songIdx = 0
+
+	updated, _ := m.Update(keyPress("h", 'h'))
 	m = updated.(*Model)
 	if m.view != viewLibrary {
-		t.Fatalf("从搜索页按 Tab 应回曲库，实际 %v", viewNames[m.view])
+		t.Fatalf("h 应留空，实际切到了 %v", viewNames[m.view])
+	}
+	if m.libraryFocus != focusSongs {
+		t.Fatal("h 不应切换曲库焦点")
+	}
+
+	updated, _ = m.Update(keyPress("l", 'l'))
+	m = updated.(*Model)
+	if m.view != viewLyrics {
+		t.Fatalf("l 应打开歌词，实际 %v", viewNames[m.view])
+	}
+
+	m.view = viewLibrary
+	updated, _ = m.Update(keyPress("j", 'j'))
+	m = updated.(*Model)
+	if m.songIdx != 0 {
+		t.Fatalf("j 不应再移动选中项，实际 %d", m.songIdx)
+	}
+	updated, _ = m.Update(keyPress("k", 'k'))
+	m = updated.(*Model)
+	if m.songIdx != 0 {
+		t.Fatalf("k 不应再移动选中项，实际 %d", m.songIdx)
+	}
+
+	updated, _ = m.Update(keyPress("", tea.KeyDown))
+	m = updated.(*Model)
+	if m.songIdx != 1 {
+		t.Fatalf("方向键↓应移动选中项，实际 %d", m.songIdx)
+	}
+	updated, _ = m.Update(keyPress("", tea.KeyUp))
+	m = updated.(*Model)
+	if m.songIdx != 0 {
+		t.Fatalf("方向键↑应移动选中项，实际 %d", m.songIdx)
 	}
 }
 
@@ -559,6 +598,28 @@ func TestLoginViewNetEaseFits24Rows(t *testing.T) {
 		t.Fatalf("登录页内容缺失：\n%s", body)
 	}
 	assertFrame(t, m.View().Content, 100, 24)
+}
+
+func TestLoginViewHasHeaderWithoutAccount(t *testing.T) {
+	m := fixtureModel()
+	m.view = viewLogin
+	m.loginSource = source.Bilibili
+	m.users = map[source.ID]source.User{
+		source.Bilibili: {Name: "", LoggedIn: false},
+		source.NetEase:  {Name: "", LoggedIn: false},
+	}
+	m.qrStatus = "等待扫码"
+	m.setQRCode("https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=8f3c1d2e4b5a69788796a5b4c3d2e1f0")
+	frame := m.View().Content
+	assertFrame(t, frame, 100, 30)
+	lines := strings.Split(frame, "\n")
+	top := ansi.Strip(lines[0])
+	if !strings.Contains(top, "zero") || !strings.Contains(top, "登录") || !strings.Contains(top, "Tab") {
+		t.Fatalf("登录页顶栏缺失：%q", top)
+	}
+	if strings.Contains(top, "账户") {
+		t.Fatalf("登录页顶栏不应显示右侧账户信息：%q", top)
+	}
 }
 
 func TestPaletteOverlayAndCreateBlank(t *testing.T) {

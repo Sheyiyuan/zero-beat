@@ -24,6 +24,9 @@ func (m *Model) View() tea.View {
 	if m.palette != nil {
 		frame = m.overlayPalette(frame)
 	}
+	if m.aboutPopup {
+		frame = overlayBox(frame, m.aboutLines(), m.width, m.height)
+	}
 	if m.helpPopup {
 		frame = overlayBox(frame, m.helpPopupLines(), m.width, m.height)
 	}
@@ -33,8 +36,12 @@ func (m *Model) View() tea.View {
 	if m.clip != nil {
 		frame = overlayBox(frame, m.clipLines(), m.width, m.height)
 	}
+	if m.menu != nil {
+		frame = m.overlayMenu(frame)
+	}
 	v := tea.NewView(strings.Join(frame, "\n"))
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
 	v.WindowTitle = m.windowTitle()
 	return v
 }
@@ -48,7 +55,10 @@ func (m *Model) windowTitle() string {
 
 func (m *Model) viewTitle() string {
 	if m.view == viewSearch {
-		return "搜索 · " + m.searchMode.String()
+		if m.searchMode == searchSource {
+			return "音源搜索"
+		}
+		return "本地搜索"
 	}
 	return viewNames[m.view]
 }
@@ -56,16 +66,24 @@ func (m *Model) viewTitle() string {
 func (m *Model) render() []string {
 	w, h := m.width, m.height
 	if m.view == viewLogin {
-		// 登录页独占整屏：二维码需要的高度优先，不显示播放条/快捷键。
-		lines := m.renderLogin(h)
+		// 登录页保留顶栏与分隔线，但右侧不显示账户摘要。
+		left, _ := m.headerParts()
+		lines := []string{
+			padRight(truncate(left, w), w),
+			st.dim.Render(strings.Repeat("─", w)),
+		}
+		bodyH := h - len(lines)
+		if bodyH > 0 {
+			login := m.renderLogin(bodyH)
+			for _, line := range login {
+				if len(lines) >= h {
+					break
+				}
+				lines = append(lines, padRight(line, w))
+			}
+		}
 		for len(lines) < h {
-			lines = append(lines, "")
-		}
-		if len(lines) > h {
-			lines = lines[:h]
-		}
-		for i := range lines {
-			lines[i] = padRight(lines[i], w)
+			lines = append(lines, padRight("", w))
 		}
 		return lines
 	}
@@ -109,8 +127,8 @@ func (m *Model) render() []string {
 	return lines
 }
 
-func (m *Model) renderHeader() string {
-	left := st.title.Render(" zero ") + st.dim.Render("│") + " " + st.text.Render(m.viewTitle()) +
+func (m *Model) headerParts() (left, right string) {
+	left = st.title.Render(" zero ") + st.dim.Render("│") + " " + st.text.Render(m.viewTitle()) +
 		st.dim.Render(" · ") + st.accent.Render("Tab") + st.dim.Render(" 切换")
 	// 始终保留右上角的 L 账户入口；空间不足时优先截短账户名。
 	loginKey := m.firstKey(keymap.Login)
@@ -119,10 +137,15 @@ func (m *Model) renderHeader() string {
 	if maxAccount < 0 {
 		maxAccount = 0
 	}
-	right := suffix
+	right = suffix
 	if maxAccount > 0 {
 		right = st.muted.Render(truncate(m.accountSummary(), maxAccount)) + suffix
 	}
+	return left, right
+}
+
+func (m *Model) renderHeader() string {
+	left, right := m.headerParts()
 	gap := m.width - visWidth(left) - visWidth(right) - 1
 	if gap < 1 {
 		gap = 1
@@ -231,27 +254,24 @@ func (m *Model) platformLyricName() string {
 	return "平台歌词"
 }
 
-func (m *Model) renderNowPlaying() string {
-	icon := "■"
+// playbackIcon 返回左侧播放/暂停按钮的图标：显示的是点击后执行的动作。
+func (m *Model) playbackIcon() string {
 	switch m.state {
 	case audio.StatePlaying:
-		icon = "▶"
+		return "⏸"
 	case audio.StatePaused:
-		icon = "⏸"
+		return "▶"
 	case audio.StateBuffering:
-		icon = "…"
+		return "…"
 	case audio.StateFailed:
-		icon = "✕"
+		return "✕"
 	}
+	return "■"
+}
 
-	title := "未在播放"
-	if m.current != nil && m.current.Title != "" {
-		title = m.current.Title
-		if m.current.Artist != "" {
-			title += " — " + m.current.Artist
-		}
-	}
-
+// nowPlayingMeta 拼出底部状态行右侧的元信息，并返回播放模式片段的位置。
+// modeStart/modeWidth 以显示宽度计；没有模式片段时返回 -1。
+func (m *Model) nowPlayingMeta() (text string, modeStart, modeWidth int) {
 	volume := fmt.Sprintf("音量 %d%%", int(m.volume*100))
 	if m.muted {
 		volume = "静音"
@@ -260,24 +280,69 @@ func (m *Model) renderNowPlaying() string {
 	if quality == "—" {
 		quality = "音质 " + m.qualityPrefLabel()
 	}
-	meta := fmt.Sprintf("%s · %s · %s", quality, m.mode.String(), volume)
-	if m.current != nil && m.current.Source != "" {
-		meta = m.sourceName(source.ID(m.current.Source)) + " · " + meta
+
+	parts := make([]string, 0, 8)
+	modeIdx := -1
+	add := func(s string, isMode bool) {
+		if isMode {
+			modeIdx = len(parts)
+		}
+		parts = append(parts, s)
 	}
+	if m.current != nil && m.current.Source != "" {
+		add(m.sourceName(source.ID(m.current.Source)), false)
+	}
+	add(quality, false)
+	add(m.mode.String(), true)
+	add(volume, false)
 	if tag := m.clipTag(); tag != "" {
-		meta += " · " + tag
+		add(tag, false)
 	}
 	if m.compDB != 0 {
-		meta += fmt.Sprintf(" · 补偿 %+.0f dB", m.compDB)
+		add(fmt.Sprintf("补偿 %+.0f dB", m.compDB), false)
 	}
 	if !m.sleepUntil.IsZero() {
 		if left := time.Until(m.sleepUntil); left > 0 {
-			meta += " · 睡眠 " + formatDuration(left)
+			add("睡眠 "+formatDuration(left), false)
 		}
 	}
 	if m.resumeAt > 0 && m.state == audio.StatePaused {
-		meta += " · 断点 " + formatDuration(m.resumeAt)
+		add("断点 "+formatDuration(m.resumeAt), false)
 	}
+
+	offset := 0
+	for i, part := range parts {
+		if i > 0 {
+			offset += 3
+		}
+		if i == modeIdx {
+			modeStart = offset
+			modeWidth = visWidth(part)
+		}
+		offset += visWidth(part)
+	}
+	if modeIdx < 0 {
+		modeStart = -1
+	}
+	return strings.Join(parts, " · "), modeStart, modeWidth
+}
+
+func (m *Model) nowPlayingTitle() string {
+	title := "未在播放"
+	if m.current != nil && m.current.Title != "" {
+		title = m.current.Title
+		if m.current.Artist != "" {
+			title += " — " + m.current.Artist
+		}
+	}
+	return title
+}
+
+func (m *Model) renderNowPlaying() string {
+	icon := m.playbackIcon()
+	title := m.nowPlayingTitle()
+
+	meta, _, _ := m.nowPlayingMeta()
 	if maxMeta := m.width - 6; maxMeta > 0 && visWidth(meta) > maxMeta {
 		meta = truncate(meta, maxMeta)
 	}
@@ -375,7 +440,7 @@ func (m *Model) renderBody(h int) []string {
 
 // ---- 曲库 ----
 
-func (m *Model) renderLibrary(h int) []string {
+func (m *Model) librarySideWidth() int {
 	sideW := 20
 	if m.width < 76 {
 		sideW = 14
@@ -383,6 +448,11 @@ func (m *Model) renderLibrary(h int) []string {
 	if m.width-sideW-1 < 24 {
 		sideW = 0
 	}
+	return sideW
+}
+
+func (m *Model) renderLibrary(h int) []string {
+	sideW := m.librarySideWidth()
 	mainW := m.width - sideW - 1
 
 	side := make([]string, h)
@@ -848,6 +918,34 @@ type lyricRow struct {
 	translation bool
 }
 
+func (m *Model) lyricRows() ([]lyricRow, int) {
+	rows := make([]lyricRow, 0, len(m.lyricLines)*2)
+	current := -1
+	for i, line := range m.lyricLines {
+		if i == m.lyricIdx {
+			current = len(rows)
+		}
+		rows = append(rows, lyricRow{text: line.Text, lineIdx: i})
+		if t := strings.TrimSpace(line.Translation); t != "" && t != strings.TrimSpace(line.Text) {
+			rows = append(rows, lyricRow{text: t, lineIdx: i, translation: true})
+		}
+	}
+	return rows, current
+}
+
+// lyricWindow 返回当前高度下可见的歌词行与起始下标。
+func (m *Model) lyricWindow(h int) ([]lyricRow, int) {
+	rows, current := m.lyricRows()
+	if len(rows) == 0 {
+		return nil, 0
+	}
+	start := current - h/2
+	if m.lyricScroll != 0 {
+		start = clampInt(start+m.lyricScroll, 0, max(0, len(rows)-h))
+	}
+	return rows, start
+}
+
 func (m *Model) renderLyricsView(h int) []string {
 	out := make([]string, 0, h)
 	if len(m.lyricLines) == 0 {
@@ -861,20 +959,7 @@ func (m *Model) renderLyricsView(h int) []string {
 		return out
 	}
 
-	rows := make([]lyricRow, 0, len(m.lyricLines)*2)
-	current := -1
-	for i, line := range m.lyricLines {
-		if i == m.lyricIdx {
-			current = len(rows)
-		}
-		rows = append(rows, lyricRow{text: line.Text, lineIdx: i})
-		if t := strings.TrimSpace(line.Translation); t != "" && t != strings.TrimSpace(line.Text) {
-			rows = append(rows, lyricRow{text: t, lineIdx: i, translation: true})
-		}
-	}
-
-	center := h / 2
-	start := current - center
+	rows, start := m.lyricWindow(h)
 	progress := lyricProgress(m.lyricLines, m.lyricIdx,
 		int(m.position/time.Millisecond), int(m.duration/time.Millisecond))
 	for i := 0; i < h; i++ {

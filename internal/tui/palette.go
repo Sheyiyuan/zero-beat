@@ -349,6 +349,23 @@ func overlayBox(frame []string, box []string, width, height int) []string {
 	if top < 0 {
 		top = 0
 	}
+	return overlayBoxAt(frame, box, left, top, width, height)
+}
+
+// overlayBoxAt 在指定左上角覆盖一个等宽浮层。
+func overlayBoxAt(frame []string, box []string, left, top, width, height int) []string {
+	if len(box) == 0 || len(frame) == 0 {
+		return frame
+	}
+	bw := 0
+	for _, line := range box {
+		if w := visWidth(line); w > bw {
+			bw = w
+		}
+	}
+	if bw > width {
+		bw = width
+	}
 	for i, line := range box {
 		y := top + i
 		if y < 0 || y >= len(frame) {

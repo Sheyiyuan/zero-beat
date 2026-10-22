@@ -298,7 +298,7 @@ func stripTracking(raw string) string {
 		return raw
 	}
 	q := u.Query()
-	for _, key := range []string{"source", "spm_id_from", "from_spmid", "from_source"} {
+	for _, key := range []string{"source", "spm_id_from", "from_spmid", "from_source", "chainId"} {
 		q.Del(key)
 	}
 	u.RawQuery = q.Encode()
