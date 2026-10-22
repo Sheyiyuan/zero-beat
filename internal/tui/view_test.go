@@ -856,6 +856,32 @@ func TestHelpPopupAndAccountHint(t *testing.T) {
 	}
 }
 
+// TestLoginPageOOpensQRImage 验证登录页按 login_image（默认 o）触发打开二维码图片；
+// 旧的 v 键继续兼容。
+func TestLoginPageOOpensQRImage(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		code rune
+	}{
+		{"配置键 o", "o", 'o'},
+		{"兼容键 v", "v", 'v'},
+	}
+	for _, c := range cases {
+		m := fixtureModel()
+		m.view = viewLogin
+		m.qrPath = ""
+		updated, _ := m.Update(keyPress(c.text, c.code))
+		mm := updated.(*Model)
+		if mm.note.text != "二维码图片还没生成" {
+			t.Fatalf("%s：登录页按键应尝试打开二维码图片，实际提示 %q", c.name, mm.note.text)
+		}
+		if mm.note.isErr {
+			t.Fatalf("%s：二维码未生成应是普通提示而非错误", c.name)
+		}
+	}
+}
+
 func TestLoginSourceUpDown(t *testing.T) {
 	b, n, reg := twoFakes()
 	b.logged, n.logged = false, false

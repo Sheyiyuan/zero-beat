@@ -982,7 +982,8 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		if m.match(keymap.Source, key) {
 			return m, m.switchLoginSource(1)
 		}
-		if isKey(key, "v") {
+		// login_image 默认绑定 o；v 作为历史键位继续兼容。
+		if m.match(keymap.LoginImage, key) || isKey(key, "v") {
 			if m.qrPath == "" {
 				m.setNotice("二维码图片还没生成", false)
 				return m, nil
