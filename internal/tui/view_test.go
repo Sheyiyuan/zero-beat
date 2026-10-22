@@ -214,47 +214,66 @@ func TestTabCyclesPages(t *testing.T) {
 	}
 }
 
-func TestHUnboundAndLOpensLyricsAndJKDoNotMove(t *testing.T) {
+func TestVimDirectionKeysAndLyricsShortcut(t *testing.T) {
 	m := fixtureModel()
 	m.libraryFocus = focusSongs
 	m.songIdx = 0
 
-	updated, _ := m.Update(keyPress("h", 'h'))
+	// j/k 恢复为上下移动。
+	updated, _ := m.Update(keyPress("j", 'j'))
 	m = updated.(*Model)
-	if m.view != viewLibrary {
-		t.Fatalf("h 应留空，实际切到了 %v", viewNames[m.view])
-	}
-	if m.libraryFocus != focusSongs {
-		t.Fatal("h 不应切换曲库焦点")
-	}
-
-	updated, _ = m.Update(keyPress("l", 'l'))
-	m = updated.(*Model)
-	if m.view != viewLyrics {
-		t.Fatalf("l 应打开歌词，实际 %v", viewNames[m.view])
-	}
-
-	m.view = viewLibrary
-	updated, _ = m.Update(keyPress("j", 'j'))
-	m = updated.(*Model)
-	if m.songIdx != 0 {
-		t.Fatalf("j 不应再移动选中项，实际 %d", m.songIdx)
+	if m.songIdx != 1 {
+		t.Fatalf("j 应下移选中项，实际 %d", m.songIdx)
 	}
 	updated, _ = m.Update(keyPress("k", 'k'))
 	m = updated.(*Model)
 	if m.songIdx != 0 {
-		t.Fatalf("k 不应再移动选中项，实际 %d", m.songIdx)
+		t.Fatalf("k 应上移选中项，实际 %d", m.songIdx)
 	}
 
-	updated, _ = m.Update(keyPress("", tea.KeyDown))
+	// h/l 恢复为左右切换焦点。
+	updated, _ = m.Update(keyPress("h", 'h'))
 	m = updated.(*Model)
-	if m.songIdx != 1 {
-		t.Fatalf("方向键↓应移动选中项，实际 %d", m.songIdx)
+	if m.libraryFocus != focusPlaylists {
+		t.Fatal("h 应切到歌单焦点")
 	}
-	updated, _ = m.Update(keyPress("", tea.KeyUp))
+	updated, _ = m.Update(keyPress("l", 'l'))
 	m = updated.(*Model)
-	if m.songIdx != 0 {
-		t.Fatalf("方向键↑应移动选中项，实际 %d", m.songIdx)
+	if m.libraryFocus != focusSongs {
+		t.Fatalf("l 应切回歌曲焦点，实际 %v", m.libraryFocus)
+	}
+
+	// 歌词改用单键 T（ctrl+l 仍可），单键 l 不再切页。
+	updated, _ = m.Update(keyPress("l", 'l'))
+	m = updated.(*Model)
+	if m.view != viewLibrary {
+		t.Fatalf("l 不应再打开歌词页，实际 %v", viewNames[m.view])
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Text: "T"}))
+	m = updated.(*Model)
+	if m.view != viewLyrics {
+		t.Fatalf("T 应打开歌词页，实际 %v", viewNames[m.view])
+	}
+	m.view = viewLibrary
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'l', Mod: tea.ModCtrl}))
+	m = updated.(*Model)
+	if m.view != viewLyrics {
+		t.Fatalf("ctrl+l 应仍可打开歌词页，实际 %v", viewNames[m.view])
+	}
+}
+
+func TestShiftTabCyclesPagesBackwards(t *testing.T) {
+	m := fixtureModel()
+	want := []view{
+		viewDownloads, viewFolders, viewLogin, viewHelp, viewLyrics,
+		viewQueue, viewSearch, viewSearch, viewLibrary,
+	}
+	for i, w := range want {
+		updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+		m = updated.(*Model)
+		if m.view != w {
+			t.Fatalf("第 %d 次 Shift+Tab 应切到 %v，实际 %v", i+1, viewNames[w], viewNames[m.view])
+		}
 	}
 }
 

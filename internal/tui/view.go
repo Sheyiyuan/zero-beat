@@ -397,6 +397,8 @@ func (m *Model) renderHintLine() string {
 	switch {
 	case m.note.text != "" && m.note.isErr:
 		right = st.err.Render(m.note.text)
+	case m.note.text != "" && m.note.isWarn:
+		right = st.warn.Render(m.note.text)
 	case m.note.text != "":
 		right = st.ok.Render(m.note.text)
 	case m.songsBusy:

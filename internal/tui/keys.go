@@ -87,7 +87,7 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.OffsetDown), m.helpKeys(keymap.OffsetUp), m.helpKeys(keymap.OffsetReset)), "歌词偏移 0.5 秒 / 归零（任意视图）")
 
 	section("浏览")
-	add("Tab", "轮转全部视图（也可点页头页面名打开菜单）")
+	add("Tab / Shift+Tab", "正向 / 反向轮转全部视图（也可点页头页面名打开菜单）")
 	add("1-9", "直达曲库、本地搜索、音源搜索、队列、歌词、帮助、登录、导入歌单、下载")
 	add(joinKeys(m.helpKeys(keymap.Down), m.helpKeys(keymap.Up)), "上下移动")
 	add(joinKeys(m.helpKeys(keymap.Top), m.helpKeys(keymap.Bottom)), "跳到列表顶部 / 底部")

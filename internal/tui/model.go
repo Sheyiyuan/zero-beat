@@ -103,9 +103,10 @@ const (
 )
 
 type notice struct {
-	text  string
-	isErr bool
-	at    time.Time
+	text   string
+	isErr  bool
+	isWarn bool
+	at     time.Time
 }
 
 // Model 是 TUI 的全部状态。
@@ -247,11 +248,13 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 	}
 	keys := defaultKeys
 	var keyErr error
+	var keyWarnings []string
 	if path, err := config.KeymapPath(); err == nil {
-		if loaded, err := keymap.Load(path); err != nil {
+		if loaded, warns, err := keymap.LoadWithWarnings(path); err != nil {
 			keyErr = err
 		} else {
 			keys = loaded
+			keyWarnings = warns
 		}
 	}
 	m := &Model{
@@ -293,6 +296,8 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 	}
 	if keyErr != nil {
 		m.setNotice("快捷键配置无效，已回退默认："+keyErr.Error(), true)
+	} else if len(keyWarnings) > 0 {
+		m.setWarn("快捷键配置部分降级：" + strings.Join(keyWarnings, "；"))
 	}
 	applyTheme(resolveThemeMode(st).palette())
 	return m
@@ -856,7 +861,11 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		if m.view == viewMix {
 			m.mix = nil
 		}
-		return m.openPage((m.currentPage() + 1) % len(navPages))
+		step := 1
+		if isShiftTab(key) {
+			step = -1
+		}
+		return m.openPage(m.cyclePage(step))
 	case key.Code == tea.KeySpace || key.Text == " ":
 		if m.view == viewMix {
 			return m.handleMixKey(key)
@@ -2761,6 +2770,11 @@ func (m *Model) shutdown() {
 
 func (m *Model) setNotice(text string, isErr bool) {
 	m.note = notice{text: text, isErr: isErr, at: time.Now()}
+}
+
+// setWarn 显示黄色提示：不阻断操作，但需要用户知道（如快捷键配置被部分降级）。
+func (m *Model) setWarn(text string) {
+	m.note = notice{text: text, isWarn: true, at: time.Now()}
 }
 
 func (m *Model) setError(err error) {

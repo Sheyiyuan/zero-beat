@@ -185,8 +185,12 @@ func runKeymap(args []string) error {
 		fmt.Println("已生成快捷键配置：" + path)
 		return nil
 	}
-	if _, err := keymap.Load(path); err != nil {
+	_, warnings, err := keymap.LoadWithWarnings(path)
+	if err != nil {
 		return err
+	}
+	for _, w := range warnings {
+		fmt.Println("提示：" + w)
 	}
 	fmt.Println("快捷键配置 OK：" + path)
 	return nil

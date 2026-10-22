@@ -59,6 +59,21 @@ func (m *Model) openPage(idx int) (tea.Model, tea.Cmd) {
 	return m, m.onViewChanged()
 }
 
+// cyclePage 返回轮转 step 步后的页面下标；混合编辑器不在页面表里，按曲库处理。
+func (m *Model) cyclePage(step int) int {
+	n := len(navPages)
+	idx := m.currentPage()
+	if idx < 0 {
+		idx = 0
+	}
+	return ((idx+step)%n + n) % n
+}
+
+// isShiftTab 判断是否为 Shift+Tab（终端发送 CSI Z，解码为 Tab + Shift）。
+func isShiftTab(key tea.Key) bool {
+	return key.Code == tea.KeyTab && key.Mod&tea.ModShift != 0
+}
+
 func (m *Model) nextView() view {
 	idx := m.currentPage()
 	if idx < 0 {
