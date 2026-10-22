@@ -308,3 +308,45 @@ func TestMouseWheelScrollsPlaylistSidebar(t *testing.T) {
 		t.Fatalf("歌单栏滚轮上滚应回滚三行，实际 %d", mm.playlistIdx)
 	}
 }
+
+// TestMouseHeaderClickWhileSearchEditingClearsEditing 验证搜索输入态点页头时
+// 先退出输入态：关于弹窗在最上层且按键归弹窗，不再出现「弹窗提示 enter 关闭、
+// 实际 enter 触发搜索」的层级错乱。
+func TestMouseHeaderClickWhileSearchEditingClearsEditing(t *testing.T) {
+	m := fixtureModel()
+	m.view = viewSearch
+	m.searchMode = searchLocalAll
+	m.searchEditing = true
+
+	zone := findZone(t, m, hitAbout)
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x, Y: zone.y, Button: tea.MouseLeft})
+	mm := updated.(*Model)
+	if !mm.aboutPopup {
+		t.Fatal("点击 zero 应打开关于弹窗")
+	}
+	if mm.searchEditing {
+		t.Fatal("打开关于时应退出搜索输入态")
+	}
+
+	// 弹窗盖在搜索页上时，enter 只关闭弹窗，不应触发搜索。
+	updated, _ = mm.Update(keyPress("", tea.KeyEnter))
+	mm = updated.(*Model)
+	if mm.aboutPopup {
+		t.Fatal("enter 应关闭关于弹窗")
+	}
+	if mm.searchBusy {
+		t.Fatal("弹窗打开时 enter 不应触发搜索")
+	}
+
+	// 页面名与账户同样先退出输入态。
+	m = fixtureModel()
+	m.view = viewSearch
+	m.searchMode = searchLocalAll
+	m.searchEditing = true
+	zone = findZone(t, m, hitPageMenu)
+	updated, _ = m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseLeft})
+	mm = updated.(*Model)
+	if mm.searchEditing || mm.menu == nil {
+		t.Fatalf("点页面名应先退出输入态并打开菜单：editing=%v menu=%+v", mm.searchEditing, mm.menu)
+	}
+}

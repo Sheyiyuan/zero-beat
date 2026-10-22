@@ -32,16 +32,20 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// 页头区域即使在搜索输入中也保持可用。
+	// 页头区域即使在搜索输入中也保持可用；点页头先退出输入态，
+	// 避免「弹窗盖着输入框、按键却还进搜索框」的层级错乱。
 	if hit {
 		switch zone.target {
 		case hitAbout:
+			m.searchEditing = false
 			m.aboutPopup = true
 			return m, nil
 		case hitPageMenu:
+			m.searchEditing = false
 			m.openPageMenu(mouse.X, mouse.Y+1)
 			return m, nil
 		case hitAccount:
+			m.searchEditing = false
 			m.view = viewLogin
 			return m, m.onViewChanged()
 		}

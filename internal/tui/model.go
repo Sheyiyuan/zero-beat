@@ -825,14 +825,15 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 	if m.picker != nil {
 		return m.handlePickerKey(key)
 	}
-	if m.view == viewSearch && m.searchEditing {
-		return m.handleSearchInput(key)
-	}
+	// 浮层（帮助/关于）在最上层，按键必须先归它们；搜索输入在其下。
 	if m.helpPopup {
 		return m.handleHelpPopupKey(key)
 	}
 	if m.aboutPopup {
 		return m.handleAboutKey(key)
+	}
+	if m.view == viewSearch && m.searchEditing {
+		return m.handleSearchInput(key)
 	}
 
 	switch {
