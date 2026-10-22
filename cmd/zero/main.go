@@ -28,7 +28,7 @@ import (
 )
 
 // version 由发布流水线通过 -ldflags "-X main.version=..." 注入。
-var version = "0.4.1"
+var version = "0.5.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

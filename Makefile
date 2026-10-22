@@ -1,6 +1,6 @@
 BINARY  := zero
 GO      ?= go
-VERSION ?= 0.4.1
+VERSION ?= 0.5.0
 LDFLAGS ?= -s -w -X main.version=$(VERSION)
 
 .PHONY: all build run demo test vet fmt fmt-check tidy check clean
