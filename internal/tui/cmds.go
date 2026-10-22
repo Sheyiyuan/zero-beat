@@ -209,7 +209,8 @@ func (m *Model) playSongCmdAt(song store.Song, startAt time.Duration, retry int)
 	return m.playSongCmdAtMode(song, startAt, retry, false)
 }
 
-// playLocalSongCmdAt 从下载管理页起播：首轮强制本地文件，重试时回落远程。
+// playLocalSongCmdAt 从下载管理页起播：开启本地优先时首轮直接用本地文件，
+// 关闭时走远程解析；重试一律回落远程。
 func (m *Model) playLocalSongCmdAt(song store.Song, startAt time.Duration, retry int) tea.Cmd {
 	return m.playSongCmdAtMode(song, startAt, retry, true)
 }
@@ -224,7 +225,7 @@ func (m *Model) playSongCmdAtMode(song store.Song, startAt time.Duration, retry 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if localOnly && preferLocal {
+		if localOnly && preferLocal && svc.LocalFirstEnabled() {
 			if stream, ok := svc.LocalStream(song); ok {
 				return streamMsg{song: song, stream: stream, startAt: startAt, retry: retry, request: request}
 			}

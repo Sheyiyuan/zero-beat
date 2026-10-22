@@ -196,3 +196,33 @@ func TestDownloadsRedownloadMissingWithW(t *testing.T) {
 		t.Fatalf("不应提示没有选中项: %q", mm.note.text)
 	}
 }
+
+// TestDownloadsPlaybackRespectsLocalFirstSetting 验证下载页起播遵守「本地优先」
+// 开关：开启时首轮用本地文件，关闭时走远程解析。
+func TestDownloadsPlaybackRespectsLocalFirstSetting(t *testing.T) {
+	st := openFeatureStore(t)
+	song, localPath := seedDownload(t, st, "开关曲目")
+	m := fixtureModel()
+	m.store = st
+	if src, ok := m.sources.Get(source.Bilibili).(*fakeSource); ok {
+		src.resolved = source.Resolved{
+			Track:  source.Track{Source: source.Bilibili, ExternalID: song.ExternalID(), Page: 1, Title: "开关曲目"},
+			Stream: source.Stream{URL: "https://example.invalid/remote.m4a", Quality: "远程"},
+		}
+	}
+
+	if msg := m.playLocalSongCmdAt(song, 0, 0)().(streamMsg); msg.stream.URL != localPath {
+		t.Fatalf("本地优先开启时应播放本地文件，实际 %+v", msg.stream)
+	}
+
+	if err := st.SetSetting("local_first", "0"); err != nil {
+		t.Fatalf("关闭本地优先失败: %v", err)
+	}
+	if m.service().LocalFirstEnabled() {
+		t.Fatal("设置关闭后 LocalFirstEnabled 应为 false")
+	}
+	msg := m.playLocalSongCmdAt(song, 0, 0)().(streamMsg)
+	if msg.stream.URL != "https://example.invalid/remote.m4a" {
+		t.Fatalf("本地优先关闭时应走远程解析，实际 %+v", msg.stream)
+	}
+}

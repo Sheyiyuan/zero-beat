@@ -207,7 +207,7 @@ func (s *Service) Resolve(ctx context.Context, song store.Song, quality source.Q
 // 本地记录失效（文件被删除、移动）会继续走远程解析。
 func (s *Service) ResolveWithLocal(ctx context.Context, song store.Song, quality source.Quality, allowLocal bool) (store.Song, source.Stream, error) {
 	song = store.NormalizeSong(song)
-	if allowLocal && s.store != nil && s.store.Setting("local_first", "1") != "0" {
+	if allowLocal && s.LocalFirstEnabled() {
 		if stream, ok := s.LocalStream(song); ok {
 			return song, stream, nil
 		}

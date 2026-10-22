@@ -74,6 +74,15 @@ func (s *Service) SavePlayingPlaylist(id string) {
 	}
 }
 
+// LocalFirstEnabled 返回「已下载歌曲优先本地播放」开关当前是否开启。
+// store 为 nil（测试/纯搜索场景）时按开启处理。
+func (s *Service) LocalFirstEnabled() bool {
+	if s.store == nil {
+		return true
+	}
+	return s.store.Setting("local_first", "1") != "0"
+}
+
 // SaveLocalFirst 持久化「已下载歌曲优先本地播放」开关。
 func (s *Service) SaveLocalFirst(on bool) {
 	if s.store == nil {
