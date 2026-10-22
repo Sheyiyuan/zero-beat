@@ -8,6 +8,7 @@ import (
 
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
+	"github.com/sheyiyuan/zero-beat/internal/player"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
@@ -43,40 +44,15 @@ func (m *Model) openClipEditor() tea.Cmd {
 }
 
 func (m *Model) beginFullPreview(pos time.Duration, paused bool) bool {
-	if m.engine == nil || m.current == nil {
-		return false
-	}
-	stream := m.engine.CurrentStream()
-	if stream.URL == "" {
-		return false
-	}
-	if !stream.ExpiresAt.IsZero() && time.Until(stream.ExpiresAt) <= time.Minute {
-		return false // 直链即将过期，别为了预览把正在播放的流停掉
-	}
-	if pos < 0 {
-		pos = 0
-	}
-	if m.duration > 0 && pos > m.duration {
-		pos = m.duration
-	}
-	stream.ClipStartMS = 0
-	stream.ClipEndMS = 0
-	if err := m.engine.PlayAt(m.ctx, stream, pos); err != nil {
+	var ok bool
+	var err error
+	m.withController(func(c *player.Controller) {
+		ok, err = c.PreviewAt(m.ctx, pos, paused)
+	})
+	if err != nil {
 		m.setError(err)
-		return false
 	}
-	m.playRequest++ // 直接复用当前流时，作废仍在路上的旧解析请求
-	m.awaitingStream = false
-	m.retryCount = 0
-	m.resumeAt = 0
-	m.position = pos
-	if paused {
-		m.engine.Pause()
-		m.state = audio.StatePaused
-	} else {
-		m.state = audio.StatePlaying
-	}
-	return true
+	return ok
 }
 
 // clipAllowsPosition 判断位置是否仍在旧区间内；end 为 0 表示不限制结尾。
@@ -106,21 +82,22 @@ func (m *Model) previewForSeek(target time.Duration) (bool, tea.Cmd) {
 	if clipAllowsPosition(target, clip, m.duration) {
 		return false, nil
 	}
-	if m.engine == nil {
+	var engineState audio.State
+	m.withController(func(c *player.Controller) { engineState = c.EngineState() })
+	if engineState == audio.StateIdle {
 		return false, nil
 	}
-	paused := m.engine.State() == audio.StatePaused
+	paused := engineState == audio.StatePaused
 	if m.beginFullPreview(target, paused) {
 		m.clip.previewing = true
 		m.setActiveClip(m.current.ID, store.Clip{})
 		m.persistQueue()
 		return true, nil
 	}
-	switch m.engine.State() {
+	switch engineState {
 	case audio.StatePlaying, audio.StatePaused, audio.StateEnded, audio.StateFailed, audio.StateBuffering:
 		m.clip.previewing = true
-		m.position = target
-		m.state = audio.StateBuffering
+		m.withController(func(c *player.Controller) { c.SetBuffering(target) })
 		return true, m.playSongCmdAt(*m.current, target, 0)
 	}
 	return false, nil
@@ -243,17 +220,17 @@ func (m *Model) handleClipKey(key tea.Key) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) clipPosition() time.Duration {
-	if m.engine != nil && m.engine.State() != audio.StateIdle && !m.awaitingStream {
-		if pos := m.engine.Position(); pos > 0 {
-			return pos
-		}
+	var pos time.Duration
+	m.withController(func(c *player.Controller) { pos = c.LivePosition() })
+	if pos > 0 {
+		return pos
 	}
 	return m.position
 }
 
 func (m *Model) setClipStart() {
 	pos := m.clipPosition()
-	m.position = pos
+	m.withController(func(c *player.Controller) { c.SetPosition(pos) })
 	posMS := int64(pos / time.Millisecond)
 	if posMS < 0 {
 		posMS = 0
@@ -275,7 +252,7 @@ func (m *Model) setClipStart() {
 
 func (m *Model) setClipEnd() {
 	pos := m.clipPosition()
-	m.position = pos
+	m.withController(func(c *player.Controller) { c.SetPosition(pos) })
 	posMS := int64(pos / time.Millisecond)
 	if m.duration > 0 {
 		maxMS := int64(m.duration / time.Millisecond)
@@ -307,19 +284,17 @@ func (m *Model) cancelClipEditor() tea.Cmd {
 	m.setActiveClip(c.songID, original)
 	pos := clampClipStart(m.clipPosition(), original, m.duration)
 	if m.engine == nil {
-		m.position = pos
-		if m.state == audio.StatePaused {
-			m.resumeAt = pos
-		}
+		m.withController(func(c *player.Controller) { c.SetPosition(pos) })
 		m.persistQueue()
 		return nil
 	}
 	if !c.previewing {
-		m.position = pos
+		m.withController(func(c *player.Controller) { c.SetPosition(pos) })
 		return nil
 	}
-	paused := m.engine.State() == audio.StatePaused
-	return m.restartWithClip(original, pos, paused)
+	var engineState audio.State
+	m.withController(func(c *player.Controller) { engineState = c.EngineState() })
+	return m.restartWithClip(original, pos, engineState == audio.StatePaused)
 }
 
 // restartWithClip 尽量复用当前直链，避免保存/取消片段时重新走一次解析。
@@ -328,33 +303,17 @@ func (m *Model) restartWithClip(clip store.Clip, pos time.Duration, paused bool)
 		return nil
 	}
 	if m.engine == nil {
-		m.position = pos
-		if paused {
-			m.resumeAt = pos
-		}
+		m.withController(func(c *player.Controller) { c.SetPosition(pos) })
 		return nil
 	}
-	stream := m.engine.CurrentStream()
-	if stream.URL != "" && (stream.ExpiresAt.IsZero() || time.Until(stream.ExpiresAt) > time.Minute) {
-		stream.ClipStartMS = clip.StartMS
-		stream.ClipEndMS = clip.EndMS
-		if err := m.engine.PlayAt(m.ctx, stream, pos); err == nil {
-			m.playRequest++
-			m.awaitingStream = false
-			m.retryCount = 0
-			m.resumeAt = 0
-			m.position = pos
-			if paused {
-				m.engine.Pause()
-				m.state = audio.StatePaused
-			} else {
-				m.state = audio.StatePlaying
-			}
-			m.persistQueue()
-			return nil
-		}
+	var ok bool
+	m.withController(func(c *player.Controller) {
+		ok = c.RestartWithClip(m.ctx, clip, pos, paused)
+	})
+	if ok {
+		return nil
 	}
-	m.state = audio.StateBuffering
+	m.withController(func(c *player.Controller) { c.SetBuffering(pos) })
 	return m.playSongCmdAt(*m.current, pos, 0)
 }
 
@@ -401,8 +360,10 @@ func (m *Model) saveClip() tea.Cmd {
 	}
 	start := time.Duration(clip.StartMS) * time.Millisecond
 	if m.engine == nil {
-		m.position = start
-		m.resumeAt = start
+		m.withController(func(c *player.Controller) {
+			c.SetPosition(start)
+			c.SetResume(start)
+		})
 		m.persistQueue()
 		return nil
 	}

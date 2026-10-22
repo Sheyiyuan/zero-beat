@@ -17,6 +17,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/config"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
+	"github.com/sheyiyuan/zero-beat/internal/player"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
@@ -200,12 +201,11 @@ func (m *Model) searchCmd(keyword string, page int) tea.Cmd {
 
 // playSongCmdAt 解析播放地址并从 startAt 起播；retry 用于自动重试计数。
 func (m *Model) playSongCmdAt(song store.Song, startAt time.Duration, retry int) tea.Cmd {
-	m.playRequest++
-	m.retryCount = retry
-	request := m.playRequest
-	m.awaitingStream = true
+	var request int
+	m.withController(func(c *player.Controller) {
+		request, song = c.BeginPlay(song, startAt, retry)
+	})
 	svc, quality := m.service(), m.quality
-	song = store.NormalizeSong(song)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

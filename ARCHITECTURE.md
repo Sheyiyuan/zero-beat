@@ -8,9 +8,12 @@
 ├────────────────────────────────────────────────────────────┤
 │ internal/tui        Bubble Tea v2：模型、渲染、按键、命令    │
 ├──────────────────────────────┬─────────────────────────────┤
-│ internal/app 业务服务         │ internal/audio  播放引擎     │
-│  ├─ 搜索 / 取流 / 歌词        │ internal/player 队列算法     │
-│  ├─ 歌单同步 / 登录 / 队列恢复│ internal/store  SQLite      │
+│ internal/app 业务服务         │ internal/player 播放控制器   │
+│  ├─ 搜索 / 取流 / 歌词        │  ├─ 队列/播放状态/模式        │
+│  ├─ 歌单同步 / 登录 / 队列恢复│  ├─ 引擎控制/重试/预解析      │
+│  └─ 不依赖 Bubble Tea         │  └─ 不依赖 Bubble Tea        │
+│ internal/downloader 下载任务  │ internal/audio  播放引擎     │
+│  ├─ 并发/取消/进度事件        │ internal/store  SQLite      │
 │  └─ 不依赖 Bubble Tea         │                             │
 ├──────────────────────────────┼─────────────────────────────┤
 │ internal/source 契约 + 注册表 │                             │
@@ -27,8 +30,9 @@
 
 依赖方向：`tui` 只依赖 `app.Service` 与 `source.Source` 接口，不按平台名写分支；
 `app` 依赖 `source` / `store` / `lyrics` / `lrclib`，但不 import Bubble Tea；
-`source/bilibili` 依赖 `bili`；`netease` 独立实现接口；`internal/player` 只
-处理队列索引的纯算法，不依赖 Bubble Tea；`audio` / `store` / `lyrics` /
+`source/bilibili` 依赖 `bili`；`netease` 独立实现接口；`internal/player` 持有
+播放状态机并通过 `Engine` / `QueueSaver` 接口调用引擎与存储；`internal/downloader`
+持有下载任务队列；两者都不依赖 Bubble Tea。`audio` / `store` / `lyrics` /
 `download` 互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 只
 额外维护任务队列和进度行。
 
@@ -213,6 +217,8 @@ accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
 不导出音频文件；区间末尾受 ffmpeg 输出缓冲影响，可能有约 100ms 的尾音。
 
 边界：`internal/app` 承接搜索、取流、歌词、歌单同步、登录、队列恢复、歌单 CRUD、
-偏好持久化、下载执行等外部业务；`internal/player` 承接队列索引、洗牌/恢复、预解析缓存
-等纯算法。当前曲目、播放状态、引擎控制仍留在 `Model`，它在这里是**播放器的视图控制器**
-（只调 `app.Service` 与 `audio.Engine`），不再直接承载平台、网络或存储业务。
+偏好持久化、下载执行等外部业务；`internal/player.Controller` 承接队列、当前曲目、
+播放状态、模式、重试、预解析、引擎控制与落盘；`internal/downloader.Manager` 承接
+下载任务、并发与取消。`Model` 只保留视图状态、按键路由和播放状态的只读镜像，
+不再决定「下一首是谁」「什么时候重试」「队列怎么变」；片段编辑器的整首预览
+也通过 `player.Controller` 完成。

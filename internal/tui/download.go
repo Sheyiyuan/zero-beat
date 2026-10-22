@@ -5,47 +5,39 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/download"
-	"github.com/sheyiyuan/zero-beat/internal/source"
+	"github.com/sheyiyuan/zero-beat/internal/downloader"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
 const maxConcurrentDownloads = 2
 
-type downloadState int
+type downloadEventMsg struct{ ev downloader.Event }
 
-const (
-	downloadQueued downloadState = iota
-	downloadRunning
-)
-
-type downloadTask struct {
-	id     int
-	song   store.Song
-	title  string
-	state  downloadState
-	done   int64
-	total  int64
-	ch     chan downloadMsg
-	cancel context.CancelFunc
+// downloadManager 懒加载下载管理器；测试不启动真实下载时也能构造 Model。
+func (m *Model) downloadManager() *downloader.Manager {
+	if m.downloads == nil {
+		m.downloads = downloader.New(maxConcurrentDownloads, func(ctx context.Context, song store.Song, progress func(done, total int64)) (string, int64, error) {
+			res := app.New(m.sources, nil, nil).DownloadSong(ctx, song, m.quality, progress)
+			return res.Path, res.Size, res.Err
+		})
+	}
+	return m.downloads
 }
 
-type downloadMsg struct {
-	id       int
-	done     int64
-	total    int64
-	path     string
-	size     int64
-	err      error
-	finished bool
+func waitDownloadEventCmd(mgr *downloader.Manager) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-mgr.Events()
+		if !ok {
+			return nil
+		}
+		return downloadEventMsg{ev: ev}
+	}
 }
-
-type downloadClosedMsg struct{ id int }
 
 func (m *Model) startCurrentDownload() tea.Cmd {
 	if m.current == nil {
@@ -98,32 +90,34 @@ func (m *Model) enqueueDownload(raw store.Song, verb string) tea.Cmd {
 		m.setNotice("这首缺少音源 ID，无法下载", true)
 		return nil
 	}
-	for _, task := range m.downloads {
-		if task.song.ID == song.ID {
-			m.setNotice("已在下载队列："+task.title, false)
-			return nil
-		}
+	mgr := m.downloadManager()
+	if mgr.Has(song.ID) {
+		m.setNotice("已在下载队列："+song.Title, false)
+		return nil
 	}
-
 	title := strings.TrimSpace(song.Title)
 	if title == "" {
 		title = song.ExternalID()
 	}
-	m.downloadSeq++
-	task := &downloadTask{
-		id:    m.downloadSeq,
-		song:  song,
-		title: title,
-		state: downloadQueued,
+	id, added := mgr.Add(song, title)
+	if !added {
+		m.setNotice("已在下载队列："+title, false)
+		return nil
 	}
-	m.downloads = append(m.downloads, task)
-	cmd := m.startQueuedDownloads()
-	if task.state == downloadRunning {
+	mgr.Start()
+	running := false
+	for _, task := range mgr.Tasks() {
+		if task.ID == id && task.State == downloader.Running {
+			running = true
+			break
+		}
+	}
+	if running {
 		m.setNotice(verb+title, false)
 	} else {
 		m.setNotice("已加入下载队列："+title, false)
 	}
-	return cmd
+	return waitDownloadEventCmd(mgr)
 }
 
 func (m *Model) startPlaylistDownload() tea.Cmd {
@@ -135,187 +129,76 @@ func (m *Model) startPlaylistDownload() tea.Cmd {
 		m.setNotice("这个歌单还是空的", false)
 		return nil
 	}
-	existing := make(map[string]bool, len(m.downloads))
-	for _, task := range m.downloads {
-		existing[task.song.ID] = true
-	}
-
+	mgr := m.downloadManager()
 	added, skipped := 0, 0
 	for _, raw := range m.songs {
 		song := store.NormalizeSong(raw)
-		if song.ExternalID() == "" || existing[song.ID] {
-			skipped++
-			continue
-		}
-		existing[song.ID] = true
 		title := strings.TrimSpace(song.Title)
 		if title == "" {
 			title = song.ExternalID()
 		}
-		m.downloadSeq++
-		m.downloads = append(m.downloads, &downloadTask{
-			id:    m.downloadSeq,
-			song:  song,
-			title: title,
-			state: downloadQueued,
-		})
-		added++
+		if song.ExternalID() == "" {
+			skipped++
+			continue
+		}
+		if _, ok := mgr.Add(song, title); ok {
+			added++
+		} else {
+			skipped++
+		}
 	}
 	if added == 0 {
 		m.setNotice("没有可新增的下载任务（已在队列或缺少音源 ID）", false)
 		return nil
 	}
-	cmd := m.startQueuedDownloads()
+	mgr.Start()
 	msg := fmt.Sprintf("已加入歌单下载：%d 首", added)
 	if skipped > 0 {
 		msg += fmt.Sprintf("（跳过 %d 首）", skipped)
 	}
 	m.setNotice(msg, false)
-	return cmd
+	return waitDownloadEventCmd(mgr)
 }
 
-func (m *Model) startQueuedDownloads() tea.Cmd {
-	running := 0
-	for _, task := range m.downloads {
-		if task.state == downloadRunning {
-			running++
-		}
+func (m *Model) handleDownloadEvent(msg downloadEventMsg) (tea.Model, tea.Cmd) {
+	mgr := m.downloadManager()
+	if !msg.ev.Finished {
+		mgr.SetProgress(msg.ev.ID, msg.ev.Done, msg.ev.Total)
+		return m, waitDownloadEventCmd(mgr)
 	}
-	var cmds []tea.Cmd
-	for _, task := range m.downloads {
-		if running >= maxConcurrentDownloads {
-			break
-		}
-		if task.state != downloadQueued {
-			continue
-		}
-		task.state = downloadRunning
-		ch := make(chan downloadMsg, 16)
-		task.ch = ch
-		ctx, cancel := context.WithCancel(context.Background())
-		task.cancel = cancel
-		cmds = append(cmds, m.downloadStartCmd(ctx, task.id, task.song, ch))
-		running++
-	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Batch(cmds...)
-}
-
-func (m *Model) downloadStartCmd(ctx context.Context, id int, song store.Song, ch chan downloadMsg) tea.Cmd {
-	sources := m.sources
-	quality := m.quality
-	return func() tea.Msg {
-		go runTUIDownload(ctx, id, song, sources, quality, ch)
-		msg, ok := <-ch
-		if !ok {
-			return downloadClosedMsg{id: id}
-		}
-		return msg
-	}
-}
-
-func runTUIDownload(ctx context.Context, id int, song store.Song, sources *source.Registry, quality source.Quality, ch chan downloadMsg) {
-	defer close(ch)
-
-	last := time.Time{}
-	onProgress := func(done, total int64) {
-		now := time.Now()
-		if !last.IsZero() && now.Sub(last) < 200*time.Millisecond {
-			return
-		}
-		last = now
-		select {
-		case ch <- downloadMsg{id: id, done: done, total: total}:
-		default:
-		}
-	}
-
-	res := app.New(sources, nil, nil).DownloadSong(ctx, song, quality, onProgress)
-	if res.Err != nil {
-		ch <- downloadMsg{id: id, finished: true, path: res.Path, err: res.Err}
-		return
-	}
-	ch <- downloadMsg{id: id, finished: true, path: res.Path, size: res.Size}
-}
-
-func waitDownloadMsg(id int, ch <-chan downloadMsg) tea.Cmd {
-	return func() tea.Msg {
-		msg, ok := <-ch
-		if !ok {
-			return downloadClosedMsg{id: id}
-		}
-		return msg
-	}
-}
-
-func (m *Model) handleDownloadMsg(msg downloadMsg) (tea.Model, tea.Cmd) {
-	task := m.downloadByID(msg.id)
-	if task == nil {
-		return m, nil
-	}
-	if !msg.finished {
-		task.done = msg.done
-		task.total = msg.total
-		return m, waitDownloadMsg(task.id, task.ch)
-	}
-
-	path := msg.path
-	m.removeDownloadTask(task.id)
-	if msg.err != nil {
-		if errors.Is(msg.err, download.ErrExists) {
-			m.setNotice("已存在，跳过："+path, false)
+	mgr.Remove(msg.ev.ID)
+	if msg.ev.Err != nil {
+		if errors.Is(msg.ev.Err, download.ErrExists) {
+			m.setNotice("已存在，跳过："+msg.ev.Path, false)
 		} else {
-			m.setError(msg.err)
+			m.setError(msg.ev.Err)
 		}
 	} else {
-		m.setNotice("已下载："+path, false)
+		m.setNotice("已下载："+msg.ev.Path, false)
 	}
-	return m, m.startQueuedDownloads()
-}
-
-func (m *Model) handleDownloadClosedMsg(msg downloadClosedMsg) (tea.Model, tea.Cmd) {
-	m.removeDownloadTask(msg.id)
-	m.setNotice("下载任务中断", true)
-	return m, m.startQueuedDownloads()
-}
-
-func (m *Model) downloadByID(id int) *downloadTask {
-	for _, task := range m.downloads {
-		if task.id == id {
-			return task
-		}
-	}
-	return nil
+	return m, waitDownloadEventCmd(mgr)
 }
 
 func (m *Model) cancelDownloads() {
-	for _, task := range m.downloads {
-		if task.cancel != nil {
-			task.cancel()
-		}
-	}
-}
-
-func (m *Model) removeDownloadTask(id int) {
-	for i, task := range m.downloads {
-		if task.id == id {
-			m.downloads = append(m.downloads[:i], m.downloads[i+1:]...)
-			return
-		}
+	if m.downloads != nil {
+		m.downloads.CancelAll()
 	}
 }
 
 // downloadLineText 渲染底部下载进度行；多个任务时只显示第一个运行中的任务。
 func (m *Model) downloadLineText() (string, bool) {
-	if len(m.downloads) == 0 || m.view == viewHelp || m.view == viewLogin {
+	if m.downloads == nil {
+		return "", false
+	}
+	tasks := m.downloads.Tasks()
+	if len(tasks) == 0 || m.view == viewHelp || m.view == viewLogin {
 		return "", false
 	}
 	running, queued := 0, 0
-	var primary *downloadTask
-	for _, task := range m.downloads {
-		if task.state == downloadRunning {
+	var primary *downloader.Task
+	for i := range tasks {
+		task := &tasks[i]
+		if task.State == downloader.Running {
 			running++
 			if primary == nil {
 				primary = task
@@ -325,20 +208,20 @@ func (m *Model) downloadLineText() (string, bool) {
 		}
 	}
 	if primary == nil {
-		primary = m.downloads[0]
+		primary = &tasks[0]
 	}
 
 	limit := m.width / 3
 	if limit < 8 {
 		limit = 8
 	}
-	name := truncate(primary.title, limit)
+	name := truncate(primary.Title, limit)
 	text := st.accent.Render(" ↓ ") + st.text.Render(name)
 	switch {
-	case primary.state == downloadQueued:
+	case primary.State == downloader.Queued:
 		text += st.muted.Render("  等待下载")
-	case primary.total > 0:
-		pct := int(float64(primary.done) * 100 / float64(primary.total))
+	case primary.Total > 0:
+		pct := int(float64(primary.Done) * 100 / float64(primary.Total))
 		if pct > 100 {
 			pct = 100
 		}
@@ -346,10 +229,10 @@ func (m *Model) downloadLineText() (string, bool) {
 			text += st.muted.Render(fmt.Sprintf("  %d%%", pct))
 		} else {
 			text += st.muted.Render(fmt.Sprintf("  %d%% · %s / %s", pct,
-				download.HumanBytes(primary.done), download.HumanBytes(primary.total)))
+				download.HumanBytes(primary.Done), download.HumanBytes(primary.Total)))
 		}
-	case primary.done > 0:
-		text += st.muted.Render("  " + download.HumanBytes(primary.done))
+	case primary.Done > 0:
+		text += st.muted.Render("  " + download.HumanBytes(primary.Done))
 	default:
 		text += st.muted.Render("  准备中…")
 	}

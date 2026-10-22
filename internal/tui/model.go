@@ -13,6 +13,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/config"
+	"github.com/sheyiyuan/zero-beat/internal/downloader"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/lrclib"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
@@ -83,24 +84,13 @@ const (
 	focusPlaylists
 )
 
-type playMode int
+type playMode = player.Mode
 
 const (
-	modeSequence playMode = iota
-	modeLoopOne
-	modeShuffle
+	modeSequence = player.ModeSequence
+	modeLoopOne  = player.ModeLoopOne
+	modeShuffle  = player.ModeShuffle
 )
-
-func (p playMode) String() string {
-	switch p {
-	case modeLoopOne:
-		return "单曲"
-	case modeShuffle:
-		return "随机"
-	default:
-		return "顺序"
-	}
-}
 
 type promptKind int
 
@@ -128,6 +118,7 @@ type Model struct {
 	sources *source.Registry
 	store   *store.Store
 	engine  *audio.Engine
+	pc      *player.Controller
 	quality source.Quality
 	keys    *keymap.Keymap
 
@@ -187,8 +178,7 @@ type Model struct {
 	searchPages   int
 	searchSource  source.ID // 空表示全部音源
 
-	downloads   []*downloadTask
-	downloadSeq int
+	downloads *downloader.Manager
 
 	loginSource     source.ID
 	qrCache         map[source.ID]*qrCacheEntry
@@ -332,25 +322,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.handlePaste(msg.Content)
 		return m, nil
 
-	case downloadMsg:
-		return m.handleDownloadMsg(msg)
-
-	case downloadClosedMsg:
-		return m.handleDownloadClosedMsg(msg)
+	case downloadEventMsg:
+		return m.handleDownloadEvent(msg)
 
 	case tickMsg:
-		// 恢复会话时引擎还是 Idle，不能拿引擎的 0 位置覆盖保存的断点。
-		if m.engine != nil && m.engine.State() != audio.StateIdle && !m.awaitingStream {
-			m.position = m.engine.Position()
-			if d := m.engine.Duration(); d > 0 {
-				m.duration = d
-			}
-		} else if m.duration == 0 && m.current != nil && m.current.Duration > 0 {
-			m.duration = time.Duration(m.current.Duration) * time.Second
-		}
-		if m.duration > 0 && m.position > m.duration {
-			m.position = m.duration
-		}
+		var tick player.TickResult
+		m.withController(func(c *player.Controller) { tick = c.Tick(time.Now()) })
 		if len(m.lyricLines) > 0 {
 			// 前奏/回退到第一句之前时 ActiveIndex 返回 -1，也要如实写回，
 			// 否则底部歌词条会停在上一次高亮的那句。
@@ -360,18 +337,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.note.text != "" && time.Since(m.note.at) > 4*time.Second {
 			m.note = notice{}
 		}
-		if !m.sleepUntil.IsZero() && !time.Now().Before(m.sleepUntil) {
-			m.sleepUntil = time.Time{}
-			if m.engine != nil && m.engine.State() == audio.StatePlaying {
-				m.engine.Pause()
-				m.state = audio.StatePaused
-			}
+		if tick.SleepPaused {
 			m.setNotice("睡眠定时结束，已暂停", false)
-			m.persistQueue()
-		}
-		// 每 5 秒落一次播放进度，异常退出最多丢 5 秒，而不是整段会话。
-		if m.needsPersist() && (m.lastPersist.IsZero() || time.Since(m.lastPersist) >= 5*time.Second) {
-			m.persistQueue()
 		}
 		return m, tickCmd()
 
@@ -574,32 +541,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case queueRestoredMsg:
 		if len(msg.songs) > 0 {
-			m.queue = msg.songs
 			idx := msg.index
 			if idx < 0 || idx >= len(msg.songs) {
 				idx = 0
 			}
-			m.queueIdx = idx
-			m.queueCursor = idx
 			song := msg.songs[idx]
-			m.current = &song
-			if song.Duration > 0 {
-				m.duration = time.Duration(song.Duration) * time.Second
+			duration := time.Duration(song.Duration) * time.Second
+			clip := sanitizeClip(m.loadClip(song.ID), duration)
+			position := clampClipStart(msg.position, clip, duration)
+			if duration > 0 && position > duration {
+				position = duration
 			}
-			clip := sanitizeClip(m.loadClip(song.ID), m.duration)
+			m.withController(func(c *player.Controller) {
+				c.RestoreSession(msg.songs, idx, &song, position)
+			})
+			m.queueCursor = m.queueIdx
 			m.setActiveClip(song.ID, clip)
-			m.position = clampClipStart(msg.position, clip, m.duration)
-			if m.duration > 0 && m.position > m.duration {
-				m.position = m.duration
-			}
-			m.resumeAt = m.position
-			m.state = audio.StatePaused
 			m.lyricLoaded = false
 			m.lyricLines = nil
 			m.lyricIdx = -1
-			if m.mode == modeShuffle {
-				m.startShuffleQueue()
-			}
 			if m.position > 0 {
 				m.setNotice(fmt.Sprintf("已恢复上次进度 %s · space 继续", formatDuration(m.position)), false)
 			} else {
@@ -706,140 +666,102 @@ func (m *Model) qrKey() string {
 }
 
 func (m *Model) handleEngineEvent(ev audio.Event) (tea.Model, tea.Cmd) {
-	// 正在切到新曲目时，旧流的失败/结束/停止事件不能打断新请求，也不能把缓冲态改成失败态。
-	if m.awaitingStream && (ev.Type == audio.EventFailed || ev.Type == audio.EventEnded || ev.State == audio.StateIdle) {
-		return m, waitEngineCmd(m.engine.Events())
-	}
-	m.state = ev.State
-	switch ev.Type {
-	case audio.EventFailed:
-		if m.current != nil && m.retryCount < 1 {
-			m.retryCount++
-			m.state = audio.StateBuffering
-			m.setNotice("播放中断，正在重新解析并重试…", true)
-			return m, tea.Batch(
-				m.playSongCmdAt(*m.current, m.position, m.retryCount),
-				waitEngineCmd(m.engine.Events()),
-			)
-		}
-		if ev.Err != nil {
-			m.setError(ev.Err)
-		}
-		return m, waitEngineCmd(m.engine.Events())
-	case audio.EventEnded:
-		m.retryCount = 0
-		m.resumeAt = 0
+	var res player.EventResult
+	m.withController(func(c *player.Controller) { res = c.HandleEvent(ev) })
+	switch {
+	case res.Retry:
+		m.setNotice("播放中断，正在重新解析并重试…", true)
+		return m, tea.Batch(
+			m.playSongCmdAt(res.Song, res.StartAt, m.retryCount),
+			waitEngineCmd(m.engine.Events()),
+		)
+	case res.Ended:
 		if m.clip != nil {
-			// 编辑片段时用整首预览，播到结尾不要自动切歌，否则草稿会被关掉。
-			m.state = audio.StateEnded
 			return m, waitEngineCmd(m.engine.Events())
 		}
-		cmd := m.advance()
-		return m, tea.Batch(cmd, waitEngineCmd(m.engine.Events()))
-	default:
-		return m, waitEngineCmd(m.engine.Events())
+		return m, tea.Batch(m.advance(), waitEngineCmd(m.engine.Events()))
+	case res.Err != nil:
+		m.setError(res.Err)
 	}
+	return m, waitEngineCmd(m.engine.Events())
 }
 
 func (m *Model) handleStream(msg streamMsg) (tea.Model, tea.Cmd) {
-	// 用户快速切歌时，旧请求的返回必须丢弃，不能把上一首的流打到新曲目上。
-	if msg.request != m.playRequest {
+	song := store.NormalizeSong(msg.song)
+	duration := msg.stream.Duration
+	if duration == 0 && song.Duration > 0 {
+		duration = time.Duration(song.Duration) * time.Second
+	}
+	clip, preview := m.playbackClip(song, duration)
+	startAt := clampClipStart(msg.startAt, clip, duration)
+
+	var res player.PlayResult
+	m.withController(func(c *player.Controller) {
+		res = c.CompletePlay(m.ctx, msg.request, song, msg.stream, startAt, msg.retry, clip, preview, msg.err)
+	})
+	switch {
+	case res.Stale:
+		return m, nil
+	case res.Retry:
+		m.setNotice("解析播放地址失败，正在重试…", true)
+		return m, m.playSongCmdAt(res.Song, res.StartAt, res.RetryCount)
+	case res.Err != nil:
+		m.setNotice("解析播放地址失败："+res.Err.Error(), true)
 		return m, nil
 	}
-	// 保留重试计数：成功重试后若再次失败，不再无限重试。
-	m.retryCount = msg.retry
-	if msg.err != nil {
-		// 网络抖动或签名过期时自动重试一次，仍失败才把错误交给用户。
-		if msg.retry < 1 {
-			m.retryCount = msg.retry + 1
-			m.state = audio.StateBuffering
-			m.setNotice("解析播放地址失败，正在重试…", true)
-			return m, m.playSongCmdAt(msg.song, msg.startAt, m.retryCount)
-		}
-		m.awaitingStream = false
-		if m.engine != nil {
-			// 旧曲目可能还在响，失败时必须停掉，避免「界面是新歌、耳朵是旧歌」。
-			m.engine.Stop()
-		}
-		m.state = audio.StateFailed
-		m.setError(fmt.Errorf("解析播放地址失败：%w", msg.err))
-		return m, nil
-	}
-	return m, m.startStream(msg.song, msg.stream, msg.startAt)
+	return m, m.finishStart(res.Song, res.Stream, clip, preview)
 }
 
-// startStream 把已解析的音频流交给引擎，并刷新界面状态。
+// playbackClip 返回当前曲目应使用的片段；编辑器打开时用整首预览。
+func (m *Model) playbackClip(song store.Song, duration time.Duration) (store.Clip, bool) {
+	clip := sanitizeClip(m.loadClip(song.ID), duration)
+	preview := false
+	if m.clip != nil && m.clip.songID == song.ID {
+		m.clip.previewing = true
+		clip = store.Clip{}
+		preview = true
+	}
+	return clip, preview
+}
+
+// startStream 把已解析的音频流交给控制器并刷新界面状态。
 func (m *Model) startStream(song store.Song, stream source.Stream, startAt time.Duration) tea.Cmd {
 	song = store.NormalizeSong(song)
 	if m.clip != nil && m.clip.songID != song.ID {
 		m.clip = nil
 	}
-	m.awaitingStream = false
-	// 解析可能补出标题/CID/封面，同步回队列，切歌面板与重启恢复都用得上。
-	for i := range m.queue {
-		if store.NormalizeSong(m.queue[i]).ID == song.ID {
-			m.queue[i] = song
-			break
-		}
+	duration := stream.Duration
+	if duration == 0 && song.Duration > 0 {
+		duration = time.Duration(song.Duration) * time.Second
 	}
-	m.current = &song
-	m.duration = stream.Duration
-	if m.duration == 0 && song.Duration > 0 {
-		m.duration = time.Duration(song.Duration) * time.Second
-	}
-	clip := sanitizeClip(m.loadClip(song.ID), m.duration)
-	if m.clip != nil && m.clip.songID == song.ID {
-		// 编辑器打开期间用整首预览，松开旧区间的 -t，光标才能走到区间外。
-		m.clip.previewing = true
-		clip = store.Clip{}
-	}
-	startAt = clampClipStart(startAt, clip, m.duration)
-	m.setActiveClip(song.ID, clip)
-	if m.engine == nil {
-		m.state = audio.StatePlaying
-		m.position = startAt
+	clip, preview := m.playbackClip(song, duration)
+	startAt = clampClipStart(startAt, clip, duration)
+
+	var res player.PlayResult
+	m.withController(func(c *player.Controller) {
+		res = c.PlayResolved(m.ctx, song, stream, startAt, clip, preview)
+	})
+	if res.Err != nil {
+		m.setError(res.Err)
 		return nil
 	}
-	m.position = startAt
-	if m.duration > 0 && m.position > m.duration {
-		m.position = m.duration
-	}
+	return m.finishStart(res.Song, res.Stream, clip, preview)
+}
+
+func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Clip, preview bool) tea.Cmd {
+	_ = preview
+	m.setActiveClip(song.ID, clip)
 	m.lyricBase = nil
 	m.lyricLines = nil
 	m.lyricIdx = -1
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
-	m.resumeAt = 0
-	m.awaitingStream = false
-	m.invalidatePrefetch()
-
-	durationMS := stream.Duration.Milliseconds()
-	if durationMS == 0 && song.Duration > 0 {
-		durationMS = int64(song.Duration) * 1000
-	}
-	audioStream := audio.Stream{
-		URL:         stream.URL,
-		Headers:     stream.Headers,
-		Codec:       stream.Codec,
-		DurationMS:  durationMS,
-		ExpiresAt:   stream.ExpiresAt,
-		Quality:     stream.Quality,
-		ClipStartMS: clip.StartMS,
-		ClipEndMS:   clip.EndMS,
-	}
-	if err := m.engine.PlayAt(m.ctx, audioStream, startAt); err != nil {
-		m.state = audio.StateFailed
-		m.setError(err)
-		return nil
-	}
-	m.state = audio.StatePlaying
 	quality := stream.Quality
 	if quality == "" {
 		quality = "未知音质"
 	}
 	m.setNotice("正在播放 · "+quality, false)
-	m.persistQueue()
 	return tea.Batch(m.lyricsCmd(song), m.prefetchNextCmd())
 }
 
@@ -1574,7 +1496,6 @@ func (m *Model) handleQueueKey(key tea.Key) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Code == tea.KeyEnter || m.match(keymap.PlaySelected, key):
 		if m.queueCursor >= 0 && m.queueCursor < len(m.queue) {
-			m.queueIdx = m.queueCursor
 			return m, m.playQueueIndex(m.queueCursor)
 		}
 		return m, nil
@@ -1776,9 +1697,9 @@ func (m *Model) playQueueIndex(idx int) tea.Cmd {
 	if idx < 0 || idx >= len(m.queue) {
 		return nil
 	}
-	m.queueIdx = idx
-	m.queueCursor = idx
-	return m.playSong(m.queue[idx])
+	m.withController(func(c *player.Controller) { c.SetIndex(idx) })
+	m.queueCursor = m.queueIdx
+	return m.playSong(m.queue[m.queueIdx])
 }
 
 func (m *Model) playSearchResult(idx int) tea.Cmd {
@@ -1786,34 +1707,27 @@ func (m *Model) playSearchResult(idx int) tea.Cmd {
 		return nil
 	}
 	song := m.ensureStored(m.searchResultSong(idx))
-	m.queue = append(m.queue, song)
-	m.queueIdx = len(m.queue) - 1
+	m.withController(func(c *player.Controller) {
+		_ = c.Enqueue(song)
+		c.SetIndex(len(m.queue) - 1)
+	})
 	m.queueCursor = m.queueIdx
 	m.setPlayingPlaylist("")
-	m.invalidatePrefetch()
 	m.persistQueue()
 	return m.playSong(song)
 }
 
 func (m *Model) playSong(song store.Song) tea.Cmd {
 	song = store.NormalizeSong(song)
-	m.state = audio.StateBuffering
-	m.current = &song
-	m.position = 0
-	m.resumeAt = 0
 	m.clip = nil
 	m.clipSongID = ""
 	m.clipCache = store.Clip{}
-	m.retryCount = 0
-	m.duration = time.Duration(song.Duration) * time.Second
 	m.lyricBase = nil
 	m.lyricLines = nil
 	m.lyricIdx = -1
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
-	m.invalidatePrefetch()
-	m.persistQueue()
 	return m.playSongCmdAt(song, 0, 0)
 }
 
@@ -1822,168 +1736,86 @@ func (m *Model) setMode(next playMode) {
 	if next == m.mode {
 		return
 	}
-	wasShuffle := m.mode == modeShuffle
-	hadShuffleBase := len(m.shuffleBase) > 0
-	if wasShuffle {
-		m.restoreShuffleQueue()
-	}
-	m.mode = next
-	if next == modeShuffle {
-		m.startShuffleQueue()
-	}
+	var shuffled, restored bool
+	m.withController(func(c *player.Controller) {
+		shuffled, restored = c.SetMode(next)
+	})
 	m.service().SaveMode(int(m.mode))
-	m.invalidatePrefetch()
 	label := m.mode.String()
-	if next == modeShuffle && len(m.queue) > 1 {
+	if shuffled {
 		label += "（队列已洗牌）"
 	}
-	if wasShuffle && next != modeShuffle && hadShuffleBase {
+	if restored {
 		label += "（队列已恢复）"
+	}
+	if shuffled || restored {
+		m.persistQueue()
 	}
 	m.setNotice("播放模式："+label, false)
 }
 
-// startShuffleQueue 保存当前顺序并把队列洗牌；当前歌曲保持在新的位置。
+// startShuffleQueue 按当前随机模式重排队列；恢复会话时用。
 func (m *Model) startShuffleQueue() {
-	if len(m.queue) < 2 {
-		m.shuffleBase = nil
-		return
-	}
-	m.shuffleBase = append([]store.Song(nil), m.queue...)
-	m.shuffleBaseIdx = m.queueIdx
-	id := ""
-	if m.current != nil {
-		id = m.current.ID
-	}
-	m.shuffleQueueKeeping(id)
+	m.withController(func(c *player.Controller) {
+		c.LoadQueue(m.queue, m.queueIdx)
+	})
 	m.persistQueue()
-}
-
-// restoreShuffleQueue 退出随机时按进入前的顺序恢复队列；随机期间新增的歌追加到末尾。
-func (m *Model) restoreShuffleQueue() {
-	if len(m.shuffleBase) == 0 {
-		return
-	}
-	currentID := ""
-	if m.current != nil {
-		currentID = m.current.ID
-	}
-	m.queue, m.queueIdx, m.queueCursor = player.Restore(m.queue, m.shuffleBase, currentID, m.shuffleBaseIdx)
-	m.shuffleBase = nil
-	m.invalidatePrefetch()
-	m.persistQueue()
-}
-
-func (m *Model) shuffleQueueKeeping(id string) {
-	m.queue, m.queueIdx, m.queueCursor = player.Shuffle(m.queue, id, m.queueIdx, m.shuffleFn)
-	m.invalidatePrefetch()
 }
 
 // loadQueue 用新歌单/新搜索结果替换队列；随机模式下保存原始顺序并洗牌。
 func (m *Model) loadQueue(queue []store.Song, idx int) {
-	m.shuffleBase = nil
-	m.queue = make([]store.Song, len(queue))
-	for i := range queue {
-		m.queue[i] = store.NormalizeSong(queue[i])
-	}
-	if len(m.queue) == 0 {
-		m.queueIdx = 0
-		m.queueCursor = 0
-		m.invalidatePrefetch()
-		return
-	}
-	idx = clampInt(idx, 0, len(m.queue)-1)
-	m.queueIdx = idx
-	m.queueCursor = idx
-	targetID := m.queue[idx].ID
-	if m.mode == modeShuffle {
-		m.shuffleBase = append([]store.Song(nil), m.queue...)
-		m.shuffleBaseIdx = idx
-		m.shuffleQueueKeeping(targetID)
-	}
-	m.invalidatePrefetch()
+	m.withController(func(c *player.Controller) {
+		c.LoadQueue(queue, idx)
+	})
+	m.queueCursor = m.queueIdx
 }
 
 // advance 按播放模式前进到下一首；顺序模式优先使用预解析结果。
 func (m *Model) advance() tea.Cmd {
-	if len(m.queue) == 0 {
+	var song store.Song
+	var ok bool
+	m.withController(func(c *player.Controller) { song, _, ok = c.Next() })
+	if !ok {
 		return nil
 	}
-	if m.mode == modeLoopOne && m.current != nil {
-		return m.playSong(*m.current)
-	}
-	next := player.NextIndex(m.queueIdx, len(m.queue))
-	m.queueIdx = next
-	m.queueCursor = next
 	if m.mode == modeSequence {
-		if s, ok := m.takePrefetch(m.queue[next]); ok {
-			m.retryCount = 0
-			m.playRequest++ // 作废仍在路上的旧解析请求
-			m.awaitingStream = false
-			m.state = audio.StateBuffering
-			return m.startStream(m.queue[next], s, 0)
+		if s, has := m.takePrefetch(song); has {
+			return m.startStream(song, s, 0)
 		}
 	}
-	return m.playSong(m.queue[next])
+	return m.playSong(song)
 }
 
 // rewind 回到上一首。
 func (m *Model) rewind() tea.Cmd {
-	if len(m.queue) == 0 {
+	var song store.Song
+	var ok bool
+	m.withController(func(c *player.Controller) { song, _, ok = c.Prev() })
+	if !ok {
 		return nil
 	}
-	prev := player.PrevIndex(m.queueIdx, len(m.queue))
-	m.queueIdx = prev
-	m.queueCursor = prev
-	m.invalidatePrefetch()
-	return m.playSong(m.queue[prev])
+	return m.playSong(song)
 }
 
 // togglePlayback 统一处理「起播 / 暂停 / 继续」。恢复出来的会话在第一次 space 时才起播。
 func (m *Model) togglePlayback() tea.Cmd {
-	if m.engine == nil {
+	var res player.ToggleResult
+	m.withController(func(c *player.Controller) { res = c.Toggle() })
+	switch res.Action {
+	case player.ToggleNone:
 		return nil
-	}
-	if m.awaitingStream {
+	case player.ToggleBusy:
 		m.setNotice("正在缓冲，请稍候…", false)
 		return nil
-	}
-	switch m.engine.State() {
-	case audio.StatePlaying:
-		m.engine.Pause()
-		m.state = audio.StatePaused
-		m.persistQueue()
+	case player.TogglePaused, player.ToggleResumed:
 		return nil
-	case audio.StatePaused:
-		s := m.engine.CurrentStream()
-		if s.URL != "" && m.current != nil && !s.ExpiresAt.IsZero() && time.Now().After(s.ExpiresAt) {
-			m.state = audio.StateBuffering
-			m.setNotice("播放地址已过期，正在重新解析…", false)
-			return m.playSongCmdAt(*m.current, m.position, 0)
-		}
-		if s.URL != "" {
-			m.engine.Resume()
-			m.state = audio.StatePlaying
-			m.persistQueue()
+	case player.ToggleNeedPlay:
+		if res.Song.ID == "" {
 			return nil
 		}
-	case audio.StateEnded:
-		if m.current != nil {
-			m.position = 0
-			m.resumeAt = 0
-			m.state = audio.StateBuffering
-			return m.playSongCmdAt(*m.current, 0, 0)
-		}
+		return m.playSongCmdAt(res.Song, res.StartAt, 0)
 	}
-	if m.current == nil {
-		return nil
-	}
-	at := m.resumeAt
-	if at <= 0 {
-		at = m.position
-	}
-	m.state = audio.StateBuffering
-	return m.playSongCmdAt(*m.current, at, 0)
+	return nil
 }
 
 // seekBy 跳转；地址临近过期时顺手续签，避免 seek 触发 403。
@@ -1995,84 +1827,39 @@ func (m *Model) seekBy(delta time.Duration) tea.Cmd {
 		m.setNotice("正在缓冲，暂时不能跳转", false)
 		return nil
 	}
-	target := m.position + delta
-	if m.engine != nil && m.engine.State() != audio.StateIdle && m.engine.CurrentStream().URL != "" {
-		target = m.engine.Position() + delta
-	}
-	if target < 0 {
-		target = 0
-	}
-	if m.duration > 0 && target > m.duration {
-		target = m.duration
-	}
-	// 片段编辑时临时切到整首预览，光标必须能走到旧区间之外；
-	// 保存或取消后再按新区间/原区间恢复限制。
-	if m.clip == nil {
-		if clip := m.activeClip(); clip.Active() {
-			start := clipStart(clip)
-			end := clipEnd(clip, m.duration)
-			clamped := false
-			if target < start {
-				target = start
-				clamped = true
-			}
-			if end > 0 && target >= end {
-				target = end - time.Millisecond
-				if target < start {
-					target = start
-				}
-				clamped = true
-			}
-			if clamped {
-				m.setNotice("已限制在当前片段内", false)
-			}
+	// 片段编辑时的整首预览属于编辑器交互，先交给 clip 逻辑处理。
+	if m.clip != nil {
+		if handled, cmd := m.previewForSeek(m.clipPosition() + delta); handled {
+			return cmd
 		}
-	} else if handled, cmd := m.previewForSeek(target); handled {
-		return cmd
 	}
-	m.position = target
-
-	// 还没起播（恢复会话）时只移动进度，space 会从这里开始。
-	if m.engine == nil || m.engine.State() == audio.StateIdle || m.engine.CurrentStream().URL == "" {
-		m.resumeAt = target
-		m.persistQueue()
+	var res player.SeekResult
+	m.withController(func(c *player.Controller) {
+		res = c.Seek(m.ctx, delta, m.clipCache, m.clip != nil)
+	})
+	switch res.Action {
+	case player.ToggleBusy:
+		m.setNotice("正在缓冲，暂时不能跳转", false)
 		return nil
+	case player.ToggleNeedPlay:
+		m.setNotice("播放地址即将过期或跳转失败，正在重新解析…", true)
+		return m.playSongCmdAt(res.Song, res.StartAt, 0)
 	}
-	stream := m.engine.CurrentStream()
-	if !stream.ExpiresAt.IsZero() && time.Until(stream.ExpiresAt) < 5*time.Minute {
-		m.state = audio.StateBuffering
-		m.setNotice("播放地址即将过期，正在续签…", false)
-		return m.playSongCmdAt(*m.current, target, 0)
+	if res.Clamped {
+		m.setNotice("已限制在当前片段内", false)
 	}
-	if err := m.engine.Seek(m.ctx, target); err != nil {
-		m.state = audio.StateBuffering
-		m.setNotice("跳转失败，正在重新解析…", true)
-		return m.playSongCmdAt(*m.current, target, 0)
-	}
-	m.resumeAt = 0
-	m.persistQueue()
 	return nil
 }
 
 func (m *Model) changeVolume(delta float64) {
-	m.volume = clamp01(m.volume + delta)
-	m.muted = false
-	if m.engine != nil {
-		m.engine.SetVolume(m.volume)
-	}
+	v := clamp01(m.volume + delta)
+	m.withController(func(c *player.Controller) { c.SetVolume(v) })
 	m.service().SaveVolume(m.volume)
 	m.setNotice(fmt.Sprintf("音量 %d%%", int(m.volume*100)), false)
 }
 
 func (m *Model) toggleMute() {
-	m.muted = !m.muted
-	if m.engine != nil {
-		if m.muted {
-			m.engine.SetVolume(0)
-		} else {
-			m.engine.SetVolume(m.volume)
-		}
-	}
+	m.withController(func(c *player.Controller) { c.ToggleMute() })
 	if m.muted {
 		m.setNotice("已静音 · M 恢复", false)
 	} else {
@@ -2081,36 +1868,24 @@ func (m *Model) toggleMute() {
 }
 
 func (m *Model) cycleQuality() {
-	m.quality = source.Quality((int(m.quality) + 1) % 3)
+	m.withController(func(c *player.Controller) { c.CycleQuality() })
 	m.service().SaveQuality(m.quality)
-	m.invalidatePrefetch()
 	m.setNotice("音质偏好："+m.qualityPrefLabel()+"（下一首生效）", false)
 }
 
 func (m *Model) cycleSleep() {
-	slots := []time.Duration{0, 15 * time.Minute, 30 * time.Minute, 60 * time.Minute, 120 * time.Minute}
-	m.sleepSlot = (m.sleepSlot + 1) % len(slots)
-	d := slots[m.sleepSlot]
-	if d == 0 {
-		m.sleepUntil = time.Time{}
+	var until time.Time
+	m.withController(func(c *player.Controller) { until = c.CycleSleep() })
+	if until.IsZero() {
 		m.setNotice("睡眠定时已关闭", false)
 		return
 	}
-	m.sleepUntil = time.Now().Add(d)
-	m.setNotice(fmt.Sprintf("睡眠定时：%d 分钟后暂停", int(d.Minutes())), false)
+	m.setNotice(fmt.Sprintf("睡眠定时：%d 分钟后暂停", int(time.Until(until).Minutes())), false)
 }
 
 func (m *Model) changeComp(delta float64) {
-	m.compDB += delta
-	if m.compDB < -20 {
-		m.compDB = -20
-	}
-	if m.compDB > 12 {
-		m.compDB = 12
-	}
-	if m.engine != nil {
-		m.engine.SetCompensationDB(m.compDB)
-	}
+	next := m.compDB + delta
+	m.withController(func(c *player.Controller) { c.SetCompDB(next) })
 	m.service().SaveCompDB(m.compDB)
 	m.setNotice(fmt.Sprintf("音量补偿 %+.0f dB", m.compDB), false)
 }
@@ -2169,12 +1944,10 @@ func (m *Model) enqueueSearchResult(idx int) tea.Cmd {
 
 func (m *Model) enqueueSong(song store.Song) tea.Cmd {
 	song = m.ensureStored(song)
-	m.queue = append(m.queue, song)
-	if len(m.queue) == 1 && m.current == nil {
-		m.queueIdx = 0
-	}
+	m.withController(func(c *player.Controller) {
+		_ = c.Enqueue(song)
+	})
 	m.queueCursor = len(m.queue) - 1
-	m.invalidatePrefetch()
 	m.persistQueue()
 	m.setNotice("已加入队列："+song.Title, false)
 	return nil
@@ -2187,20 +1960,22 @@ func (m *Model) insertNext(song store.Song) tea.Cmd {
 		m.setNotice("这首歌正在播放", false)
 		return nil
 	}
-	m.queue, m.queueIdx, m.queueCursor = player.InsertNext(m.queue, m.queueIdx, m.queueCursor, m.current != nil, song)
-	m.invalidatePrefetch()
+	m.withController(func(c *player.Controller) {
+		m.queueCursor = c.InsertNext(song)
+	})
 	m.persistQueue()
 	m.setNotice("下一首播放："+song.Title, false)
 	return nil
 }
 
 func (m *Model) moveQueueItem(delta int) tea.Cmd {
-	queue, idx, cursor := player.Move(m.queue, m.queueIdx, m.queueCursor, delta)
-	if cursor == m.queueCursor && idx == m.queueIdx {
+	oldCursor := m.queueCursor
+	m.withController(func(c *player.Controller) {
+		m.queueCursor = c.MoveItem(oldCursor, delta)
+	})
+	if m.queueCursor == oldCursor {
 		return nil
 	}
-	m.queue, m.queueIdx, m.queueCursor = queue, idx, cursor
-	m.invalidatePrefetch()
 	m.persistQueue()
 	return nil
 }
@@ -2216,8 +1991,9 @@ func (m *Model) playQueueItemNext() tea.Cmd {
 		return nil
 	}
 	item := m.queue[cursor]
-	m.queue, m.queueIdx, m.queueCursor = player.MoveToNext(m.queue, m.queueIdx, cursor, m.current != nil)
-	m.invalidatePrefetch()
+	m.withController(func(c *player.Controller) {
+		m.queueCursor = c.MoveToNext(cursor)
+	})
 	m.persistQueue()
 	m.setNotice("下一首播放："+item.Title, false)
 	return nil
@@ -2248,29 +2024,23 @@ func (m *Model) removeSelected() tea.Cmd {
 }
 
 func (m *Model) removeQueueItem() tea.Cmd {
-	queue, idx, cursor, removed, removingCurrent := player.Remove(m.queue, m.queueIdx, m.queueCursor)
-	if len(queue) == len(m.queue) {
+	oldLen := len(m.queue)
+	var res player.RemoveResult
+	m.withController(func(c *player.Controller) {
+		res, m.queueCursor = c.RemoveItem(m.queueCursor)
+	})
+	if len(m.queue) == oldLen {
 		return nil
 	}
-	m.queue, m.queueIdx, m.queueCursor = queue, idx, cursor
-	m.invalidatePrefetch()
 
-	if removingCurrent {
-		if len(m.queue) == 0 {
-			if m.engine != nil {
-				m.engine.Stop()
-			}
-			m.current = nil
-			m.state = audio.StateIdle
-			m.position = 0
-			m.duration = 0
-			m.resumeAt = 0
+	if res.RemovingCurrent {
+		if res.Empty {
+			m.withController(func(c *player.Controller) { c.Stop() })
 			m.lyricBase = nil
 			m.lyricLines = nil
 			m.lyricIdx = -1
 			m.lyricSource = ""
 			m.lyricLoaded = false
-			m.queueIdx = 0
 			m.queueCursor = 0
 			m.setPlayingPlaylist("")
 			m.persistQueue()
@@ -2283,14 +2053,14 @@ func (m *Model) removeQueueItem() tea.Cmd {
 	}
 
 	m.persistQueue()
-	m.setNotice("已从队列移除："+removed.Title, false)
+	m.setNotice("已从队列移除："+res.Removed.Title, false)
 	return nil
 }
 
 // clearQueue 清空待播队列，但保留正在播放/暂停的当前曲目，避免「清空即静音」的意外。
 func (m *Model) clearQueue() {
-	m.queue, m.queueIdx, m.queueCursor = player.Clear(m.current)
-	m.invalidatePrefetch()
+	m.withController(func(c *player.Controller) { c.Clear() })
+	m.queueCursor = 0
 	m.persistQueue()
 	if m.current != nil {
 		m.setNotice("已清空队列（保留当前曲目）", false)
@@ -2301,11 +2071,16 @@ func (m *Model) clearQueue() {
 
 func (m *Model) takePrefetch(song store.Song) (source.Stream, bool) {
 	song = store.NormalizeSong(song)
-	return m.prefetch.Take(song.ID, time.Now())
+	var stream source.Stream
+	var ok bool
+	m.withController(func(c *player.Controller) {
+		stream, ok = c.PrefetchCache().Take(song.ID, time.Now())
+	})
+	return stream, ok
 }
 
 func (m *Model) invalidatePrefetch() {
-	m.prefetch.Clear()
+	m.withController(func(c *player.Controller) { c.PrefetchCache().Clear() })
 }
 
 func (m *Model) nextQueueSongID() string {
@@ -2345,19 +2120,11 @@ func (m *Model) prefetchNextCmd() tea.Cmd {
 }
 
 func (m *Model) persistQueue() {
-	if m.store == nil {
-		return
-	}
-	position := int64(m.position / time.Millisecond)
-	if m.position < 0 {
-		position = 0
-	}
-	_ = m.service().SaveQueue(m.queue, m.queueIdx, position)
-	m.lastPersist = time.Now()
+	m.withController(func(c *player.Controller) { c.Persist() })
 }
 
 func (m *Model) needsPersist() bool {
-	return m.current != nil && (m.state == audio.StatePlaying || m.state == audio.StatePaused || m.resumeAt > 0)
+	return m.withControllerBool(func(c *player.Controller) bool { return c.NeedsPersist() })
 }
 
 // ---- 歌单/队列确认输入 ----
@@ -2617,10 +2384,10 @@ func (m *Model) qualityLabel() string {
 	if m.awaitingStream {
 		return "解析中"
 	}
-	if m.engine != nil {
-		if q := m.engine.CurrentStream().Quality; q != "" {
-			return q
-		}
+	var quality string
+	m.withController(func(c *player.Controller) { quality = c.CurrentQuality() })
+	if quality != "" {
+		return quality
 	}
 	if m.demoQuality != "" {
 		return m.demoQuality
@@ -2654,6 +2421,94 @@ func (m *Model) promptLine() string {
 		return "解锁为本地歌单？enter 确认 · esc 取消"
 	}
 	return ""
+}
+
+// playerState 把视图镜像压成播放器快照。
+func (m *Model) playerState() player.State {
+	return player.State{
+		Queue:          m.queue,
+		Index:          m.queueIdx,
+		Current:        m.current,
+		PlaybackState:  m.state,
+		Position:       m.position,
+		Duration:       m.duration,
+		Mode:           m.mode,
+		Volume:         m.volume,
+		CompDB:         m.compDB,
+		Muted:          m.muted,
+		ResumeAt:       m.resumeAt,
+		Retry:          m.retryCount,
+		Awaiting:       m.awaitingStream,
+		Request:        m.playRequest,
+		Prefetch:       m.prefetch,
+		ShuffleBase:    m.shuffleBase,
+		ShuffleBaseIdx: m.shuffleBaseIdx,
+		SleepUntil:     m.sleepUntil,
+		SleepSlot:      m.sleepSlot,
+		Quality:        m.quality,
+		LastPersist:    m.lastPersist,
+	}
+}
+
+// applyPlayerState 把播放器快照拉回视图镜像。
+func (m *Model) applyPlayerState(s player.State) {
+	m.queue = s.Queue
+	m.queueIdx = s.Index
+	m.current = s.Current
+	m.state = s.PlaybackState
+	m.position = s.Position
+	m.duration = s.Duration
+	m.mode = s.Mode
+	m.volume = s.Volume
+	m.compDB = s.CompDB
+	m.muted = s.Muted
+	m.resumeAt = s.ResumeAt
+	m.retryCount = s.Retry
+	m.awaitingStream = s.Awaiting
+	m.playRequest = s.Request
+	m.prefetch = s.Prefetch
+	m.shuffleBase = s.ShuffleBase
+	m.shuffleBaseIdx = s.ShuffleBaseIdx
+	m.sleepUntil = s.SleepUntil
+	m.sleepSlot = s.SleepSlot
+	m.quality = s.Quality
+	m.lastPersist = s.LastPersist
+}
+
+// controller 返回播放器控制器；首次使用时用当前镜像初始化。
+func (m *Model) controller() *player.Controller {
+	if m.pc == nil {
+		var eng player.Engine
+		if m.engine != nil {
+			eng = m.engine
+		}
+		m.pc = player.New(eng, m.service())
+		m.pc.Load(m.playerState())
+	}
+	return m.pc
+}
+
+// withController 把镜像推给控制器，执行 fn 后再拉回。
+func (m *Model) withController(fn func(*player.Controller)) {
+	c := m.controller()
+	if m.shuffleFn != nil {
+		c.SetShuffleFunc(m.shuffleFn)
+	}
+	c.Load(m.playerState())
+	fn(c)
+	m.applyPlayerState(c.Export())
+}
+
+// withControllerBool 同 withController，但返回一个布尔结果。
+func (m *Model) withControllerBool(fn func(*player.Controller) bool) bool {
+	c := m.controller()
+	if m.shuffleFn != nil {
+		c.SetShuffleFunc(m.shuffleFn)
+	}
+	c.Load(m.playerState())
+	got := fn(c)
+	m.applyPlayerState(c.Export())
+	return got
 }
 
 // sourceName 返回音源显示名；测试或极端情况下没有注册表时退回原始 ID。

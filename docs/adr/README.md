@@ -18,5 +18,6 @@
 | [0012](0012-configurable-keymap.md) | 快捷键改为动作 ID + TOML 覆盖，冲突回退默认 | 已接受 |
 | [0013](0013-clip-and-cloud-write.md) | 片段存 settings + 引擎 `-ss/-t`；云端写入走可选 PlaylistWriter；混入只加引用 | 已接受 |
 | [0014](0014-platform-metadata-and-app-service.md) | 平台元数据下沉适配器，业务抽到 `internal/app` 服务 | 已接受 |
+| [0015](0015-player-controller-and-downloader.md) | 播放状态机抽到 `player.Controller`，下载队列抽到 `downloader.Manager`，TUI 只留视图 | 已接受 |
 
 新增 ADR 的格式：标题、状态、背景、决策、理由、后果、替代方案。
