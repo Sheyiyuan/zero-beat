@@ -10,7 +10,7 @@
 
 > 本项目是 [Half Beat Player](https://github.com/Sheyiyuan/Half-Beat-Player) 的续作（至少是精神续作），延续「在电脑上听 B 站视频」的出发点；TUI 形态与播放器交互受到 [go-musicfox](https://github.com/go-musicfox/go-musicfox) 的启发。项目以个人使用为主，不承诺功能路线图、平台兼容性或问题响应速度，欢迎 issue 和 PR。
 
-> **状态：v0.4.1 已发布**（[下载](https://github.com/Sheyiyuan/zero-beat/releases)）。双源已打通：B 站 + 网易云扫码登录、单源/合并搜索、收藏夹与歌单、混源队列、本地混源歌单、播放、歌词、断点恢复、下一首预解析；新增播放片段、同源云端歌单写入和歌单引用混入。
+> **状态：v0.5.0 已发布**（[下载](https://github.com/Sheyiyuan/zero-beat/releases)）。双源已打通：B 站 + 网易云扫码登录、单源/合并搜索、收藏夹与歌单、混源队列、本地混源歌单、播放、歌词、断点恢复、下一首预解析；v0.4 加入播放片段、同源云端歌单写入与歌单引用混入；v0.5 补齐下载管理与本地优先播放，并重做鼠标交互、歌词页中央焦点与列表滚动。升级前请先看 [Release 说明](https://github.com/Sheyiyuan/zero-beat/releases) 里的按键变化。
 > 跨源自动匹配与更多能力见 [ROADMAP.md](ROADMAP.md)。
 
 ---
@@ -81,7 +81,7 @@ sh install.sh
 默认安装到 `~/.local/bin`。如果该目录不在 `PATH` 里，脚本会识别登录 shell（bash / zsh / fish / sh）并写入对应的配置文件，免去手动改环境变量；不想改动配置文件可加 `--no-path`。也可指定版本/前缀：
 
 ```bash
-VERSION=v0.4.1 sh install.sh
+VERSION=v0.5.0 sh install.sh
 sudo sh install.sh --prefix /usr/local
 ```
 
@@ -321,8 +321,8 @@ internal/config          数据目录
 ## 发布
 
 ```bash
-git tag v0.4.1
-git push origin v0.4.1
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 GitHub Actions 的 `Release` 工作流会用 GoReleaser 构建：
