@@ -328,6 +328,32 @@ func (m *Model) overlayPalette(frame []string) []string {
 	return overlayBox(frame, m.paletteLines(), m.width, m.height)
 }
 
+// overlayBoxBounds 返回居中浮层的矩形，定位规则与 overlayBox 完全一致；
+// 鼠标点击用它判断「点在浮层内还是浮层外」。
+func overlayBoxBounds(box []string, width, height int) (left, top, w, h int, ok bool) {
+	if len(box) == 0 {
+		return 0, 0, 0, 0, false
+	}
+	bw := 0
+	for _, line := range box {
+		if lw := visWidth(line); lw > bw {
+			bw = lw
+		}
+	}
+	if bw > width {
+		bw = width
+	}
+	left = (width - bw) / 2
+	top = (height - len(box)) / 2
+	if left < 0 {
+		left = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	return left, top, bw, len(box), true
+}
+
 func overlayBox(frame []string, box []string, width, height int) []string {
 	if len(box) == 0 || len(frame) == 0 {
 		return frame

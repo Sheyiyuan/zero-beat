@@ -14,6 +14,9 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	if m.menu != nil {
 		return m.handleMenuClick(mouse)
 	}
+	if handled, cmd := m.handleOverlayClick(mouse); handled {
+		return m, cmd
+	}
 	if m.hardModal() {
 		return m, nil
 	}
@@ -221,4 +224,49 @@ func (m *Model) hardModal() bool {
 
 func (m *Model) mouseBlocked() bool {
 	return m.hardModal() || m.searchEditing
+}
+
+// handleOverlayClick 处理浮层（关于/帮助/命令面板/选择器/片段编辑器）上的点击：
+// 浮层内部吞掉点击且不穿透；点在浮层外部则关闭当前最上层浮层（取消）。
+func (m *Model) handleOverlayClick(mouse tea.Mouse) (bool, tea.Cmd) {
+	if mouse.Button != tea.MouseLeft && mouse.Button != tea.MouseRight {
+		return false, nil
+	}
+	// 顺序与 View() 里浮层的叠放顺序一致：后渲染的在上层。
+	var lines []string
+	var cancel func() tea.Cmd
+	switch {
+	case m.clip != nil:
+		lines, cancel = m.clipLines(), m.cancelClipEditor
+	case m.picker != nil:
+		lines, cancel = m.targetPickerLines(), func() tea.Cmd {
+			m.picker = nil
+			return nil
+		}
+	case m.helpPopup:
+		lines, cancel = m.helpPopupLines(), func() tea.Cmd {
+			m.helpPopup = false
+			return nil
+		}
+	case m.aboutPopup:
+		lines, cancel = m.aboutLines(), func() tea.Cmd {
+			m.aboutPopup = false
+			return nil
+		}
+	case m.palette != nil:
+		lines, cancel = m.paletteLines(), func() tea.Cmd {
+			m.palette = nil
+			return nil
+		}
+	default:
+		return false, nil
+	}
+	left, top, w, h, ok := overlayBoxBounds(lines, m.width, m.height)
+	if !ok {
+		return false, nil
+	}
+	if mouse.X >= left && mouse.X < left+w && mouse.Y >= top && mouse.Y < top+h {
+		return true, nil
+	}
+	return true, cancel()
 }

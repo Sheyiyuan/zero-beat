@@ -350,3 +350,49 @@ func TestMouseHeaderClickWhileSearchEditingClearsEditing(t *testing.T) {
 		t.Fatalf("点页面名应先退出输入态并打开菜单：editing=%v menu=%+v", mm.searchEditing, mm.menu)
 	}
 }
+
+// TestMouseClickOutsideOverlayClosesIt 验证浮层内部点击不关闭、外部点击自动关闭。
+func TestMouseClickOutsideOverlayClosesIt(t *testing.T) {
+	cases := []struct {
+		name   string
+		open   func(m *Model)
+		lines  func(m *Model) []string
+		closed func(m *Model) bool
+	}{
+		{"关于", func(m *Model) { m.aboutPopup = true },
+			func(m *Model) []string { return m.aboutLines() },
+			func(m *Model) bool { return !m.aboutPopup }},
+		{"帮助", func(m *Model) { m.helpPopup = true },
+			func(m *Model) []string { return m.helpPopupLines() },
+			func(m *Model) bool { return !m.helpPopup }},
+		{"选择器", func(m *Model) {
+			m.picker = &targetPickerState{
+				mode:  targetPickerAddSong,
+				items: []playlistTarget{{ID: "local-default", Title: "本地歌单", Kind: "local", Count: 3}},
+			}
+		},
+			func(m *Model) []string { return m.targetPickerLines() },
+			func(m *Model) bool { return m.picker == nil }},
+	}
+	for _, c := range cases {
+		m := fixtureModel()
+		c.open(m)
+		left, top, w, h, ok := overlayBoxBounds(c.lines(m), m.width, m.height)
+		if !ok {
+			t.Fatalf("%s: 浮层没有生成", c.name)
+		}
+		updated, _ := m.Update(tea.MouseClickMsg{X: left + w/2, Y: top + h/2, Button: tea.MouseLeft})
+		mi := updated.(*Model)
+		if c.closed(mi) {
+			t.Fatalf("%s: 点击浮层内部不应关闭", c.name)
+		}
+		x, y := 0, 0
+		if left == 0 && top == 0 {
+			x, y = m.width-1, m.height-1
+		}
+		updated, _ = mi.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+		if mo := updated.(*Model); !c.closed(mo) {
+			t.Fatalf("%s: 点击浮层外部应关闭", c.name)
+		}
+	}
+}
