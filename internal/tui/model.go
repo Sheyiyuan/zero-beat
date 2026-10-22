@@ -1812,7 +1812,9 @@ func (m *Model) playSong(song store.Song) tea.Cmd {
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
 	m.resetLyricScroll()
-	return m.playSongCmdAt(song, 0, 0)
+	cmd := m.playSongCmdAt(song, 0, 0)
+	m.persistQueue()
+	return cmd
 }
 
 // setMode 切换播放模式；进入/离开随机模式时重建队列顺序。
@@ -1862,6 +1864,8 @@ func (m *Model) advance() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	// 队列页游标跟随播放索引，避免切歌后「正在播放」与选中行错位。
+	m.queueCursor = m.queueIdx
 	if m.mode == modeSequence {
 		if s, has := m.takePrefetch(song); has {
 			return m.startStream(song, s, 0)
@@ -1878,6 +1882,7 @@ func (m *Model) rewind() tea.Cmd {
 	if !ok {
 		return nil
 	}
+	m.queueCursor = m.queueIdx
 	return m.playSong(song)
 }
 

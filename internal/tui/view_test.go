@@ -948,6 +948,71 @@ func TestRenderDemoMenuAndAbout(t *testing.T) {
 	}
 }
 
+// TestAdvanceRewindSyncQueueCursor 验证切歌后队列页游标跟随播放索引，
+// 不会出现「正在播放」与选中行错位。
+func TestAdvanceRewindSyncQueueCursor(t *testing.T) {
+	m := fixtureModel()
+	m.queue = threeSongQueue()
+	m.queueIdx = 0
+	m.queueCursor = 0
+	current := m.queue[0]
+	m.current = &current
+	m.state = audio.StatePlaying
+
+	_ = m.advance()
+	if m.queueIdx != 1 || m.queueCursor != 1 {
+		t.Fatalf("advance 后游标应跟随新索引: idx=%d cursor=%d", m.queueIdx, m.queueCursor)
+	}
+
+	_ = m.rewind()
+	if m.queueIdx != 0 || m.queueCursor != 0 {
+		t.Fatalf("rewind 后游标应跟随新索引: idx=%d cursor=%d", m.queueIdx, m.queueCursor)
+	}
+
+	// 顺序模式从最后一首回到第一首。
+	m.queueIdx = 2
+	m.queueCursor = 2
+	_ = m.advance()
+	if m.queueIdx != 0 || m.queueCursor != 0 {
+		t.Fatalf("循环回到第一首后游标应跟随: idx=%d cursor=%d", m.queueIdx, m.queueCursor)
+	}
+}
+
+// TestPlaySongPersistsQueue 验证开始播放会立刻把队列落地，
+// 退出后能在下次启动恢复最近的队列。
+func TestPlaySongPersistsQueue(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	songs := threeSongQueue()
+	for _, s := range songs {
+		if _, err := st.UpsertSong(s); err != nil {
+			t.Fatalf("写入歌曲失败: %v", err)
+		}
+	}
+	m := fixtureModel()
+	m.store = st
+	m.queue = songs
+	m.queueIdx = 1
+	m.current = &m.queue[1]
+
+	_ = m.playSong(m.queue[2])
+
+	saved, err := st.LoadQueue()
+	if err != nil {
+		t.Fatalf("读取队列失败: %v", err)
+	}
+	if len(saved.IDs) != len(songs) {
+		t.Fatalf("播放后应立即持久化队列，实际 %+v", saved)
+	}
+	if saved.Index != 1 {
+		t.Fatalf("持久化的队列索引不符: %+v", saved)
+	}
+}
+
 func TestLoginSourceUpDown(t *testing.T) {
 	b, n, reg := twoFakes()
 	b.logged, n.logged = false, false
