@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/sheyiyuan/zero-beat/internal/audio"
+	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/player"
 	"github.com/sheyiyuan/zero-beat/internal/store"
@@ -189,6 +190,35 @@ func TestMouseRightClickSongOpensContextMenu(t *testing.T) {
 	if mm.menu.song.ID != m.songs[0].ID {
 		t.Fatalf("菜单应指向右键的歌曲，实际 %+v", mm.menu.song)
 	}
+}
+
+// TestSongMenuDownloadHintUsesDownloadSelectedKey 验证歌曲右键菜单里的「下载」
+// 作用对象是该行歌曲，提示键必须是 download_selected（W），而不是「下载正在播放」（w）。
+func TestSongMenuDownloadHintUsesDownloadSelectedKey(t *testing.T) {
+	m := fixtureModel()
+	zone := findZone(t, m, hitLibrarySong)
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 2, Y: zone.y, Button: tea.MouseRight})
+	mm := updated.(*Model)
+	if mm.menu == nil || mm.menu.kind != menuSong {
+		t.Fatalf("右键歌曲应打开歌曲菜单，实际 %+v", mm.menu)
+	}
+	want := m.firstKey(keymap.DownloadSelected)
+	if want != "W" {
+		t.Fatalf("默认 download_selected 键应为 W，实际 %q", want)
+	}
+	for _, item := range mm.menu.items {
+		if item.label != "下载" {
+			continue
+		}
+		if item.hint != want {
+			t.Fatalf("歌曲菜单「下载」应提示 %q，实际 %q", want, item.hint)
+		}
+		if item.act != actDownload {
+			t.Fatalf("歌曲菜单「下载」动作应保持 actDownload，实际 %v", item.act)
+		}
+		return
+	}
+	t.Fatal("歌曲菜单缺少「下载」项")
 }
 
 func TestMouseRightClickPlaylistOpensContextMenu(t *testing.T) {

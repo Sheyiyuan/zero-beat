@@ -66,7 +66,7 @@ func (m *Model) openSongMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 		{label: "下一首播放", hint: m.firstKey(keymap.PlayNext), act: actPlayNext},
 		{label: "加入队列末尾", hint: m.firstKey(keymap.Enqueue), act: actEnqueue},
 		{label: "加入歌单", hint: m.firstKey(keymap.AddPlaylist), act: actAddPlaylist},
-		{label: "下载", hint: m.firstKey(keymap.Download), act: actDownload},
+		{label: "下载", hint: m.firstKey(keymap.DownloadSelected), act: actDownload},
 	}
 	switch zone.target {
 	case hitQueueSong:
