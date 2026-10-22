@@ -367,6 +367,8 @@ func (m *Model) renderBody(h int) []string {
 		return m.renderFolders(h)
 	case viewMix:
 		return m.renderMix(h)
+	case viewDownloads:
+		return m.renderDownloads(h)
 	}
 	return nil
 }
@@ -704,6 +706,92 @@ func (m *Model) renderQueue(h int) []string {
 		}
 	}
 	return out
+}
+
+// ---- 下载管理 ----
+
+func (m *Model) renderDownloads(h int) []string {
+	out := make([]string, 0, h)
+	total := int64(0)
+	missing := 0
+	for _, item := range m.downloadItems {
+		total += item.entry.Download.Size
+		if item.missing {
+			missing++
+		}
+	}
+	header := fmt.Sprintf(" 下载管理 · %d 首 · 占用 %s", len(m.downloadItems), humanSize(total))
+	if missing > 0 {
+		header += fmt.Sprintf(" · %d 个文件缺失", missing)
+	}
+	if m.downloadsBusy {
+		header = " 正在读取下载记录…"
+	}
+	out = append(out, st.muted.Render(truncate(header, m.width)))
+	if m.downloadsBusy {
+		out = append(out, "", st.dim.Render(" 请稍候"))
+		return out
+	}
+	if len(m.downloadItems) == 0 {
+		out = append(out, "", st.dim.Render(" 还没有下载记录"))
+		out = append(out, st.dim.Render(" 在曲库或搜索里按 w / W 下载后会自动出现在这里"))
+		return out
+	}
+	start, end := windowRange(len(m.downloadItems), m.downloadIdx, h-1)
+	for i := start; i < end; i++ {
+		out = append(out, m.downloadRow(i, m.width))
+	}
+	return out
+}
+
+func (m *Model) downloadRow(i, width int) string {
+	item := m.downloadItems[i]
+	entry := item.entry
+	playing := m.current != nil && entry.Song.ID != "" && entry.Song.ID == m.current.ID
+	marker := "  "
+	if playing {
+		marker = "▶ "
+	}
+	tag := padRight("["+m.sourceMark(source.ID(entry.Song.Source))+"]", 4)
+	idx := fmt.Sprintf("%3d", i+1)
+	artist := entry.Song.Artist
+	size := humanSize(entry.Download.Size)
+	meta := size
+	if entry.Download.Codec != "" {
+		meta += " · " + entry.Download.Codec
+	}
+	if item.missing {
+		meta = "文件缺失"
+	}
+	metaW := 18
+	artistW := 14
+	titleW := width - metaW - artistW - 19
+	if titleW < 8 {
+		artistW = 8
+		titleW = width - metaW - artistW - 19
+	}
+	if titleW < 4 {
+		titleW = 4
+	}
+	title := padRight(downloadTitle(item), titleW)
+	artist = padRight(truncate(artist, artistW), artistW)
+	if i == m.downloadIdx {
+		title = padRight(scrollText(downloadTitle(item), titleW, m.marqueeOffset), titleW)
+		artist = padRight(scrollText(entry.Song.Artist, artistW, m.marqueeOffset), artistW)
+	}
+	plain := marker + tag + " " + idx + " " + title + " " + artist + " " + padLeft(meta, metaW)
+	plain = padRight(plain, width)
+	if i == m.downloadIdx {
+		return st.selected.Render(plain)
+	}
+	if item.missing {
+		return marker + st.dim.Render(tag) + " " + st.dim.Render(idx) + " " +
+			padRight(downloadTitle(item), titleW) + " " + padRight(truncate(artist, artistW), artistW) + " " +
+			st.err.Render(padLeft(meta, metaW))
+	}
+	row := marker + st.dim.Render(tag) + " " + st.dim.Render(idx) + " " +
+		title + " " + artist + " " + st.muted.Render(padLeft(meta, metaW))
+	return padRight(row, width)
 }
 
 // ---- 收藏夹选择 ----

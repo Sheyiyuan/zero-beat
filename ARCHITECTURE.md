@@ -33,8 +33,8 @@
 `source/bilibili` 依赖 `bili`；`netease` 独立实现接口；`internal/player` 持有
 播放状态机并通过 `Engine` / `QueueSaver` 接口调用引擎与存储；`internal/downloader`
 持有下载任务队列；两者都不依赖 Bubble Tea。`audio` / `store` / `lyrics` /
-`download` 互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 只
-额外维护任务队列和进度行。
+`download` 互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 还维护
+任务队列、进度行和下载管理页。
 
 平台展示信息（短标记、命令行别名、链接解析、歌词名、登录 App 名）属于适配器：
 `Source.Mark` 是必选方法，其余是 `Aliased` / `TargetParser` / `LyricNamer` /
@@ -164,6 +164,10 @@ type audio.Event struct {
 音源负责把平台差异（Referer、cookie、编码选择、过期时间）压进 `Stream`，引擎只认它。
 播放直链**不落库**：B 站约 2 小时、网易云约 20 分钟过期，落库只会产出脏数据。
 
+已下载文件不走远程解析：`app.Resolve` 先查 `downloads` 索引，命中且文件有效时直接返回
+本地路径（`Quality = "本地"`，不校验用户选择的音质）；记录缺失或文件失效则回落远程。
+TUI 下载页强制首轮本地播放，引擎失败重试时跳过本地、改走远程，避免坏文件死循环。
+
 云端歌单写入是可选能力 `source.PlaylistWriter`，由 `CapPlaylistWrite` 标记；
 UI 只按能力显示云端目标，不按平台名分支。
 
@@ -181,6 +185,7 @@ playlist_excludes(playlist_id, song_id)                     -- 混合歌单里�
 queue(id=1, data, position, queue_index, updated)   -- 单行：队列 ID JSON + 进度
 settings(key, value)                                -- volume / comp_db / mode / quality / lyric_offset:<songID> / clip:<songID> / last_add_playlist
 accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
+downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载文件索引
 ```
 
 ## 事件循环约束（改 UI 前必读）
@@ -217,7 +222,7 @@ accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
 不导出音频文件；区间末尾受 ffmpeg 输出缓冲影响，可能有约 100ms 的尾音。
 
 边界：`internal/app` 承接搜索、取流、歌词、歌单同步、登录、队列恢复、歌单 CRUD、
-偏好持久化、下载执行等外部业务；`internal/player.Controller` 承接队列、当前曲目、
+偏好持久化、下载执行与本地优先解析等外部业务；`internal/player.Controller` 承接队列、当前曲目、
 播放状态、模式、重试、预解析、引擎控制与落盘；`internal/downloader.Manager` 承接
 下载任务、并发与取消。`Model` 只保留视图状态、按键路由和播放状态的只读镜像，
 不再决定「下一首是谁」「什么时候重试」「队列怎么变」；片段编辑器的整首预览

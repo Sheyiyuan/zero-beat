@@ -61,6 +61,22 @@ func NormalizeSong(song Song) Song {
 	return song
 }
 
+// Download 是一首已下载歌曲的落盘记录。
+type Download struct {
+	SongID     string
+	Path       string
+	Size       int64
+	Codec      string
+	DurationMS int64
+	CreatedAt  time.Time
+}
+
+// DownloadEntry 是下载记录和歌曲元数据的组合；Song 为零值时表示歌曲表里没有对应行。
+type DownloadEntry struct {
+	Download Download
+	Song     Song
+}
+
 // Playlist 是一个歌单，Kind 为「remote」（某音源的远端歌单/收藏夹镜像）或「local」。
 type Playlist struct {
 	ID       string
@@ -133,6 +149,14 @@ CREATE TABLE IF NOT EXISTS accounts (
 	source     TEXT PRIMARY KEY,
 	payload    TEXT NOT NULL,
 	updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS downloads (
+	song_id     TEXT PRIMARY KEY,
+	path        TEXT NOT NULL,
+	size        INTEGER NOT NULL DEFAULT 0,
+	codec       TEXT NOT NULL DEFAULT '',
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	created_at  INTEGER NOT NULL
 );
 `
 
@@ -345,6 +369,100 @@ func (s *Store) SongsByIDs(ids []string) ([]Song, error) {
 		out = append(out, song)
 	}
 	return out, nil
+}
+
+// UpsertDownload 写入或更新一首歌的下载记录；重复下载保留原 created_at。
+func (s *Store) UpsertDownload(d Download) error {
+	d.SongID = strings.TrimSpace(d.SongID)
+	d.Path = strings.TrimSpace(d.Path)
+	if d.SongID == "" || d.Path == "" {
+		return fmt.Errorf("store: 下载记录缺少歌曲 ID 或路径")
+	}
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt = time.Now()
+	}
+	_, err := s.db.Exec(`
+INSERT INTO downloads (song_id, path, size, codec, duration_ms, created_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(song_id) DO UPDATE SET
+	path = excluded.path,
+	size = excluded.size,
+	codec = excluded.codec,
+	duration_ms = excluded.duration_ms`,
+		d.SongID, d.Path, d.Size, d.Codec, d.DurationMS, d.CreatedAt.Unix())
+	if err != nil {
+		return fmt.Errorf("store: 写入下载记录: %w", err)
+	}
+	return nil
+}
+
+// Download 按歌曲 ID 取一条下载记录。
+func (s *Store) Download(songID string) (Download, error) {
+	row := s.db.QueryRow(`SELECT song_id, path, size, codec, duration_ms, created_at FROM downloads WHERE song_id = ?`, songID)
+	d, err := scanDownload(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Download{}, ErrNotFound
+	}
+	return d, err
+}
+
+func scanDownload(r rowScanner) (Download, error) {
+	var (
+		d       Download
+		created int64
+	)
+	err := r.Scan(&d.SongID, &d.Path, &d.Size, &d.Codec, &d.DurationMS, &created)
+	if err != nil {
+		return Download{}, err
+	}
+	d.CreatedAt = time.Unix(created, 0)
+	return d, nil
+}
+
+// Downloads 返回全部下载记录，最近下载的排在前面。
+func (s *Store) Downloads() ([]Download, error) {
+	rows, err := s.db.Query(`SELECT song_id, path, size, codec, duration_ms, created_at FROM downloads ORDER BY created_at DESC, song_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取下载记录: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Download, 0)
+	for rows.Next() {
+		d, err := scanDownload(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: 解析下载记录: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历下载记录: %w", err)
+	}
+	return out, nil
+}
+
+// DownloadEntries 返回下载记录及对应歌曲元数据；歌曲缺失时 Song 为零值。
+func (s *Store) DownloadEntries() ([]DownloadEntry, error) {
+	downloads, err := s.Downloads()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DownloadEntry, 0, len(downloads))
+	for _, d := range downloads {
+		song, err := s.Song(d.SongID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+		out = append(out, DownloadEntry{Download: d, Song: song})
+	}
+	return out, nil
+}
+
+// DeleteDownload 删除一首歌的下载记录，不删文件。
+func (s *Store) DeleteDownload(songID string) error {
+	if _, err := s.db.Exec(`DELETE FROM downloads WHERE song_id = ?`, songID); err != nil {
+		return fmt.Errorf("store: 删除下载记录: %w", err)
+	}
+	return nil
 }
 
 // EnsurePlaylist 确保歌单存在（按 ID 幂等）。

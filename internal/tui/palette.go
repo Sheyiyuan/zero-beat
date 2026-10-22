@@ -27,6 +27,7 @@ const (
 	palEditMix    paletteAction = "edit-mix"
 	palUnlock     paletteAction = "unlock"
 	palAddCurrent paletteAction = "add-current"
+	palLocalFirst paletteAction = "local-first"
 )
 
 type paletteItem struct {
@@ -47,10 +48,15 @@ func (m *Model) openPalette() {
 }
 
 func (m *Model) paletteItems() []paletteItem {
+	localState := "开启"
+	if !m.localFirst {
+		localState = "关闭"
+	}
 	items := []paletteItem{
 		{palBlank, "新建空白歌单", "创建一个本地歌单"},
 		{palMix, "新建混合歌单", "引用多个歌单，自己加歌不影响源歌单"},
 		{palAddCurrent, "将正在播放加入歌单", "选择本地、混合或同源云端歌单"},
+		{palLocalFirst, "本地优先：" + localState, "已下载歌曲优先播放本地文件"},
 	}
 	if m.sources != nil {
 		for _, src := range m.sources.All() {
@@ -186,6 +192,15 @@ func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 			return nil
 		}
 		return m.openAddSongPicker(*m.current)
+	case palLocalFirst:
+		m.localFirst = !m.localFirst
+		m.service().SaveLocalFirst(m.localFirst)
+		state := "关闭"
+		if m.localFirst {
+			state = "开启"
+		}
+		m.setNotice("本地优先已"+state+"（下一首生效）", false)
+		return nil
 	}
 	return nil
 }

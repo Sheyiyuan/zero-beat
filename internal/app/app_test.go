@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -193,5 +194,66 @@ func TestPlaylistOpsAndQueueSave(t *testing.T) {
 	q, err := st.LoadQueue()
 	if err != nil || len(q.IDs) != 1 || q.Position != 1234 {
 		t.Fatalf("队列回读不符: %+v err=%v", q, err)
+	}
+}
+
+func TestResolvePrefersLocalDownload(t *testing.T) {
+	st := openTestStore(t)
+	remote := source.Stream{URL: "https://example.invalid/remote.flac", Quality: "无损"}
+	src := &baseFake{
+		id: "fake",
+		resolved: source.Resolved{
+			Track:  source.Track{Source: "fake", ExternalID: "1", Title: "远程标题"},
+			Stream: remote,
+		},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+	song := SongFromTrack(source.Track{Source: "fake", ExternalID: "1", Title: "本地标题", Duration: 120})
+
+	path := filepath.Join(t.TempDir(), "song.flac")
+	if err := os.WriteFile(path, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("写入临时音频失败: %v", err)
+	}
+	if err := svc.RecordDownload(song, path, 5, "flac", 2*time.Minute); err != nil {
+		t.Fatalf("登记下载失败: %v", err)
+	}
+
+	got, stream, err := svc.Resolve(context.Background(), song, source.QualityAuto)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if stream.URL != path || stream.Quality != "本地" || stream.Duration != 2*time.Minute {
+		t.Fatalf("应优先本地流: %+v", stream)
+	}
+	if got.ID != song.ID {
+		t.Fatalf("本地解析不应改变歌曲 ID: %s", got.ID)
+	}
+
+	svc.SaveLocalFirst(false)
+	if _, stream, _ = svc.Resolve(context.Background(), song, source.QualityAuto); stream.URL != remote.URL {
+		t.Fatalf("关闭本地优先后应走远程: %+v", stream)
+	}
+
+	svc.SaveLocalFirst(true)
+	if _, stream, _ = svc.ResolveWithLocal(context.Background(), song, source.QualityAuto, false); stream.URL != remote.URL {
+		t.Fatalf("显式禁用本地后应走远程: %+v", stream)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("删除临时音频失败: %v", err)
+	}
+	if _, stream, _ = svc.Resolve(context.Background(), song, source.QualityAuto); stream.URL != remote.URL {
+		t.Fatalf("本地文件失效后应回落远程: %+v", stream)
+	}
+
+	entries, err := svc.Downloads()
+	if err != nil || len(entries) != 1 || entries[0].Song.ID != song.ID {
+		t.Fatalf("下载列表不符: %+v err=%v", entries, err)
+	}
+	if err := svc.DeleteDownload(song.ID); err != nil {
+		t.Fatalf("删除下载记录失败: %v", err)
+	}
+	if entries, _ = svc.Downloads(); len(entries) != 0 {
+		t.Fatalf("删除后应为空: %+v", entries)
 	}
 }

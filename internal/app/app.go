@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -170,9 +171,47 @@ func (s *Service) Stream(ctx context.Context, song store.Song, quality source.Qu
 	return resolved.Track, resolved.Stream, nil
 }
 
+// LocalStream 返回已下载文件的本地播放流；记录不存在或文件失效时返回 false。
+func (s *Service) LocalStream(song store.Song) (source.Stream, bool) {
+	if s.store == nil {
+		return source.Stream{}, false
+	}
+	song = store.NormalizeSong(song)
+	d, err := s.store.Download(song.ID)
+	if err != nil || d.Path == "" {
+		return source.Stream{}, false
+	}
+	info, err := os.Stat(d.Path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return source.Stream{}, false
+	}
+	duration := time.Duration(d.DurationMS) * time.Millisecond
+	if duration == 0 && song.Duration > 0 {
+		duration = time.Duration(song.Duration) * time.Second
+	}
+	return source.Stream{
+		URL:      d.Path,
+		Codec:    d.Codec,
+		Duration: duration,
+		Quality:  "本地",
+	}, true
+}
+
 // Resolve 解析音频地址并把缺失的元数据回写数据库。
 func (s *Service) Resolve(ctx context.Context, song store.Song, quality source.Quality) (store.Song, source.Stream, error) {
+	return s.ResolveWithLocal(ctx, song, quality, true)
+}
+
+// ResolveWithLocal 解析音频地址；allowLocal 为 true 时优先使用已下载文件。
+//
+// 本地记录失效（文件被删除、移动）会继续走远程解析。
+func (s *Service) ResolveWithLocal(ctx context.Context, song store.Song, quality source.Quality, allowLocal bool) (store.Song, source.Stream, error) {
 	song = store.NormalizeSong(song)
+	if allowLocal && s.store != nil && s.store.Setting("local_first", "1") != "0" {
+		if stream, ok := s.LocalStream(song); ok {
+			return song, stream, nil
+		}
+	}
 	track, stream, err := s.Stream(ctx, song, quality)
 	if err != nil {
 		return song, source.Stream{}, err
@@ -184,6 +223,22 @@ func (s *Service) Resolve(ctx context.Context, song store.Song, quality source.Q
 		}
 	}
 	return song, stream, nil
+}
+
+// Downloads 返回下载记录与歌曲元数据，供下载管理页使用。
+func (s *Service) Downloads() ([]store.DownloadEntry, error) {
+	if s.store == nil {
+		return nil, nil
+	}
+	return s.store.DownloadEntries()
+}
+
+// DeleteDownload 删除下载记录，不删除文件。
+func (s *Service) DeleteDownload(songID string) error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.DeleteDownload(songID)
 }
 
 // LyricsResult 是平台歌词或 LRCLIB 兜底的结果。

@@ -13,8 +13,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/download"
 	"github.com/sheyiyuan/zero-beat/internal/source"
+	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
 var errDownloadHelp = errors.New("download help")
@@ -196,6 +198,16 @@ type downloadJob struct {
 	outPath string
 	label   string
 	skip    bool
+	store   *store.Store
+}
+
+// record 把落盘结果登记进下载索引；索引失败不影响下载结果。
+func (job *downloadJob) record(size int64) {
+	if job.store == nil {
+		return
+	}
+	song := app.SongFromTrack(job.track)
+	_ = app.New(nil, job.store, nil).RecordDownload(song, job.outPath, size, job.stream.Codec, job.stream.Duration)
 }
 
 func runDownload(args []string) error {
@@ -258,7 +270,9 @@ func runDownload(args []string) error {
 			resolveErrs = append(resolveErrs, err)
 			continue
 		}
+		job.store = st
 		if job.skip {
+			job.record(0)
 			fmt.Printf("已存在，跳过：%s\n", job.outPath)
 			continue
 		}
@@ -374,7 +388,7 @@ func buildDownloadJob(ctx context.Context, src source.Source, ref source.Ref, qu
 	}
 	if !opts.force {
 		if _, err := os.Stat(outPath); err == nil {
-			return &downloadJob{outPath: outPath, skip: true}, nil
+			return &downloadJob{outPath: outPath, track: track, stream: stream, skip: true}, nil
 		}
 	}
 	return &downloadJob{
@@ -433,11 +447,13 @@ func downloadJobFile(ctx context.Context, job *downloadJob, multi bool, force bo
 	}
 	if err != nil {
 		if errors.Is(err, download.ErrExists) {
+			job.record(0)
 			fmt.Printf("已存在，跳过：%s\n", job.outPath)
 			return nil
 		}
 		return err
 	}
+	job.record(result.Size)
 
 	done := fmt.Sprintf("已下载：%s", result.Path)
 	if result.Size > 0 {

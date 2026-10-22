@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -432,5 +433,65 @@ func TestSearchSongs(t *testing.T) {
 	got, err = st.SearchSongs("night", 10)
 	if err != nil || len(got) != 1 || got[0].Title != "Night Voyager" {
 		t.Fatalf("大小写搜索不符: %+v err=%v", got, err)
+	}
+}
+
+func TestDownloadLifecycle(t *testing.T) {
+	st := openTestStore(t)
+	song, err := st.UpsertSong(Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "夜航星", Duration: 287})
+	if err != nil {
+		t.Fatalf("写入歌曲失败: %v", err)
+	}
+	first := Download{SongID: song.ID, Path: "/music/夜航星.flac", Size: 10, Codec: "flac", DurationMS: 287000}
+	if err := st.UpsertDownload(first); err != nil {
+		t.Fatalf("写入下载记录失败: %v", err)
+	}
+	got, err := st.Download(song.ID)
+	if err != nil {
+		t.Fatalf("读取下载记录失败: %v", err)
+	}
+	if got.Path != first.Path || got.Codec != "flac" || got.DurationMS != 287000 {
+		t.Fatalf("下载记录不符: %+v", got)
+	}
+	created := got.CreatedAt
+
+	second := first
+	second.Path = "/music/夜航星.m4a"
+	second.Codec = "aac"
+	if err := st.UpsertDownload(second); err != nil {
+		t.Fatalf("更新下载记录失败: %v", err)
+	}
+	got, _ = st.Download(song.ID)
+	if got.Path != second.Path || got.Codec != "aac" {
+		t.Fatalf("更新结果不符: %+v", got)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Fatalf("重复下载应保留 created_at: %v -> %v", created, got.CreatedAt)
+	}
+
+	entries, err := st.DownloadEntries()
+	if err != nil || len(entries) != 1 || entries[0].Song.Title != "夜航星" {
+		t.Fatalf("下载条目不符: %+v err=%v", entries, err)
+	}
+
+	if err := st.DeleteDownload(song.ID); err != nil {
+		t.Fatalf("删除下载记录失败: %v", err)
+	}
+	if _, err := st.Download(song.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("删除后应返回 ErrNotFound: %v", err)
+	}
+}
+
+func TestDownloadEntriesKeepOrphanRows(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.UpsertDownload(Download{SongID: "missing", Path: "/tmp/x"}); err != nil {
+		t.Fatalf("写入孤立下载记录失败: %v", err)
+	}
+	entries, err := st.DownloadEntries()
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("孤立记录应保留: %+v err=%v", entries, err)
+	}
+	if entries[0].Song.ID != "" {
+		t.Fatalf("孤立记录不应有歌曲元数据: %+v", entries[0].Song)
 	}
 }

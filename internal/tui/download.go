@@ -8,7 +8,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/download"
 	"github.com/sheyiyuan/zero-beat/internal/downloader"
 	"github.com/sheyiyuan/zero-beat/internal/store"
@@ -22,7 +21,7 @@ type downloadEventMsg struct{ ev downloader.Event }
 func (m *Model) downloadManager() *downloader.Manager {
 	if m.downloads == nil {
 		m.downloads = downloader.New(maxConcurrentDownloads, func(ctx context.Context, song store.Song, progress func(done, total int64)) (string, int64, error) {
-			res := app.New(m.sources, nil, nil).DownloadSong(ctx, song, m.quality, progress)
+			res := m.service().DownloadSong(ctx, song, m.quality, progress)
 			return res.Path, res.Size, res.Err
 		})
 	}
@@ -79,6 +78,10 @@ func (m *Model) selectedDownloadSong() (store.Song, bool) {
 	case viewQueue:
 		if m.queueCursor >= 0 && m.queueCursor < len(m.queue) {
 			return m.queue[m.queueCursor], true
+		}
+	case viewDownloads:
+		if item, ok := m.selectedDownload(); ok && item.entry.Song.ID != "" {
+			return item.entry.Song, true
 		}
 	}
 	return store.Song{}, false
@@ -176,7 +179,12 @@ func (m *Model) handleDownloadEvent(msg downloadEventMsg) (tea.Model, tea.Cmd) {
 	} else {
 		m.setNotice("已下载："+msg.ev.Path, false)
 	}
-	return m, waitDownloadEventCmd(mgr)
+	wait := waitDownloadEventCmd(mgr)
+	if m.view == viewDownloads {
+		m.downloadsBusy = true
+		return m, tea.Batch(wait, m.loadDownloadsCmd())
+	}
+	return m, wait
 }
 
 func (m *Model) cancelDownloads() {

@@ -96,6 +96,7 @@ func (m *Model) helpLines() []string {
 	add(m.helpKeys(keymap.QueueView), "打开当前播放队列")
 	add(m.helpKeys(keymap.New), "打开新建命令面板")
 	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
+	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/删除/查看缺失文件）")
 	add(joinKeys(m.helpKeys(keymap.MixEdit), m.helpKeys(keymap.Unlock)), "编辑混合歌单引用 / 解锁同步歌单（歌单焦点）")
 	add(m.helpKeys(keymap.MergePlaylist), "把当前歌单以引用混入混合歌单（曲库）")
 	add(joinKeys(m.helpKeys(keymap.PlayNext), m.helpKeys(keymap.Enqueue)), "插到下一首播放 / 追加到队列末尾（歌曲焦点）")
@@ -137,6 +138,8 @@ func (m *Model) hintLine() string {
 		return "enter 添加 · " + m.firstKey(keymap.Source) + " 切源 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 	case viewMix:
 		return "space 勾选 · enter 下一步 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
+	case viewDownloads:
+		return "enter 播放 · " + m.firstKey(keymap.DownloadSelected) + " 重新下载 · " + m.firstKey(keymap.Remove) + " 移除记录 · " + m.firstKey(keymap.Delete) + " 删除文件 · " + m.firstKey(keymap.LoginImage) + " 打开目录 · " + m.firstKey(keymap.Refresh) + " 刷新 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 	case viewLibrary:
 		if m.resumeAt > 0 && m.state == audio.StatePaused {
 			return "space 继续 · enter 播放 · H 帮助"

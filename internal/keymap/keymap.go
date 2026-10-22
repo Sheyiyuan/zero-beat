@@ -62,6 +62,7 @@ const (
 	Rename           Action = "rename"
 	New              Action = "new"
 	Folders          Action = "folders"
+	Downloads        Action = "downloads"
 	MixEdit          Action = "mix_edit"
 	EditClip         Action = "edit_clip"
 	ClipSetStart     Action = "clip_set_start"
@@ -124,6 +125,7 @@ var Defaults = map[Action][]string{
 	Rename:           {"R"},
 	New:              {"N"},
 	Folders:          {"f"},
+	Downloads:        {"F"},
 	MixEdit:          {"M"},
 	EditClip:         {"C"},
 	ClipSetStart:     {"{"},

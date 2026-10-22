@@ -75,6 +75,11 @@ type prefetchMsg struct {
 	err    error
 }
 
+type downloadsMsg struct {
+	items []downloadItem
+	err   error
+}
+
 type lyricMsg struct {
 	songID   string
 	lines    []lyrics.Line
@@ -201,15 +206,30 @@ func (m *Model) searchCmd(keyword string, page int) tea.Cmd {
 
 // playSongCmdAt 解析播放地址并从 startAt 起播；retry 用于自动重试计数。
 func (m *Model) playSongCmdAt(song store.Song, startAt time.Duration, retry int) tea.Cmd {
+	return m.playSongCmdAtMode(song, startAt, retry, false)
+}
+
+// playLocalSongCmdAt 从下载管理页起播：首轮强制本地文件，重试时回落远程。
+func (m *Model) playLocalSongCmdAt(song store.Song, startAt time.Duration, retry int) tea.Cmd {
+	return m.playSongCmdAtMode(song, startAt, retry, true)
+}
+
+func (m *Model) playSongCmdAtMode(song store.Song, startAt time.Duration, retry int, localOnly bool) tea.Cmd {
 	var request int
 	m.withController(func(c *player.Controller) {
 		request, song = c.BeginPlay(song, startAt, retry)
 	})
 	svc, quality := m.service(), m.quality
+	preferLocal := retry == 0
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		resolved, stream, err := svc.Resolve(ctx, song, quality)
+		if localOnly && preferLocal {
+			if stream, ok := svc.LocalStream(song); ok {
+				return streamMsg{song: song, stream: stream, startAt: startAt, retry: retry, request: request}
+			}
+		}
+		resolved, stream, err := svc.ResolveWithLocal(ctx, song, quality, preferLocal && !localOnly)
 		return streamMsg{song: resolved, stream: stream, startAt: startAt, retry: retry, request: request, err: err}
 	}
 }

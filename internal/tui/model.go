@@ -33,9 +33,10 @@ const (
 	viewLogin
 	viewFolders
 	viewMix
+	viewDownloads
 )
 
-var viewNames = []string{"曲库", "搜索", "队列", "歌词", "帮助", "登录", "导入歌单", "混合歌单"}
+var viewNames = []string{"曲库", "搜索", "队列", "歌词", "帮助", "登录", "导入歌单", "混合歌单", "下载"}
 
 var defaultKeys = keymap.Default()
 
@@ -101,6 +102,8 @@ const (
 	promptDeletePlaylist
 	promptClearQueue
 	promptUnlockPlaylist
+	promptRemoveDownload
+	promptDeleteDownload
 )
 
 type notice struct {
@@ -180,6 +183,11 @@ type Model struct {
 
 	downloads *downloader.Manager
 
+	downloadItems []downloadItem
+	downloadIdx   int
+	downloadsBusy bool
+	localFirst    bool
+
 	loginSource     source.ID
 	qrCache         map[source.ID]*qrCacheEntry
 	helpPopup       bool
@@ -207,6 +215,7 @@ type Model struct {
 	promptInput       string
 	pendingPlaylistID string
 	pendingAddSong    *store.Song
+	pendingDownloadID string
 	helpOffset        int
 
 	sleepUntil time.Time
@@ -271,6 +280,7 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 	m.mode = playMode(prefs.Mode)
 	m.quality = prefs.Quality
 	m.playingPlaylistID = prefs.PlayingPlaylist
+	m.localFirst = prefs.LocalFirst
 	engine.SetVolume(m.volume)
 	engine.SetCompensationDB(m.compDB)
 	if cleaned {
@@ -500,6 +510,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setNotice(msg.warn.Error(), true)
 		} else if len(msg.candidates) == 0 {
 			m.setNotice("没有搜到结果", false)
+		}
+		return m, nil
+
+	case downloadsMsg:
+		m.downloadsBusy = false
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		m.downloadItems = msg.items
+		if m.downloadIdx >= len(m.downloadItems) {
+			m.downloadIdx = max(0, len(m.downloadItems)-1)
+		}
+		if m.downloadIdx < 0 {
+			m.downloadIdx = 0
 		}
 		return m, nil
 
@@ -814,6 +839,8 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 	case m.match(keymap.QueueView, key):
 		m.view = viewQueue
 		return m, m.onViewChanged()
+	case m.match(keymap.Downloads, key):
+		return m, m.openDownloads()
 	case m.match(keymap.LocalSearch, key):
 		m.openLocalSearch(searchLocalPlaylist)
 		return m, nil
@@ -895,6 +922,8 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		return m.handleFolderKey(key)
 	case viewMix:
 		return m.handleMixKey(key)
+	case viewDownloads:
+		return m.handleDownloadsKey(key)
 	case viewLogin:
 		if m.match(keymap.Up, key) {
 			return m, m.switchLoginSource(-1)
@@ -1024,6 +1053,8 @@ func (m *Model) pageMove(delta int) tea.Cmd {
 		m.queueCursor = clampInt(m.queueCursor+delta*page, 0, max(0, len(m.queue)-1))
 	case viewFolders:
 		m.folderIdx = clampInt(m.folderIdx+delta*page, 0, max(0, len(m.folderItems)-1))
+	case viewDownloads:
+		m.downloadIdx = clampInt(m.downloadIdx+delta*page, 0, max(0, len(m.downloadItems)-1))
 	case viewHelp:
 		m.helpOffset = clampInt(m.helpOffset+delta*page, 0, max(0, len(m.helpLines())-m.helpViewport()))
 	}
@@ -1040,6 +1071,8 @@ func (m *Model) moveTop() {
 		m.queueCursor = 0
 	case viewFolders:
 		m.folderIdx = 0
+	case viewDownloads:
+		m.downloadIdx = 0
 	case viewHelp:
 		m.helpOffset = 0
 	}
@@ -1055,6 +1088,8 @@ func (m *Model) moveBottom() {
 		m.queueCursor = max(0, len(m.queue)-1)
 	case viewFolders:
 		m.folderIdx = max(0, len(m.folderItems)-1)
+	case viewDownloads:
+		m.downloadIdx = max(0, len(m.downloadItems)-1)
 	case viewHelp:
 		m.helpOffset = max(0, len(m.helpLines())-m.helpViewport())
 	}
@@ -1076,6 +1111,10 @@ func (m *Model) onViewChanged() tea.Cmd {
 	}
 	if m.view == viewHelp {
 		m.helpOffset = 0
+	}
+	if m.view == viewDownloads && !m.downloadsBusy {
+		m.downloadsBusy = true
+		return m.loadDownloadsCmd()
 	}
 	return nil
 }
@@ -2149,6 +2188,7 @@ func (m *Model) handlePromptKey(key tea.Key) (tea.Model, tea.Cmd) {
 		m.prompt = promptNone
 		m.promptInput = ""
 		m.pendingAddSong = nil
+		m.pendingDownloadID = ""
 		return m, nil
 	case tea.KeyEnter:
 		return m, m.commitPrompt()
@@ -2173,6 +2213,8 @@ func (m *Model) commitPrompt() tea.Cmd {
 	input := strings.TrimSpace(m.promptInput)
 	m.prompt = promptNone
 	m.promptInput = ""
+	downloadID := m.pendingDownloadID
+	m.pendingDownloadID = ""
 	if m.store == nil {
 		return nil
 	}
@@ -2245,6 +2287,10 @@ func (m *Model) commitPrompt() tea.Cmd {
 		m.pendingPlaylistID = unlocked.ID
 		m.setNotice("已解锁为本地歌单："+unlocked.Title, false)
 		return m.loadLocalPlaylistsCmd()
+	case promptRemoveDownload:
+		return m.removeDownloadRecord(downloadID)
+	case promptDeleteDownload:
+		return m.deleteDownloadFile(downloadID)
 	}
 	return nil
 }
@@ -2419,6 +2465,16 @@ func (m *Model) promptLine() string {
 			return "解锁「" + p.Title + "」为本地歌单？保留曲目并停止同步 · enter 确认 · esc 取消"
 		}
 		return "解锁为本地歌单？enter 确认 · esc 取消"
+	case promptRemoveDownload:
+		if item, ok := m.downloadByID(m.pendingDownloadID); ok {
+			return "移除下载记录「" + downloadTitle(item) + "」？文件会保留 · enter 确认 · esc 取消"
+		}
+		return "移除下载记录？enter 确认 · esc 取消"
+	case promptDeleteDownload:
+		if item, ok := m.downloadByID(m.pendingDownloadID); ok {
+			return "删除本地文件「" + downloadTitle(item) + "」？enter 确认 · esc 取消"
+		}
+		return "删除本地文件？enter 确认 · esc 取消"
 	}
 	return ""
 }

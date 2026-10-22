@@ -60,6 +60,12 @@ func RenderDemo(name string, width, height int) string {
 	m.queueIdx = 1
 	m.queueCursor = 1
 
+	m.downloadItems = []downloadItem{
+		{entry: store.DownloadEntry{Download: store.Download{SongID: songs[1].ID, Path: "/home/user/Music/zero-beat/不才 - 夜航星.flac", Size: 38 * 1024 * 1024, Codec: "flac"}, Song: songs[1]}},
+		{entry: store.DownloadEntry{Download: store.Download{SongID: songs[2].ID, Path: "/home/user/Music/zero-beat/等什么君 - 春庭雪.m4a", Size: 9 * 1024 * 1024, Codec: "aac"}, Song: songs[2]}},
+		{entry: store.DownloadEntry{Download: store.Download{SongID: songs[3].ID, Path: "/home/user/Music/zero-beat/柳爽 - 漠河舞厅.m4a", Size: 10 * 1024 * 1024, Codec: "aac"}, Song: songs[3]}, missing: true},
+	}
+
 	m.searchKeyword = "周杰伦"
 	m.searchPage = 1
 	m.searchPages = 5
@@ -108,6 +114,9 @@ func RenderDemo(name string, width, height int) string {
 		m.setActiveClip(m.current.ID, store.Clip{StartMS: 30000, EndMS: 120000})
 		m.position = 84 * time.Second
 		m.clip = &clipState{songID: m.current.ID, startMS: 30000, endMS: 120000}
+	case "downloads":
+		m.view = viewDownloads
+		m.downloadIdx = 1
 	case "picker":
 		m.picker = &targetPickerState{
 			mode: targetPickerAddSong,
