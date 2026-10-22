@@ -41,7 +41,9 @@ func (m *Model) View() tea.View {
 	}
 	v := tea.NewView(strings.Join(frame, "\n"))
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	if !m.mouseOff {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	v.WindowTitle = m.windowTitle()
 	return v
 }

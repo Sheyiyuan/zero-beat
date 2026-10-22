@@ -4,6 +4,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -186,6 +187,7 @@ type Model struct {
 	downloadIdx   int
 	downloadsBusy bool
 	localFirst    bool
+	mouseOff      bool // 关闭鼠标捕获（设置里关掉，或 ZERO_MOUSE=0）
 
 	loginSource     source.ID
 	qrCache         map[source.ID]*qrCacheEntry
@@ -289,6 +291,7 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 	m.quality = prefs.Quality
 	m.playingPlaylistID = prefs.PlayingPlaylist
 	m.localFirst = prefs.LocalFirst
+	m.mouseOff = !prefs.Mouse || os.Getenv("ZERO_MOUSE") == "0"
 	engine.SetVolume(m.volume)
 	engine.SetCompensationDB(m.compDB)
 	if cleaned {

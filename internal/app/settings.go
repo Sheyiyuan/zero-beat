@@ -14,11 +14,12 @@ type Preferences struct {
 	Mode            int
 	PlayingPlaylist string
 	LocalFirst      bool
+	Mouse           bool
 }
 
 // Preferences 从 settings 表读取播放偏好，并为缺失项提供默认值。
 func (s *Service) Preferences() Preferences {
-	prefs := Preferences{Volume: 0.8, LocalFirst: true}
+	prefs := Preferences{Volume: 0.8, LocalFirst: true, Mouse: true}
 	if s.store == nil {
 		return prefs
 	}
@@ -36,6 +37,7 @@ func (s *Service) Preferences() Preferences {
 	}
 	prefs.PlayingPlaylist = s.store.Setting("playing_playlist", "")
 	prefs.LocalFirst = s.store.Setting("local_first", "1") != "0"
+	prefs.Mouse = s.store.Setting("mouse", "1") != "0"
 	return prefs
 }
 
@@ -81,6 +83,18 @@ func (s *Service) LocalFirstEnabled() bool {
 		return true
 	}
 	return s.store.Setting("local_first", "1") != "0"
+}
+
+// SaveMouse 持久化鼠标捕获开关。
+func (s *Service) SaveMouse(on bool) {
+	if s.store == nil {
+		return
+	}
+	value := "0"
+	if on {
+		value = "1"
+	}
+	_ = s.store.SetSetting("mouse", value)
 }
 
 // SaveLocalFirst 持久化「已下载歌曲优先本地播放」开关。

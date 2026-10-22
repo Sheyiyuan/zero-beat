@@ -426,3 +426,17 @@ func TestMouseClickOutsideOverlayClosesIt(t *testing.T) {
 		}
 	}
 }
+
+// TestViewMouseCaptureCanBeDisabled 验证关闭鼠标后不再上报鼠标模式
+// （环境变量 ZERO_MOUSE=0 或设置里关掉，用于恢复终端自身的右键/拖选）。
+func TestViewMouseCaptureCanBeDisabled(t *testing.T) {
+	m := fixtureModel()
+	m.mouseOff = true
+	if got := m.View().MouseMode; got != tea.MouseModeNone {
+		t.Fatalf("关闭鼠标后不应启用鼠标捕获，实际 %v", got)
+	}
+	m.mouseOff = false
+	if got := m.View().MouseMode; got != tea.MouseModeCellMotion {
+		t.Fatalf("默认应启用鼠标点击/滚轮，实际 %v", got)
+	}
+}
