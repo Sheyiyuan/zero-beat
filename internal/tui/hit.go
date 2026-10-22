@@ -120,14 +120,14 @@ func (m *Model) hitZones() []hitZone {
 	case viewLibrary:
 		sideW := m.librarySideWidth()
 		if sideW > 0 {
-			start, end := windowRange(len(m.playlists), m.playlistIdx, bodyH-1)
+			start, end := m.windowRangeKeep(scrollLibraryPlaylists, len(m.playlists), m.playlistIdx, bodyH-1)
 			for i := start; i < end; i++ {
 				zones = append(zones, hitZone{
 					target: hitLibraryPlaylist, x: 0, y: top + 1 + (i - start), w: sideW, h: 1, index: i,
 				})
 			}
 		}
-		start, end := windowRange(len(m.songs), m.songIdx, bodyH-1)
+		start, end := m.windowRangeKeep(scrollLibrarySongs, len(m.songs), m.songIdx, bodyH-1)
 		x := 0
 		if sideW > 0 {
 			x = sideW + 1
@@ -142,31 +142,33 @@ func (m *Model) hitZones() []hitZone {
 			break
 		}
 		n := len(m.localResults)
+		searchKey := scrollSearchLocal
 		if m.searchMode == searchSource {
 			n = len(m.searchResults)
+			searchKey = scrollSearchSource
 		}
-		start, end := windowRange(n, m.searchIdx, bodyH-2)
+		start, end := m.windowRangeKeep(searchKey, n, m.searchIdx, bodyH-2)
 		for i := start; i < end; i++ {
 			zones = append(zones, hitZone{
 				target: hitSearchResult, x: 0, y: top + 2 + (i - start), w: m.width, h: 1, index: i,
 			})
 		}
 	case viewQueue:
-		start, end := windowRange(len(m.queue), m.queueCursor, bodyH-1)
+		start, end := m.windowRangeKeep(scrollQueue, len(m.queue), m.queueCursor, bodyH-1)
 		for i := start; i < end; i++ {
 			zones = append(zones, hitZone{
 				target: hitQueueSong, x: 0, y: top + 1 + (i - start), w: m.width, h: 1, index: i,
 			})
 		}
 	case viewDownloads:
-		start, end := windowRange(len(m.downloadItems), m.downloadIdx, bodyH-1)
+		start, end := m.windowRangeKeep(scrollDownloads, len(m.downloadItems), m.downloadIdx, bodyH-1)
 		for i := start; i < end; i++ {
 			zones = append(zones, hitZone{
 				target: hitDownloadRow, x: 0, y: top + 1 + (i - start), w: m.width, h: 1, index: i,
 			})
 		}
 	case viewFolders:
-		start, end := windowRange(len(m.folderItems), m.folderIdx, bodyH-1)
+		start, end := m.windowRangeKeep(scrollFolders, len(m.folderItems), m.folderIdx, bodyH-1)
 		for i := start; i < end; i++ {
 			zones = append(zones, hitZone{
 				target: hitFolderRow, x: 0, y: top + 1 + (i - start), w: m.width, h: 1, index: i,

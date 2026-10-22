@@ -1292,3 +1292,45 @@ func TestRightClickSongKeepsMenuAnchored(t *testing.T) {
 		t.Fatalf("菜单应贴着被点的行：menu.y=%d row.y=%d", mm.menu.y, rowY)
 	}
 }
+
+// TestHitZonesMatchRenderedRows 验证列表滚动后，点击命中区与画面行严格对应
+// （渲染和命中区必须共用同一个窗口起点，否则会点错行）。
+func TestHitZonesMatchRenderedRows(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.view = viewLibrary
+	m.libraryFocus = focusSongs
+	m.songs = make([]store.Song, 60)
+	for i := range m.songs {
+		m.songs[i] = store.Song{
+			ID: fmt.Sprintf("bilibili:BV%d:1", i), Source: "bilibili",
+			BVID: fmt.Sprintf("BV%d", i), Page: 1,
+			Title: fmt.Sprintf("歌曲 %d", i), Artist: "歌手", Duration: 100,
+		}
+	}
+	m.songIdx = 40 // 让窗口滚动到中后段
+	body := m.renderLibrary(m.bodyHeight())
+
+	byY := map[int]int{}
+	for _, z := range m.hitZones() {
+		if z.target == hitLibrarySong {
+			byY[z.y] = z.index
+		}
+	}
+	matched := 0
+	for y, idx := range byY {
+		bodyIdx := y - 2
+		if bodyIdx < 0 || bodyIdx >= len(body) {
+			t.Fatalf("命中区 y=%d 超出正文范围", y)
+		}
+		line := ansi.Strip(body[bodyIdx])
+		want := fmt.Sprintf("歌曲 %d", idx)
+		if !strings.Contains(line, want) {
+			t.Fatalf("第 %d 行命中索引 %d，但画面是 %q（期望包含 %s）", y, idx, line, want)
+		}
+		matched++
+	}
+	if matched < 5 {
+		t.Fatalf("可见歌曲行命中区太少：%d", matched)
+	}
+}
