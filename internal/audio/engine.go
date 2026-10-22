@@ -423,6 +423,7 @@ func (e *Engine) Seek(ctx context.Context, pos time.Duration) error {
 	e.mu.Lock()
 	s := e.stream
 	duration := time.Duration(s.DurationMS) * time.Millisecond
+	wasPaused := e.state == StatePaused
 	e.mu.Unlock()
 	if s.URL == "" {
 		return errors.New("audio: 还没有正在播放的曲目")
@@ -432,7 +433,14 @@ func (e *Engine) Seek(ctx context.Context, pos time.Duration) error {
 	}
 	pos = s.clampPosition(pos, true)
 	e.stopLocked()
-	return e.startLocked(ctx, s, pos)
+	if err := e.startLocked(ctx, s, pos); err != nil {
+		return err
+	}
+	// 暂停中跳转不应把播放叫起来：seek 只是换起点，播放状态由用户决定。
+	if wasPaused {
+		e.Pause()
+	}
+	return nil
 }
 
 // Position 返回当前播放位置。

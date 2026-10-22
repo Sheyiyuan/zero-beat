@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -41,6 +42,44 @@ func TestUpsertSongIsIdempotent(t *testing.T) {
 	}
 	if third.ID == first.ID {
 		t.Fatal("不同分 P 的 ID 不应相同")
+	}
+}
+
+// TestUpsertSongKeepsBVIDWhenMissing 验证缺少 BVID 的更新不会清空旧行的 bvid；
+// B 站条目以 bvid 为主键来源，清空后无法再解析播放地址。
+func TestUpsertSongKeepsBVIDWhenMissing(t *testing.T) {
+	st := openTestStore(t)
+
+	first, err := st.UpsertSong(Song{Source: "bilibili", BVID: "BV1xx411c7mD", Page: 1, Title: "夜航星", Artist: "不才"})
+	if err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	if first.BVID != "BV1xx411c7mD" {
+		t.Fatalf("旧行 BVID 未落库: %q", first.BVID)
+	}
+
+	// 同 ID、但本次只有 remote_id 没有 bvid 的更新。
+	updated, err := st.UpsertSong(Song{Source: "bilibili", RemoteID: first.RemoteID, Page: 1, Title: "夜航星（新版）", Artist: "不才"})
+	if err != nil {
+		t.Fatalf("无 BVID 的更新失败: %v", err)
+	}
+	if updated.ID != first.ID {
+		t.Fatalf("应更新同一行: %s vs %s", updated.ID, first.ID)
+	}
+	if updated.BVID != "BV1xx411c7mD" {
+		t.Fatalf("无 BVID 的更新不应清空旧 bvid，实际 %q", updated.BVID)
+	}
+	if updated.Title != "夜航星（新版）" {
+		t.Fatalf("其他字段仍应更新: %q", updated.Title)
+	}
+
+	// 新行带了 BVID 时仍应覆盖旧值。
+	replaced, err := st.UpsertSong(Song{Source: "bilibili", RemoteID: first.RemoteID, BVID: "BV1xx411c7mE", Page: 1, Title: "夜航星（补）"})
+	if err != nil {
+		t.Fatalf("带 BVID 的更新失败: %v", err)
+	}
+	if replaced.BVID != "BV1xx411c7mE" {
+		t.Fatalf("带 BVID 的更新应覆盖旧值，实际 %q", replaced.BVID)
 	}
 }
 
@@ -432,5 +471,65 @@ func TestSearchSongs(t *testing.T) {
 	got, err = st.SearchSongs("night", 10)
 	if err != nil || len(got) != 1 || got[0].Title != "Night Voyager" {
 		t.Fatalf("大小写搜索不符: %+v err=%v", got, err)
+	}
+}
+
+func TestDownloadLifecycle(t *testing.T) {
+	st := openTestStore(t)
+	song, err := st.UpsertSong(Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "夜航星", Duration: 287})
+	if err != nil {
+		t.Fatalf("写入歌曲失败: %v", err)
+	}
+	first := Download{SongID: song.ID, Path: "/music/夜航星.flac", Size: 10, Codec: "flac", DurationMS: 287000}
+	if err := st.UpsertDownload(first); err != nil {
+		t.Fatalf("写入下载记录失败: %v", err)
+	}
+	got, err := st.Download(song.ID)
+	if err != nil {
+		t.Fatalf("读取下载记录失败: %v", err)
+	}
+	if got.Path != first.Path || got.Codec != "flac" || got.DurationMS != 287000 {
+		t.Fatalf("下载记录不符: %+v", got)
+	}
+	created := got.CreatedAt
+
+	second := first
+	second.Path = "/music/夜航星.m4a"
+	second.Codec = "aac"
+	if err := st.UpsertDownload(second); err != nil {
+		t.Fatalf("更新下载记录失败: %v", err)
+	}
+	got, _ = st.Download(song.ID)
+	if got.Path != second.Path || got.Codec != "aac" {
+		t.Fatalf("更新结果不符: %+v", got)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Fatalf("重复下载应保留 created_at: %v -> %v", created, got.CreatedAt)
+	}
+
+	entries, err := st.DownloadEntries()
+	if err != nil || len(entries) != 1 || entries[0].Song.Title != "夜航星" {
+		t.Fatalf("下载条目不符: %+v err=%v", entries, err)
+	}
+
+	if err := st.DeleteDownload(song.ID); err != nil {
+		t.Fatalf("删除下载记录失败: %v", err)
+	}
+	if _, err := st.Download(song.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("删除后应返回 ErrNotFound: %v", err)
+	}
+}
+
+func TestDownloadEntriesKeepOrphanRows(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.UpsertDownload(Download{SongID: "missing", Path: "/tmp/x"}); err != nil {
+		t.Fatalf("写入孤立下载记录失败: %v", err)
+	}
+	entries, err := st.DownloadEntries()
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("孤立记录应保留: %+v err=%v", entries, err)
+	}
+	if entries[0].Song.ID != "" {
+		t.Fatalf("孤立记录不应有歌曲元数据: %+v", entries[0].Song)
 	}
 }

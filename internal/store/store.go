@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,37 @@ func (s Song) ExternalID() string {
 		return s.RemoteID
 	}
 	return s.BVID
+}
+
+// NormalizeSong 补齐派生字段。它不猜音源：Source 由调用方或数据库负责，
+// 避免在通用层里写死某个平台。
+func NormalizeSong(song Song) Song {
+	if song.Page <= 0 {
+		song.Page = 1
+	}
+	if song.RemoteID == "" {
+		song.RemoteID = song.BVID
+	}
+	if song.ID == "" {
+		song.ID = SongID(song.Source, song.ExternalID(), song.Page)
+	}
+	return song
+}
+
+// Download 是一首已下载歌曲的落盘记录。
+type Download struct {
+	SongID     string
+	Path       string
+	Size       int64
+	Codec      string
+	DurationMS int64
+	CreatedAt  time.Time
+}
+
+// DownloadEntry 是下载记录和歌曲元数据的组合；Song 为零值时表示歌曲表里没有对应行。
+type DownloadEntry struct {
+	Download Download
+	Song     Song
 }
 
 // Playlist 是一个歌单，Kind 为「remote」（某音源的远端歌单/收藏夹镜像）或「local」。
@@ -117,6 +149,14 @@ CREATE TABLE IF NOT EXISTS accounts (
 	source     TEXT PRIMARY KEY,
 	payload    TEXT NOT NULL,
 	updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS downloads (
+	song_id     TEXT PRIMARY KEY,
+	path        TEXT NOT NULL,
+	size        INTEGER NOT NULL DEFAULT 0,
+	codec       TEXT NOT NULL DEFAULT '',
+	duration_ms INTEGER NOT NULL DEFAULT 0,
+	created_at  INTEGER NOT NULL
 );
 `
 
@@ -263,19 +303,9 @@ func SongID(source, externalID string, page int) string {
 
 // UpsertSong 写入或更新一首歌，返回落库后的记录。
 func (s *Store) UpsertSong(song Song) (Song, error) {
-	externalID := song.ExternalID()
-	if song.Source == "" || externalID == "" {
+	song = NormalizeSong(song)
+	if song.Source == "" || song.ExternalID() == "" {
 		return Song{}, fmt.Errorf("store: 歌曲缺少来源或外部 ID")
-	}
-	if song.Page <= 0 {
-		song.Page = 1
-	}
-	song.RemoteID = externalID
-	if song.BVID == "" && song.Source == "bilibili" {
-		song.BVID = externalID
-	}
-	if song.ID == "" {
-		song.ID = SongID(song.Source, externalID, song.Page)
 	}
 	if song.AddedAt.IsZero() {
 		song.AddedAt = time.Now()
@@ -289,7 +319,7 @@ ON CONFLICT(source, remote_id, page) DO UPDATE SET
 	album = excluded.album,
 	duration = excluded.duration,
 	cover = excluded.cover,
-	bvid = excluded.bvid,
+	bvid = CASE WHEN excluded.bvid <> '' THEN excluded.bvid ELSE songs.bvid END,
 	cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
 		song.ID, song.Source, song.RemoteID, song.BVID, song.Page, song.CID, song.Title,
 		song.Artist, song.Album, song.Duration, song.Cover, song.AddedAt.Unix())
@@ -339,6 +369,100 @@ func (s *Store) SongsByIDs(ids []string) ([]Song, error) {
 		out = append(out, song)
 	}
 	return out, nil
+}
+
+// UpsertDownload 写入或更新一首歌的下载记录；重复下载保留原 created_at。
+func (s *Store) UpsertDownload(d Download) error {
+	d.SongID = strings.TrimSpace(d.SongID)
+	d.Path = strings.TrimSpace(d.Path)
+	if d.SongID == "" || d.Path == "" {
+		return fmt.Errorf("store: 下载记录缺少歌曲 ID 或路径")
+	}
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt = time.Now()
+	}
+	_, err := s.db.Exec(`
+INSERT INTO downloads (song_id, path, size, codec, duration_ms, created_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(song_id) DO UPDATE SET
+	path = excluded.path,
+	size = excluded.size,
+	codec = excluded.codec,
+	duration_ms = excluded.duration_ms`,
+		d.SongID, d.Path, d.Size, d.Codec, d.DurationMS, d.CreatedAt.Unix())
+	if err != nil {
+		return fmt.Errorf("store: 写入下载记录: %w", err)
+	}
+	return nil
+}
+
+// Download 按歌曲 ID 取一条下载记录。
+func (s *Store) Download(songID string) (Download, error) {
+	row := s.db.QueryRow(`SELECT song_id, path, size, codec, duration_ms, created_at FROM downloads WHERE song_id = ?`, songID)
+	d, err := scanDownload(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Download{}, ErrNotFound
+	}
+	return d, err
+}
+
+func scanDownload(r rowScanner) (Download, error) {
+	var (
+		d       Download
+		created int64
+	)
+	err := r.Scan(&d.SongID, &d.Path, &d.Size, &d.Codec, &d.DurationMS, &created)
+	if err != nil {
+		return Download{}, err
+	}
+	d.CreatedAt = time.Unix(created, 0)
+	return d, nil
+}
+
+// Downloads 返回全部下载记录，最近下载的排在前面。
+func (s *Store) Downloads() ([]Download, error) {
+	rows, err := s.db.Query(`SELECT song_id, path, size, codec, duration_ms, created_at FROM downloads ORDER BY created_at DESC, song_id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取下载记录: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Download, 0)
+	for rows.Next() {
+		d, err := scanDownload(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: 解析下载记录: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历下载记录: %w", err)
+	}
+	return out, nil
+}
+
+// DownloadEntries 返回下载记录及对应歌曲元数据；歌曲缺失时 Song 为零值。
+func (s *Store) DownloadEntries() ([]DownloadEntry, error) {
+	downloads, err := s.Downloads()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DownloadEntry, 0, len(downloads))
+	for _, d := range downloads {
+		song, err := s.Song(d.SongID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+		out = append(out, DownloadEntry{Download: d, Song: song})
+	}
+	return out, nil
+}
+
+// DeleteDownload 删除一首歌的下载记录，不删文件。
+func (s *Store) DeleteDownload(songID string) error {
+	if _, err := s.db.Exec(`DELETE FROM downloads WHERE song_id = ?`, songID); err != nil {
+		return fmt.Errorf("store: 删除下载记录: %w", err)
+	}
+	return nil
 }
 
 // EnsurePlaylist 确保歌单存在（按 ID 幂等）。
@@ -829,19 +953,9 @@ func (s *Store) ReplacePlaylistSongs(playlistID string, songs []Song) error {
 		return fmt.Errorf("store: 清空歌单: %w", err)
 	}
 	for i, song := range songs {
-		if song.Page <= 0 {
-			song.Page = 1
-		}
-		externalID := song.ExternalID()
-		if externalID == "" {
+		song = NormalizeSong(song)
+		if song.Source == "" || song.ExternalID() == "" {
 			return fmt.Errorf("store: 歌曲缺少来源或外部 ID")
-		}
-		song.RemoteID = externalID
-		if song.BVID == "" && song.Source == "bilibili" {
-			song.BVID = externalID
-		}
-		if song.ID == "" {
-			song.ID = SongID(song.Source, externalID, song.Page)
 		}
 		added := song.AddedAt
 		if added.IsZero() {
@@ -852,7 +966,8 @@ INSERT INTO songs (id, source, remote_id, bvid, page, cid, title, artist, album,
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(source, remote_id, page) DO UPDATE SET
 	title = excluded.title, artist = excluded.artist, album = excluded.album,
-	duration = excluded.duration, cover = excluded.cover, bvid = excluded.bvid,
+	duration = excluded.duration, cover = excluded.cover,
+	bvid = CASE WHEN excluded.bvid <> '' THEN excluded.bvid ELSE songs.bvid END,
 	cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
 			song.ID, song.Source, song.RemoteID, song.BVID, song.Page, song.CID, song.Title,
 			song.Artist, song.Album, song.Duration, song.Cover, added.Unix()); err != nil {
@@ -946,6 +1061,19 @@ func (s *Store) Setting(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// SettingInt 读取整数设置项；缺失或格式错误时返回 fallback。
+func (s *Store) SettingInt(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(s.Setting(key, ""))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback, fmt.Errorf("store: 设置 %s 不是整数: %w", key, err)
+	}
+	return n, nil
 }
 
 // SetSetting 写入设置项。

@@ -6,6 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 )
 
@@ -19,14 +20,15 @@ const (
 type paletteAction string
 
 const (
-	palBlank         paletteAction = "blank"
-	palImportBili    paletteAction = "import-bili"
-	palImportNetease paletteAction = "import-netease"
-	palMix           paletteAction = "mix"
-	palNewMix        paletteAction = "new-mix"
-	palEditMix       paletteAction = "edit-mix"
-	palUnlock        paletteAction = "unlock"
-	palAddCurrent    paletteAction = "add-current"
+	palBlank      paletteAction = "blank"
+	palImport     paletteAction = "import"
+	palMix        paletteAction = "mix"
+	palNewMix     paletteAction = "new-mix"
+	palEditMix    paletteAction = "edit-mix"
+	palUnlock     paletteAction = "unlock"
+	palAddCurrent paletteAction = "add-current"
+	palLocalFirst paletteAction = "local-first"
+	palAbout      paletteAction = "about"
 )
 
 type paletteItem struct {
@@ -47,17 +49,34 @@ func (m *Model) openPalette() {
 }
 
 func (m *Model) paletteItems() []paletteItem {
+	localState := "开启"
+	if !m.localFirst {
+		localState = "关闭"
+	}
 	items := []paletteItem{
 		{palBlank, "新建空白歌单", "创建一个本地歌单"},
-		{palImportBili, "同步 B 站收藏夹", "按需加入并保持同步"},
-		{palImportNetease, "同步网易云歌单", "按需加入并保持同步"},
 		{palMix, "新建混合歌单", "引用多个歌单，自己加歌不影响源歌单"},
 		{palAddCurrent, "将正在播放加入歌单", "选择本地、混合或同源云端歌单"},
+		{palLocalFirst, "本地优先：" + localState, "已下载歌曲优先播放本地文件"},
+		{palAbout, "关于 zero-beat", "版本、许可证与项目地址"},
 	}
+	if m.sources != nil {
+		for _, src := range m.sources.All() {
+			if !src.Caps().Has(source.CapRemotePlaylists) {
+				continue
+			}
+			items = append(items, paletteItem{
+				action: paletteAction("import:" + string(src.ID())),
+				label:  "同步 " + src.Name() + " 歌单/收藏夹",
+				desc:   "按需加入并保持同步",
+			})
+		}
+	}
+
 	if p, ok := m.currentPlaylist(); ok {
 		switch p.Kind {
 		case "remote":
-			if p.ID != dailyPlaylistID {
+			if !app.IsDailyPlaylist(p) {
 				items = append(items, paletteItem{palUnlock, "解锁当前同步歌单", "保留曲目，断开远端同步"})
 			}
 		case "mixin":
@@ -150,14 +169,13 @@ func (m *Model) handlePaletteKey(key tea.Key) (tea.Model, tea.Cmd) {
 
 func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 	m.palette = nil
+	if strings.HasPrefix(string(action), string(palImport)+":") {
+		return m.openFolders(source.ID(strings.TrimPrefix(string(action), string(palImport)+":")))
+	}
 	switch action {
 	case palBlank:
 		m.palette = &paletteState{mode: paletteName, action: palBlank}
 		return nil
-	case palImportBili:
-		return m.openFolders(source.Bilibili)
-	case palImportNetease:
-		return m.openFolders(source.NetEase)
 	case palMix:
 		return m.openMixEditor("")
 	case palEditMix:
@@ -176,6 +194,18 @@ func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 			return nil
 		}
 		return m.openAddSongPicker(*m.current)
+	case palLocalFirst:
+		m.localFirst = !m.localFirst
+		m.service().SaveLocalFirst(m.localFirst)
+		state := "关闭"
+		if m.localFirst {
+			state = "开启"
+		}
+		m.setNotice("本地优先已"+state+"（下一首生效）", false)
+		return nil
+	case palAbout:
+		m.aboutPopup = true
+		return nil
 	}
 	return nil
 }
@@ -194,7 +224,7 @@ func (m *Model) commitPaletteName() tea.Cmd {
 	}
 	switch action {
 	case palBlank:
-		p, err := m.store.CreatePlaylist(title)
+		p, err := m.service().CreatePlaylist(title)
 		if err != nil {
 			m.setError(err)
 			return nil
@@ -213,7 +243,7 @@ func (m *Model) commitPaletteName() tea.Cmd {
 			m.setNotice("至少选择一个要引用的歌单", true)
 			return nil
 		}
-		p, err := m.store.CreateMixin(title, refs)
+		p, err := m.service().CreateMixin(title, refs)
 		if err != nil {
 			m.setError(err)
 			return nil
@@ -303,6 +333,32 @@ func (m *Model) overlayPalette(frame []string) []string {
 	return overlayBox(frame, m.paletteLines(), m.width, m.height)
 }
 
+// overlayBoxBounds 返回居中浮层的矩形，定位规则与 overlayBox 完全一致；
+// 鼠标点击用它判断「点在浮层内还是浮层外」。
+func overlayBoxBounds(box []string, width, height int) (left, top, w, h int, ok bool) {
+	if len(box) == 0 {
+		return 0, 0, 0, 0, false
+	}
+	bw := 0
+	for _, line := range box {
+		if lw := visWidth(line); lw > bw {
+			bw = lw
+		}
+	}
+	if bw > width {
+		bw = width
+	}
+	left = (width - bw) / 2
+	top = (height - len(box)) / 2
+	if left < 0 {
+		left = 0
+	}
+	if top < 0 {
+		top = 0
+	}
+	return left, top, bw, len(box), true
+}
+
 func overlayBox(frame []string, box []string, width, height int) []string {
 	if len(box) == 0 || len(frame) == 0 {
 		return frame
@@ -323,6 +379,23 @@ func overlayBox(frame []string, box []string, width, height int) []string {
 	}
 	if top < 0 {
 		top = 0
+	}
+	return overlayBoxAt(frame, box, left, top, width, height)
+}
+
+// overlayBoxAt 在指定左上角覆盖一个等宽浮层。
+func overlayBoxAt(frame []string, box []string, left, top, width, height int) []string {
+	if len(box) == 0 || len(frame) == 0 {
+		return frame
+	}
+	bw := 0
+	for _, line := range box {
+		if w := visWidth(line); w > bw {
+			bw = w
+		}
+	}
+	if bw > width {
+		bw = width
 	}
 	for i, line := range box {
 		y := top + i

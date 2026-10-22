@@ -180,6 +180,50 @@ func comma(n int64) string {
 }
 
 // windowRange 返回让 cursor 保持在可视区内的窗口区间。
+// listScrollKey 区分每个可滚动列表，让它们各自记住滚动位置。
+type listScrollKey string
+
+const (
+	scrollLibraryPlaylists listScrollKey = "library-playlists"
+	scrollLibrarySongs     listScrollKey = "library-songs"
+	scrollQueue            listScrollKey = "queue"
+	scrollSearchSource     listScrollKey = "search-source"
+	scrollSearchLocal      listScrollKey = "search-local"
+	scrollFolders          listScrollKey = "folders"
+	scrollDownloads        listScrollKey = "downloads"
+)
+
+// windowRangeKeep 返回列表可见窗口：只在光标移出当前窗口时才滚动，
+// 不像 windowRange 那样始终把光标居中——点一行/右键一行不会让整屏重排。
+func (m *Model) windowRangeKeep(key listScrollKey, total, cursor, height int) (int, int) {
+	if height <= 0 || total <= 0 {
+		return 0, 0
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	if cursor >= total {
+		cursor = total - 1
+	}
+	if m.listScroll == nil {
+		m.listScroll = map[listScrollKey]int{}
+	}
+	maxStart := max(0, total-height)
+	start := clampInt(m.listScroll[key], 0, maxStart)
+	if cursor < start {
+		start = cursor
+	}
+	if cursor >= start+height {
+		start = cursor - height + 1
+	}
+	m.listScroll[key] = start
+	end := start + height
+	if end > total {
+		end = total
+	}
+	return start, end
+}
+
 func windowRange(total, cursor, height int) (int, int) {
 	if height <= 0 || total <= 0 {
 		return 0, 0

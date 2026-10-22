@@ -43,8 +43,8 @@ func DefaultDir() string {
 	return filepath.Join(home, "Music", "zero-beat")
 }
 
-// Ext 根据编码选择容器扩展名。
-func Ext(codec string, src source.ID) string {
+// Ext 根据编码选择容器扩展名；未知编码按 m4a 兜底，不再按平台猜测。
+func Ext(codec string) string {
 	c := strings.ToLower(codec)
 	switch {
 	case strings.Contains(c, "flac"):
@@ -54,9 +54,6 @@ func Ext(codec string, src source.ID) string {
 	case strings.Contains(c, "aac"), strings.Contains(c, "mp4a"),
 		strings.Contains(c, "ec-3"), strings.Contains(c, "opus"):
 		return ".m4a"
-	}
-	if src == source.NetEase {
-		return ".mp3"
 	}
 	return ".m4a"
 }
@@ -90,7 +87,8 @@ func Run(ctx context.Context, track source.Track, stream source.Stream, outPath 
 		return Result{}, errors.New("download: 输出路径为空")
 	}
 	if !force {
-		if _, err := os.Stat(outPath); err == nil {
+		// 0 字节文件视为下载失败留下的空壳：允许重新下载，而不是永远 ErrExists。
+		if info, err := os.Stat(outPath); err == nil && info.Size() > 0 {
 			return Result{Path: outPath}, ErrExists
 		}
 	}

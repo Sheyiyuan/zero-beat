@@ -1,42 +1,54 @@
 package tui
 
 import (
-	"fmt"
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
-	"charm.land/lipgloss/v2"
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/sheyiyuan/zero-beat/internal/downloader"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
+// testDownloads 返回一个不会真正下载、但会保持 Running 的管理器，便于断言队列状态。
+func testDownloads(t *testing.T) *downloader.Manager {
+	t.Helper()
+	mgr := downloader.New(2, func(ctx context.Context, song store.Song, job downloader.Job, progress func(done, total int64)) (string, int64, error) {
+		<-ctx.Done()
+		return "", 0, ctx.Err()
+	})
+	t.Cleanup(mgr.CancelAll)
+	return mgr
+}
+
 func TestDownloadSelectedKeyQueuesSelectedSong(t *testing.T) {
 	m := fixtureModel()
+	m.downloads = testDownloads(t)
 	m.songIdx = 1
 
 	updated, cmd := m.Update(keyPress("W", 'W'))
 	mm := updated.(*Model)
-	if len(mm.downloads) != 1 {
-		t.Fatalf("按 w 后应有一个下载任务，实际 %d", len(mm.downloads))
+	tasks := mm.downloads.Tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("按 w 后应有一个下载任务，实际 %d", len(tasks))
 	}
-	task := mm.downloads[0]
-	if task.title != "夜航星" || task.state != downloadRunning {
-		t.Fatalf("任务不符: title=%q state=%d", task.title, task.state)
-	}
-	if task.ch == nil {
-		t.Fatal("运行中的任务应创建进度通道")
+	task := tasks[0]
+	if task.Title != "夜航星" || task.State != downloader.Running {
+		t.Fatalf("任务不符: title=%q state=%d", task.Title, task.State)
 	}
 	if cmd == nil {
 		t.Fatal("开始下载应返回 tea.Cmd")
 	}
 
-	// 同一首歌重复按 W 不重复入队。
 	updated, _ = mm.Update(keyPress("W", 'W'))
 	mm = updated.(*Model)
-	if len(mm.downloads) != 1 {
-		t.Fatalf("重复下载同一首歌不应重复入队，实际 %d", len(mm.downloads))
+	if len(mm.downloads.Tasks()) != 1 {
+		t.Fatalf("重复下载同一首歌不应重复入队，实际 %d", len(mm.downloads.Tasks()))
 	}
 	if !strings.Contains(mm.note.text, "已在下载队列") {
 		t.Fatalf("应提示已在队列，实际 %q", mm.note.text)
@@ -45,6 +57,7 @@ func TestDownloadSelectedKeyQueuesSelectedSong(t *testing.T) {
 
 func TestDownloadKeyUsesSearchSelection(t *testing.T) {
 	m := fixtureModel()
+	m.downloads = testDownloads(t)
 	m.view = viewSearch
 	m.searchEditing = false
 	m.searchMode = searchSource
@@ -55,25 +68,24 @@ func TestDownloadKeyUsesSearchSelection(t *testing.T) {
 
 	updated, _ := m.Update(keyPress("W", 'W'))
 	mm := updated.(*Model)
-	if len(mm.downloads) != 1 {
-		t.Fatalf("搜索页按 W 应下载选中结果，实际 %d", len(mm.downloads))
+	tasks := mm.downloads.Tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("搜索页按 W 应下载选中结果，实际 %d", len(tasks))
 	}
-	task := mm.downloads[0]
-	if task.song.Title != "晴天" || task.song.Source != "netease" {
-		t.Fatalf("下载的搜索项不符: %+v", task.song)
+	if tasks[0].Song.Title != "晴天" || tasks[0].Song.Source != "netease" {
+		t.Fatalf("下载的搜索项不符: %+v", tasks[0].Song)
 	}
 }
 
 func TestDownloadProgressLineAndBodyHeight(t *testing.T) {
 	m := fixtureModel()
-	m.downloads = []*downloadTask{{
-		id:    1,
-		song:  store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"},
-		title: "夜航星",
-		state: downloadRunning,
-		done:  3 << 20,
-		total: 10 << 20,
-	}}
+	mgr := testDownloads(t)
+	m.downloads = mgr
+	song := store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}
+	id, _ := mgr.Add(song, "夜航星", downloader.Job{})
+	mgr.Start()
+	mgr.SetProgress(id, 3<<20, 10<<20)
+
 	if got := m.bodyHeight(); got != 22 {
 		t.Fatalf("有下载行时正文高度应为 22，实际 %d", got)
 	}
@@ -83,19 +95,19 @@ func TestDownloadProgressLineAndBodyHeight(t *testing.T) {
 		t.Fatalf("底部应显示下载进度: %q", body)
 	}
 
-	updated, cmd := m.Update(downloadMsg{id: 1, done: 7 << 20, total: 10 << 20})
+	updated, cmd := m.Update(downloadEventMsg{ev: downloader.Event{ID: id, Done: 7 << 20, Total: 10 << 20}})
 	mm := updated.(*Model)
-	if mm.downloads[0].done != 7<<20 {
-		t.Fatalf("进度未更新: %d", mm.downloads[0].done)
+	if mm.downloads.Tasks()[0].Done != 7<<20 {
+		t.Fatalf("进度未更新: %d", mm.downloads.Tasks()[0].Done)
 	}
 	if cmd == nil {
 		t.Fatal("进度消息后应继续等待下一条")
 	}
 
-	updated, _ = mm.Update(downloadMsg{id: 1, finished: true, path: "/tmp/夜航星.mp3", size: 10 << 20})
+	updated, _ = mm.Update(downloadEventMsg{ev: downloader.Event{ID: id, Finished: true, Path: "/tmp/夜航星.mp3", Size: 10 << 20}})
 	mm = updated.(*Model)
-	if len(mm.downloads) != 0 {
-		t.Fatalf("完成后应移除任务，实际 %d", len(mm.downloads))
+	if len(mm.downloads.Tasks()) != 0 {
+		t.Fatalf("完成后应移除任务，实际 %d", len(mm.downloads.Tasks()))
 	}
 	if !strings.Contains(mm.note.text, "已下载") {
 		t.Fatalf("完成后应提示已下载，实际 %q", mm.note.text)
@@ -107,6 +119,7 @@ func TestDownloadProgressLineAndBodyHeight(t *testing.T) {
 
 func TestDownloadQueueLimit(t *testing.T) {
 	m := fixtureModel()
+	m.downloads = testDownloads(t)
 	m.songs = append(m.songs, store.Song{ID: "bilibili:BV3:1", Source: "bilibili", BVID: "BV3", Page: 1, Title: "第三首"})
 
 	for _, idx := range []int{0, 1, 2} {
@@ -114,12 +127,13 @@ func TestDownloadQueueLimit(t *testing.T) {
 		updated, _ := m.Update(keyPress("W", 'W'))
 		m = updated.(*Model)
 	}
-	if len(m.downloads) != 3 {
-		t.Fatalf("应有三个任务，实际 %d", len(m.downloads))
+	tasks := m.downloads.Tasks()
+	if len(tasks) != 3 {
+		t.Fatalf("应有三个任务，实际 %d", len(tasks))
 	}
 	running, queued := 0, 0
-	for _, task := range m.downloads {
-		if task.state == downloadRunning {
+	for _, task := range tasks {
+		if task.State == downloader.Running {
 			running++
 		} else {
 			queued++
@@ -136,7 +150,11 @@ func TestDownloadQueueLimit(t *testing.T) {
 
 func TestDownloadLineHiddenOnHelpAndLogin(t *testing.T) {
 	m := fixtureModel()
-	m.downloads = []*downloadTask{{id: 1, title: "夜航星", state: downloadRunning}}
+	mgr := testDownloads(t)
+	m.downloads = mgr
+	if _, ok := mgr.Add(store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}, "夜航星", downloader.Job{}); !ok {
+		t.Fatal("加入任务失败")
+	}
 	for _, v := range []view{viewHelp, viewLogin} {
 		m.view = v
 		if _, ok := m.downloadLineText(); ok {
@@ -147,26 +165,29 @@ func TestDownloadLineHiddenOnHelpAndLogin(t *testing.T) {
 
 func TestDownloadCurrentKeyIgnoresSelection(t *testing.T) {
 	m := fixtureModel()
+	m.downloads = testDownloads(t)
 	m.songIdx = 1 // 选中夜航星，但当前播放是 Never Gonna Give You Up
 
 	updated, _ := m.Update(keyPress("w", 'w'))
 	mm := updated.(*Model)
-	if len(mm.downloads) != 1 {
-		t.Fatalf("按 w 应下载当前播放，实际 %d", len(mm.downloads))
+	tasks := mm.downloads.Tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("按 w 应下载当前播放，实际 %d", len(tasks))
 	}
-	if mm.downloads[0].song.Title != "Never Gonna Give You Up" {
-		t.Fatalf("w 不应下载选中项，实际 %q", mm.downloads[0].song.Title)
+	if tasks[0].Song.Title != "Never Gonna Give You Up" {
+		t.Fatalf("w 不应下载选中项，实际 %q", tasks[0].Song.Title)
 	}
 }
 
 func TestDownloadWholePlaylistWithWOnPlaylistFocus(t *testing.T) {
 	m := fixtureModel()
+	m.downloads = testDownloads(t)
 	m.libraryFocus = focusPlaylists
 
 	updated, cmd := m.Update(keyPress("W", 'W'))
 	mm := updated.(*Model)
-	if len(mm.downloads) != 2 {
-		t.Fatalf("歌单焦点按 W 应入队整个歌单，实际 %d", len(mm.downloads))
+	if len(mm.downloads.Tasks()) != 2 {
+		t.Fatalf("歌单焦点按 W 应入队整个歌单，实际 %d", len(mm.downloads.Tasks()))
 	}
 	if cmd == nil {
 		t.Fatal("歌单下载应返回 tea.Cmd")
@@ -182,128 +203,132 @@ func TestLibraryFocusNavigation(t *testing.T) {
 		t.Fatal("默认焦点应在歌曲列表")
 	}
 
-	updated, _ := m.Update(keyPress("h", 'h'))
+	updated, _ := m.Update(keyPress("", tea.KeyLeft))
 	mm := updated.(*Model)
 	if mm.libraryFocus != focusPlaylists {
-		t.Fatal("h 应把焦点切到歌单")
+		t.Fatal("← 应把焦点切到歌单")
 	}
 	if mm.playlistIdx != 0 {
-		t.Fatal("切换焦点不应改变歌单选择")
+		t.Fatalf("切到歌单焦点不应改变选中歌单: %d", mm.playlistIdx)
 	}
 
-	updated, cmd := mm.Update(keyPress("j", 'j'))
-	mm = updated.(*Model)
-	if mm.playlistIdx != 1 {
-		t.Fatalf("歌单焦点下 j 应移动到下一个歌单，实际 %d", mm.playlistIdx)
-	}
-	if cmd == nil || !mm.songsBusy {
-		t.Fatal("切换歌单应加载曲目")
-	}
-
-	updated, _ = mm.Update(keyPress("l", 'l'))
+	updated, _ = mm.Update(keyPress("", tea.KeyRight))
 	mm = updated.(*Model)
 	if mm.libraryFocus != focusSongs {
-		t.Fatal("l 应把焦点切到歌曲")
+		t.Fatal("→ 应把焦点切回歌曲")
 	}
 }
 
-func TestLibraryFocusGuardsSongAndPlaylistActions(t *testing.T) {
+func TestDownloadLineProgressFormat(t *testing.T) {
 	m := fixtureModel()
-	m.libraryFocus = focusPlaylists
-	updated, _ := m.Update(keyPress("a", 'a'))
+	mgr := testDownloads(t)
+	m.downloads = mgr
+	id, _ := mgr.Add(store.Song{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星"}, "夜航星", downloader.Job{})
+	mgr.Start()
+	mgr.SetProgress(id, 1<<20, 4<<20)
+	line, ok := m.downloadLineText()
+	if !ok || !strings.Contains(ansi.Strip(line), "25%") {
+		t.Fatalf("下载进度格式不符: %q", ansi.Strip(line))
+	}
+}
+
+// TestDownloadJobSnapshotsQualityAndForce 验证入队时快照音质（后台协程不读
+// Model 字段）以及补全缺失文件时带 force。
+func TestDownloadJobSnapshotsQualityAndForce(t *testing.T) {
+	m := fixtureModel()
+	m.downloads = testDownloads(t)
+	m.songIdx = 0
+	m.quality = source.QualityLossless
+	updated, _ := m.Update(keyPress("W", 'W'))
 	mm := updated.(*Model)
-	if !strings.Contains(mm.note.text, "先按 →") {
-		t.Fatalf("歌单焦点下歌曲操作应提示切换焦点，实际 %q", mm.note.text)
+	tasks := mm.downloads.Tasks()
+	if len(tasks) != 1 {
+		t.Fatalf("应入队一个任务，实际 %d", len(tasks))
 	}
-
-	m = fixtureModel()
-	m.libraryFocus = focusSongs
-	updated, _ = m.Update(keyPress("D", 'D'))
-	mm = updated.(*Model)
-	if !strings.Contains(mm.note.text, "先按 ←") {
-		t.Fatalf("歌曲焦点下歌单操作应提示切换焦点，实际 %q", mm.note.text)
+	if tasks[0].Job.Quality != int(source.QualityLossless) {
+		t.Fatalf("任务音质应为入队快照，实际 %+v", tasks[0].Job)
 	}
-	if mm.prompt != promptNone {
-		t.Fatalf("不应进入删除歌单确认，实际 %v", mm.prompt)
+	if tasks[0].Job.Force {
+		t.Fatalf("文件正常时不应强制重下，实际 %+v", tasks[0].Job)
 	}
 }
 
-func playlistRowText(p store.Playlist, sideW int, playing bool) string {
-	marker := "  "
-	if playing {
-		marker = "▶ "
-	}
-	prefix := marker + " "
-	if p.Kind == "remote" && p.Source != "" {
-		prefix = marker + " " + padRight(source.ID(p.Source).Mark(), 2) + " "
-	}
-	label := prefix + p.Title
-	if p.Count > 0 {
-		label = fmt.Sprintf("%s%s %d", prefix, p.Title, p.Count)
-	}
-	return padRight(truncate(label, sideW), sideW)
-}
-
-func stylePrefix(style lipgloss.Style) string {
-	rendered := style.Render("X")
-	return rendered[:strings.Index(rendered, "X")]
-}
-
-func TestLibraryFocusStyles(t *testing.T) {
+// TestCancelSelectedDownload 验证下载页 x 取消选中曲目的下载任务。
+func TestCancelSelectedDownload(t *testing.T) {
+	block := make(chan struct{})
+	mgr := downloader.New(1, func(ctx context.Context, _ store.Song, _ downloader.Job, _ func(int64, int64)) (string, int64, error) {
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-block:
+			return "p", 1, nil
+		}
+	})
+	t.Cleanup(func() {
+		mgr.CancelAll()
+		close(block)
+	})
+	a := store.NormalizeSong(store.Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "甲", Artist: "x", Duration: 10})
+	b := store.NormalizeSong(store.Song{Source: "bilibili", BVID: "BV2", Page: 1, Title: "乙", Artist: "y", Duration: 10})
 	m := fixtureModel()
-	m.playingPlaylistID = "local-default"
-	m.playlistIdx = 0
-	m.libraryFocus = focusSongs
+	m.downloads = mgr
+	m.view = viewDownloads
+	m.downloadItems = []downloadItem{
+		{entry: store.DownloadEntry{Download: store.Download{SongID: a.ID, Path: "/tmp/a.flac"}, Song: a}},
+		{entry: store.DownloadEntry{Download: store.Download{SongID: b.ID, Path: "/tmp/b.flac"}, Song: b}},
+	}
+	m.downloadIdx = 0
+	if _, ok := mgr.Add(a, "甲", downloader.Job{}); !ok {
+		t.Fatal("入队失败")
+	}
+	if _, ok := mgr.Add(b, "乙", downloader.Job{}); !ok {
+		t.Fatal("入队失败")
+	}
+	mgr.Start()
 
-	rows := m.renderLibrary(10)
-	playingRow := playlistRowText(m.playlists[1], 20, true)
-	if !strings.Contains(rows[2], st.playing.Render(playingRow)) {
-		t.Fatalf("歌曲焦点下，正在播放歌单应为灰底: %q", ansi.Strip(rows[2]))
+	updated, _ := m.Update(keyPress("x", 'x'))
+	mm := updated.(*Model)
+	if !strings.Contains(mm.note.text, "已取消下载") {
+		t.Fatalf("x 应取消选中下载，实际提示 %q", mm.note.text)
 	}
-	selectedRow := playlistRowText(m.playlists[0], 20, false)
-	if strings.Contains(rows[1], st.selected.Render(selectedRow)) {
-		t.Fatal("歌曲焦点下不应高亮歌单")
-	}
-	if !strings.HasPrefix(m.songRow(0, 60), stylePrefix(st.selected)) {
-		t.Fatal("歌曲焦点下选中歌曲应为蓝底")
-	}
-
-	m.libraryFocus = focusPlaylists
-	rows = m.renderLibrary(10)
-	if !strings.HasPrefix(rows[1], st.selected.Render(selectedRow)) {
-		t.Fatalf("歌单焦点下选中歌单应为蓝底: %q", ansi.Strip(rows[1]))
-	}
-	if !strings.Contains(rows[2], st.playing.Render(playingRow)) {
-		t.Fatalf("歌单焦点下正在播放歌单应仍为灰底: %q", ansi.Strip(rows[2]))
-	}
-	if !strings.HasPrefix(m.songRow(0, 60), stylePrefix(st.playing)) {
-		t.Fatal("歌单焦点下当前歌曲应为灰底而不是选中蓝底")
+	if mgr.Has(a.ID) {
+		t.Fatal("取消后任务不应再在下载队列里")
 	}
 }
 
-func TestPlayPlaylistRecordsOrigin(t *testing.T) {
+// TestFailedDownloadKeepsTaskAndLine 验证失败任务保留、底部状态行常驻提示，
+// 进入下载页后清理。
+func TestFailedDownloadKeepsTaskAndLine(t *testing.T) {
+	mgr := downloader.New(1, func(context.Context, store.Song, downloader.Job, func(int64, int64)) (string, int64, error) {
+		return "", 0, errors.New("boom")
+	})
 	m := fixtureModel()
-	m.playlistIdx = 1 // local-default
-	_ = m.playPlaylistIndex(0)
-	if m.playingPlaylistID != "local-default" {
-		t.Fatalf("从歌单起播应记录来源歌单，实际 %q", m.playingPlaylistID)
-	}
-}
+	m.downloads = mgr
+	song := store.NormalizeSong(store.Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "失败曲", Artist: "x", Duration: 10})
 
-func TestPlayingPlaylistHasIconAndIndent(t *testing.T) {
-	m := fixtureModel()
-	m.playingPlaylistID = "local-default"
-	rows := m.renderLibrary(10)
-	side := func(row string) string {
-		return strings.SplitN(ansi.Strip(row), "│", 2)[0]
+	cmd := m.enqueueDownload(song, "开始下载：")
+	if cmd == nil {
+		t.Fatal("应返回下载事件监听命令")
 	}
-	if !strings.Contains(side(rows[2]), "▶  本地歌单") {
-		t.Fatalf("正在播放的歌单应有播放图标和缩进: %q", side(rows[2]))
+	msg := cmd()
+	updated, _ := m.Update(msg)
+	mm := updated.(*Model)
+
+	tasks := mgr.Tasks()
+	if len(tasks) != 1 || tasks[0].State != downloader.Failed {
+		t.Fatalf("失败任务应保留为 Failed，实际 %+v", tasks)
 	}
-	if strings.Contains(side(rows[1]), "▶") {
-		t.Fatalf("非播放歌单不应有播放图标: %q", side(rows[1]))
+	if !strings.Contains(mm.note.text, "boom") {
+		t.Fatalf("应显示错误提示，实际 %q", mm.note.text)
 	}
-	if !strings.HasPrefix(side(rows[1]), "   我喜欢的音乐") {
-		t.Fatalf("歌单左侧应留出图标位: %q", side(rows[1]))
+	line, ok := mm.downloadLineText()
+	if !ok || !strings.Contains(ansi.Strip(line), "下载失败") {
+		t.Fatalf("底部状态行应提示下载失败，实际 %q", ansi.Strip(line))
+	}
+
+	// 进入下载页视为用户已看到，清掉失败任务。
+	mm.openDownloads()
+	if mgr.Len() != 0 {
+		t.Fatalf("进入下载页应清理失败任务，剩余 %d", mgr.Len())
 	}
 }

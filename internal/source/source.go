@@ -21,30 +21,6 @@ const (
 	NetEase  ID = "netease"
 )
 
-// Label 返回界面用的短名称。
-func (id ID) Label() string {
-	switch id {
-	case Bilibili:
-		return "Bilibili"
-	case NetEase:
-		return "网易云"
-	default:
-		return string(id)
-	}
-}
-
-// Mark 返回列表行里用的极短标记。
-func (id ID) Mark() string {
-	switch id {
-	case Bilibili:
-		return "B"
-	case NetEase:
-		return "云"
-	default:
-		return "?"
-	}
-}
-
 // Capability 是音源能力位，UI 只按能力显隐，不按平台名分支。
 type Capability uint32
 
@@ -96,9 +72,9 @@ func ParseQuality(v int) Quality {
 // Ref 定位一首歌在某个音源里的版本。
 type Ref struct {
 	Source     ID
-	ExternalID string // BV 号 / 网易云 song id
+	ExternalID string // 音源内的稳定 ID
 	Page       int
-	CID        int64 // B 站分 P 的 cid；其他音源为 0
+	CID        int64 // 平台扩展字段；B 站分 P 为 cid，其他音源为 0
 }
 
 // Key 返回稳定 ID，格式与 store.SongID 保持一致。
@@ -135,7 +111,7 @@ func (t Track) Key() string { return t.Ref().Key() }
 type Candidate struct {
 	Track
 	Play int64 // 播放量，未知为 0
-	Fee  int   // 网易云 fee；0 表示未知/免费
+	VIP  bool  // 平台标记为会员/付费才能完整播放
 }
 
 // SearchPage 是一页搜索结果。
@@ -155,6 +131,27 @@ type DailyRecommender interface {
 // 目标歌单必须属于同一音源；歌曲平台由 ref.Source 约束。
 type PlaylistWriter interface {
 	AddToPlaylist(ctx context.Context, remoteID string, ref Ref) error
+}
+
+// Aliased 是可选能力：音源声明命令行里可接受的别名（ID 与 Name 自动包含）。
+type Aliased interface {
+	Aliases() []string
+}
+
+// TargetParser 是可选能力：把用户输入的链接/编号解析成本音源的 Ref。
+// 返回 ok=false 表示输入不属于该音源，注册表会继续尝试下一个。
+type TargetParser interface {
+	ParseTarget(input string, pageOverride int) (Ref, bool, error)
+}
+
+// LyricNamer 是可选能力：歌词来源在界面上的展示名，如「B 站字幕」。
+type LyricNamer interface {
+	LyricName() string
+}
+
+// LoginNamer 是可选能力：扫码登录页里提示使用的 App 名称。
+type LoginNamer interface {
+	LoginAppName() string
 }
 
 // Stream 是音源交给播放引擎的最终音频地址。
@@ -210,6 +207,8 @@ type LoginStatus struct {
 type Source interface {
 	ID() ID
 	Name() string
+	// Mark 是列表行里用的极短标记，属于平台展示信息，不再由核心包穷举。
+	Mark() string
 	Caps() Capability
 	LoggedIn() bool
 	User() User
@@ -228,21 +227,45 @@ type Source interface {
 
 // Registry 保存按 ID 索引的音源，顺序决定界面展示顺序。
 type Registry struct {
-	order []Source
-	byID  map[ID]Source
+	order   []Source
+	byID    map[ID]Source
+	aliases map[string]ID
 }
 
 // NewRegistry 创建注册表；nil 音源会被忽略。
 func NewRegistry(sources ...Source) *Registry {
-	r := &Registry{byID: map[ID]Source{}}
+	r := &Registry{byID: map[ID]Source{}, aliases: map[string]ID{}}
 	for _, s := range sources {
 		if s == nil {
 			continue
 		}
+		id := s.ID()
 		r.order = append(r.order, s)
-		r.byID[s.ID()] = s
+		r.byID[id] = s
+		r.bindAlias(string(id), id)
+		r.bindAlias(s.Name(), id)
+		if a, ok := s.(Aliased); ok {
+			for _, alias := range a.Aliases() {
+				r.bindAlias(alias, id)
+			}
+		}
 	}
 	return r
+}
+
+func (r *Registry) bindAlias(alias string, id ID) {
+	if r == nil {
+		return
+	}
+	key := normalizeName(alias)
+	if key == "" {
+		return
+	}
+	r.aliases[key] = id
+}
+
+func normalizeName(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 // All 按注册顺序返回全部音源。
@@ -266,6 +289,83 @@ func (r *Registry) Get(id ID) Source {
 // GetString 按字符串查找音源，便于从数据库字段直接取。
 func (r *Registry) GetString(id string) Source {
 	return r.Get(ID(strings.TrimSpace(id)))
+}
+
+// GetByName 按 ID、显示名或平台别名查找音源。
+func (r *Registry) GetByName(name string) Source {
+	if r == nil {
+		return nil
+	}
+	if id, ok := r.aliases[normalizeName(name)]; ok {
+		return r.Get(id)
+	}
+	return r.GetString(name)
+}
+
+// Name 返回音源显示名；未注册时退回原始 ID。
+func (r *Registry) Name(id ID) string {
+	if src := r.Get(id); src != nil {
+		return src.Name()
+	}
+	return string(id)
+}
+
+// Mark 返回音源短标记；未注册时返回 ?。
+func (r *Registry) Mark(id ID) string {
+	if src := r.Get(id); src != nil && src.Mark() != "" {
+		return src.Mark()
+	}
+	return "?"
+}
+
+// LyricName 返回歌词来源展示名。
+func (r *Registry) LyricName(id ID) string {
+	src := r.Get(id)
+	if src == nil {
+		return "平台歌词"
+	}
+	if n, ok := src.(LyricNamer); ok && strings.TrimSpace(n.LyricName()) != "" {
+		return n.LyricName()
+	}
+	return src.Name() + "歌词"
+}
+
+// LoginAppName 返回扫码登录页提示的 App 名称。
+func (r *Registry) LoginAppName(id ID) string {
+	src := r.Get(id)
+	if src == nil {
+		return "手机 App"
+	}
+	if n, ok := src.(LoginNamer); ok && strings.TrimSpace(n.LoginAppName()) != "" {
+		return n.LoginAppName()
+	}
+	return src.Name() + " App"
+}
+
+// ParseTarget 让各音源依次尝试解析用户输入的链接/编号。
+func (r *Registry) ParseTarget(input string, pageOverride int) (Ref, bool, error) {
+	if r == nil {
+		return Ref{}, false, nil
+	}
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return Ref{}, false, nil
+	}
+	for _, src := range r.order {
+		p, ok := src.(TargetParser)
+		if !ok {
+			continue
+		}
+		ref, matched, err := p.ParseTarget(input, pageOverride)
+		if !matched {
+			continue
+		}
+		if err != nil {
+			return Ref{}, true, err
+		}
+		return ref, true, nil
+	}
+	return Ref{}, false, nil
 }
 
 // IDs 返回全部音源 ID。

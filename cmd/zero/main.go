@@ -28,7 +28,7 @@ import (
 )
 
 // version 由发布流水线通过 -ldflags "-X main.version=..." 注入。
-var version = "0.4.1"
+var version = "0.5.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -45,6 +45,7 @@ func run(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	tui.Version = version
 	if *showVersion || (fs.NArg() == 1 && fs.Arg(0) == "version") {
 		fmt.Printf("zero %s\n", version)
 		return nil
@@ -55,11 +56,11 @@ func run(args []string) error {
 		return runTUI()
 	case "play":
 		if fs.NArg() < 2 {
-			return errors.New("用法: zero play <BV号/链接或网易云歌曲 ID/链接>")
+			return errors.New("用法: zero play <音源链接或 ID>")
 		}
 		return runPlay(fs.Arg(1))
 	case "login":
-		name := "bilibili"
+		name := ""
 		if fs.NArg() >= 2 {
 			name = fs.Arg(1)
 		}
@@ -86,13 +87,13 @@ func run(args []string) error {
 }
 
 func usage(fs *flag.FlagSet) {
-	fmt.Fprintf(os.Stderr, `zero %s —— 跨平台音乐终端播放器（B 站 + 网易云）
+	fmt.Fprintf(os.Stderr, `zero %s —— 跨平台音乐终端播放器
 
 用法:
   zero                  启动终端界面
-  zero play <BV号/链接或网易云 ID>  直接播放（headless，便于验证音频链路）
-  zero login            在终端里扫码登录并保存 cookie
-  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker）
+  zero play <链接或 ID>  直接播放（headless，便于验证音频链路）
+  zero login [音源]     在终端里扫码登录并保存 cookie（默认第一个音源）
+  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker/menu/about/downloads）
   zero download <目标...>  下载单曲（支持 -j 并发、Range 续传）
   zero clean-playlists  清空已导入的远端歌单，保留本地歌单
   zero theme [auto|dark|light]  查看/设置主题（auto 读 COLORFGBG）
@@ -127,11 +128,15 @@ func loadSession(st *store.Store, src source.Source) {
 }
 
 func newSources(st *store.Store) *source.Registry {
-	bilisrc := bilibilisource.New(bili.New())
-	loadSession(st, bilisrc)
-	ncm := netease.New()
-	loadSession(st, ncm)
-	return source.NewRegistry(bilisrc, ncm)
+	// 组合根：新增平台只需要在这里追加构造器，其余层通过 Registry 工作。
+	list := []source.Source{
+		bilibilisource.New(bili.New()),
+		netease.New(),
+	}
+	for _, src := range list {
+		loadSession(st, src)
+	}
+	return source.NewRegistry(list...)
 }
 
 func runTUI() error {
@@ -180,8 +185,12 @@ func runKeymap(args []string) error {
 		fmt.Println("已生成快捷键配置：" + path)
 		return nil
 	}
-	if _, err := keymap.Load(path); err != nil {
+	_, warnings, err := keymap.LoadWithWarnings(path)
+	if err != nil {
 		return err
+	}
+	for _, w := range warnings {
+		fmt.Println("提示：" + w)
 	}
 	fmt.Println("快捷键配置 OK：" + path)
 	return nil
@@ -229,15 +238,20 @@ func runTheme(args []string) error {
 
 // runPlay 是最小可用的 headless 播放器，用来验证解析 + 解码 + 输出链路。
 func runPlay(input string) error {
-	ref, err := parseDownloadTarget(input, 0)
-	if err != nil {
-		return err
-	}
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+
+	sources := newSources(st)
+	ref, matched, err := sources.ParseTarget(input, 0)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return fmt.Errorf("无法识别播放目标 %q", input)
+	}
 
 	engine, err := audio.New()
 	if err != nil {
@@ -246,7 +260,7 @@ func runPlay(input string) error {
 	defer engine.Close()
 
 	ctx := context.Background()
-	src := newSources(st).Get(ref.Source)
+	src := sources.Get(ref.Source)
 	if src == nil {
 		return fmt.Errorf("未知音源 %q", ref.Source)
 	}
@@ -284,7 +298,7 @@ func runPlay(input string) error {
 	}
 
 	fmt.Printf("▶ %s — %s\n", track.Title, track.Artist)
-	fmt.Printf("  音轨 %s（%s）· %s\n", stream.Quality, stream.Codec, track.Source.Label())
+	fmt.Printf("  音轨 %s（%s）· %s\n", stream.Quality, stream.Codec, src.Name())
 
 	total := stream.Duration
 	if total == 0 {
@@ -319,9 +333,19 @@ func runLogin(name string) error {
 	}
 	defer st.Close()
 
-	src := newSources(st).GetString(sourceName(name))
+	sources := newSources(st)
+	src := sources.GetByName(name)
+	if src == nil && strings.TrimSpace(name) == "" {
+		if all := sources.All(); len(all) > 0 {
+			src = all[0]
+		}
+	}
 	if src == nil {
-		return fmt.Errorf("未知音源 %q（可选 bilibili / netease）", name)
+		ids := make([]string, 0, len(sources.IDs()))
+		for _, id := range sources.IDs() {
+			ids = append(ids, string(id))
+		}
+		return fmt.Errorf("未知音源 %q（可选 %s）", name, strings.Join(ids, " / "))
 	}
 	ctx := context.Background()
 
@@ -354,20 +378,9 @@ func runLogin(name string) error {
 			return nil
 		}
 		if status.Expired {
-			return fmt.Errorf("二维码已失效，请重新运行 zero login %s", name)
+			return fmt.Errorf("二维码已失效，请重新运行 zero login %s", src.ID())
 		}
 		time.Sleep(2 * time.Second)
-	}
-}
-
-func sourceName(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "netease", "ncm", "网易云", "wangyiyun":
-		return string(source.NetEase)
-	case "bilibili", "bili", "b站":
-		return string(source.Bilibili)
-	default:
-		return ""
 	}
 }
 

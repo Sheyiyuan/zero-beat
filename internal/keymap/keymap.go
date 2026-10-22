@@ -24,6 +24,7 @@ const (
 	LocalSearch      Action = "local_search"
 	Search           Action = "search"
 	QueueView        Action = "queue_view"
+	LyricsView       Action = "lyrics_view"
 	PlayPause        Action = "play_pause"
 	Next             Action = "next"
 	Previous         Action = "previous"
@@ -62,6 +63,7 @@ const (
 	Rename           Action = "rename"
 	New              Action = "new"
 	Folders          Action = "folders"
+	Downloads        Action = "downloads"
 	MixEdit          Action = "mix_edit"
 	EditClip         Action = "edit_clip"
 	ClipSetStart     Action = "clip_set_start"
@@ -86,6 +88,7 @@ var Defaults = map[Action][]string{
 	LocalSearch:      {"/"},
 	Search:           {"?"},
 	QueueView:        {"c"},
+	LyricsView:       {"T", "ctrl+l"},
 	PlayPause:        {"space"},
 	Next:             {"]"},
 	Previous:         {"["},
@@ -124,6 +127,7 @@ var Defaults = map[Action][]string{
 	Rename:           {"R"},
 	New:              {"N"},
 	Folders:          {"f"},
+	Downloads:        {"F"},
 	MixEdit:          {"M"},
 	EditClip:         {"C"},
 	ClipSetStart:     {"{"},
@@ -162,7 +166,7 @@ type Keymap struct {
 
 // Default 返回内置键位。
 func Default() *Keymap {
-	km, err := build(Defaults)
+	km, _, err := build(Defaults, nil)
 	if err != nil {
 		panic("keymap: 默认键位冲突: " + err.Error())
 	}
@@ -171,63 +175,125 @@ func Default() *Keymap {
 
 // Load 读取 TOML 配置；文件不存在时返回默认键位。
 func Load(path string) (*Keymap, error) {
+	km, _, err := LoadWithWarnings(path)
+	return km, err
+}
+
+// LoadWithWarnings 与 Load 相同，但额外返回「用户绑定抢走默认键」产生的降级说明。
+//
+// 冲突处理：用户显式写出的动作优先，被抢走的默认绑定禁用并记一条 warning；
+// 只有两个都是用户自定义动作的冲突才整份拒绝（见 README「自定义快捷键」与 ADR-0012）。
+func LoadWithWarnings(path string) (*Keymap, []string, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Default(), nil
+		return Default(), nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("读取快捷键配置: %w", err)
+		return nil, nil, fmt.Errorf("读取快捷键配置: %w", err)
 	}
 	var doc struct {
 		Keys map[string][]string `toml:"keys"`
 	}
 	md, err := toml.Decode(string(raw), &doc)
 	if err != nil {
-		return nil, fmt.Errorf("解析快捷键配置: %w", err)
+		return nil, nil, fmt.Errorf("解析快捷键配置: %w", err)
 	}
 	if u := md.Undecoded(); len(u) > 0 {
-		return nil, fmt.Errorf("快捷键配置包含未知字段: %s", u)
+		return nil, nil, fmt.Errorf("快捷键配置包含未知字段: %s", u)
 	}
 	merged := make(map[Action][]string, len(Defaults))
 	for a, keys := range Defaults {
 		merged[a] = append([]string(nil), keys...)
 	}
+	overridden := make(map[Action]bool, len(doc.Keys))
 	for name, keys := range doc.Keys {
 		a := Action(name)
 		if !actionSet[a] {
-			return nil, fmt.Errorf("未知动作 %q", name)
+			return nil, nil, fmt.Errorf("未知动作 %q", name)
 		}
 		merged[a] = append([]string(nil), keys...)
+		overridden[a] = true
 	}
-	return build(merged)
+	return build(merged, overridden)
 }
 
-func build(actions map[Action][]string) (*Keymap, error) {
+// build 编译绑定。overridden 标记用户显式覆盖的动作：冲突时用户绑定优先，
+// 被抢走的默认绑定禁用并记一条 warning；两份用户绑定冲突才返回错误。
+func build(actions map[Action][]string, overridden map[Action]bool) (*Keymap, []string, error) {
 	km := &Keymap{
 		labels:   make(map[Action][]string, len(actions)),
 		bindings: make(map[Action][]binding, len(actions)),
 	}
+	// 先处理用户覆盖的动作，让「用户优先」与 map 遍历顺序无关。
+	ordered := make([]Action, 0, len(actions))
+	for a := range actions {
+		ordered = append(ordered, a)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if oi, oj := overridden[ordered[i]], overridden[ordered[j]]; oi != oj {
+			return oi
+		}
+		return ordered[i] < ordered[j]
+	})
+
 	used := map[string]Action{}
-	for a, keys := range actions {
+	var warnings []string
+	for _, a := range ordered {
 		seen := map[string]bool{}
-		for _, raw := range keys {
+		for _, raw := range actions[a] {
 			b, err := parseBinding(raw)
 			if err != nil {
-				return nil, fmt.Errorf("动作 %s 的按键 %q: %w", a, raw, err)
+				return nil, nil, fmt.Errorf("动作 %s 的按键 %q: %w", a, raw, err)
 			}
 			if seen[b.display] {
 				continue
 			}
 			seen[b.display] = true
-			if prev, ok := used[b.display]; ok && prev != a {
-				return nil, fmt.Errorf("按键 %q 同时绑定到 %s 和 %s", b.display, prev, a)
+			prev, taken := used[b.display]
+			if !taken {
+				used[b.display] = a
+				km.add(a, b)
+				continue
 			}
-			used[b.display] = a
-			km.labels[a] = append(km.labels[a], b.display)
-			km.bindings[a] = append(km.bindings[a], b)
+			if prev == a {
+				continue
+			}
+			prevOver, curOver := overridden[prev], overridden[a]
+			switch {
+			case curOver && !prevOver:
+				// 用户的绑定优先，被抢的默认绑定禁用。
+				km.remove(prev, b.display)
+				delete(used, b.display)
+				used[b.display] = a
+				km.add(a, b)
+				warnings = append(warnings,
+					fmt.Sprintf("%s 的默认键 %q 已被 %s 占用，该默认绑定已禁用", prev, b.display, a))
+			case !curOver && prevOver:
+				warnings = append(warnings,
+					fmt.Sprintf("%s 的默认键 %q 已被 %s 占用，该默认绑定已禁用", a, b.display, prev))
+			default:
+				return nil, nil, fmt.Errorf("按键 %q 同时绑定到 %s 和 %s", b.display, prev, a)
+			}
 		}
 	}
-	return km, nil
+	return km, warnings, nil
+}
+
+func (k *Keymap) add(a Action, b binding) {
+	k.labels[a] = append(k.labels[a], b.display)
+	k.bindings[a] = append(k.bindings[a], b)
+}
+
+// remove 删除某动作的一条绑定；labels 与 bindings 始终按同一顺序追加。
+func (k *Keymap) remove(a Action, display string) {
+	for i, label := range k.labels[a] {
+		if label != display {
+			continue
+		}
+		k.labels[a] = append(k.labels[a][:i], k.labels[a][i+1:]...)
+		k.bindings[a] = append(k.bindings[a][:i], k.bindings[a][i+1:]...)
+		return
+	}
 }
 
 // Keys 返回动作当前生效的按键展示值。

@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"fmt"
-
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
@@ -33,7 +31,7 @@ func (m *Model) openMixEditor(id string) tea.Cmd {
 		}
 	}
 	if id != "" {
-		refs, err := m.store.MixinRefs(id)
+		refs, err := m.service().MixinRefs(id)
 		if err != nil {
 			m.setError(err)
 			return nil
@@ -129,7 +127,7 @@ func (m *Model) commitMix() tea.Cmd {
 	}
 	if m.mix.editingID != "" {
 		id := m.mix.editingID
-		if err := m.store.SetMixinRefs(id, refs); err != nil {
+		if err := m.service().SetMixinRefs(id, refs); err != nil {
 			m.setError(err)
 			return nil
 		}
@@ -156,30 +154,18 @@ func (m *Model) renderMix(h int) []string {
 	start, end := windowRange(len(m.mix.items), m.mix.idx, h-2)
 	for i := start; i < end; i++ {
 		p := m.mix.items[i]
-		check := "[ ]"
-		if m.mix.selected[p.ID] {
-			check = "[x]"
-		}
-		marker := "  "
-		if i == m.mix.idx {
-			marker = "▶ "
-		}
-		src := "本地"
+		checked := m.mix.selected[p.ID]
+		tag := "本"
 		if p.Source != "" {
-			src = source.ID(p.Source).Label()
+			tag = m.sourceMark(source.ID(p.Source))
 		}
-		titleW := m.width - 18
-		if titleW < 8 {
-			titleW = 8
-		}
-		row := marker + check + " " + st.dim.Render(padRight(src, 8)) +
-			padRight(p.Title, titleW) + st.muted.Render(fmt.Sprintf("%4d", p.Count))
-		row = padRight(row, m.width)
-		if i == m.mix.idx {
-			out = append(out, st.selected.Render(row))
-		} else {
-			out = append(out, row)
-		}
+		out = append(out, m.renderPlaylistRow(playlistRowSpec{
+			Selected: i == m.mix.idx,
+			Tag:      tag,
+			Title:    p.Title,
+			Count:    p.Count,
+			Check:    &checked,
+		}, m.width))
 	}
 	out = append(out, st.dim.Render(" space 勾选 · enter 下一步 · j/k 移动 · esc 返回"))
 	return out

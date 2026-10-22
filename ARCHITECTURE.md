@@ -8,8 +8,16 @@
 ├────────────────────────────────────────────────────────────┤
 │ internal/tui        Bubble Tea v2：模型、渲染、按键、命令    │
 ├──────────────────────────────┬─────────────────────────────┤
-│ internal/source 契约 + 注册表 │ internal/audio  播放引擎     │
-│  ├─ source/bilibili 适配器    │ internal/store  SQLite      │
+│ internal/app 业务服务         │ internal/player 播放控制器   │
+│  ├─ 搜索 / 取流 / 歌词        │  ├─ 队列/播放状态/模式        │
+│  ├─ 歌单同步 / 登录 / 队列恢复│  ├─ 引擎控制/重试/预解析      │
+│  └─ 不依赖 Bubble Tea         │  └─ 不依赖 Bubble Tea        │
+│ internal/downloader 下载任务  │ internal/audio  播放引擎     │
+│  ├─ 并发/取消/进度事件        │ internal/store  SQLite      │
+│  └─ 不依赖 Bubble Tea         │                             │
+├──────────────────────────────┼─────────────────────────────┤
+│ internal/source 契约 + 注册表 │                             │
+│  ├─ source/bilibili 适配器    │                             │
 │  └─ internal/netease 客户端   │                             │
 ├──────────────────────────────┴─────────────────────────────┤
 │ internal/bili   B 站 API 客户端（被适配器包装）              │
@@ -20,9 +28,18 @@
 └────────────────────────────────────────────────────────────┘
 ```
 
-依赖方向：`tui` 只依赖 `source.Source` 接口，不按平台名写分支；`source/bilibili`
-依赖 `bili`；`netease` 独立实现接口；`audio` / `store` / `lyrics` / `download`
-互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 只额外维护任务队列和进度行。
+依赖方向：`tui` 只依赖 `app.Service` 与 `source.Source` 接口，不按平台名写分支；
+`app` 依赖 `source` / `store` / `lyrics` / `lrclib`，但不 import Bubble Tea；
+`source/bilibili` 依赖 `bili`；`netease` 独立实现接口；`internal/player` 持有
+播放状态机并通过 `Engine` / `QueueSaver` 接口调用引擎与存储；`internal/downloader`
+持有下载任务队列；两者都不依赖 Bubble Tea。`audio` / `store` / `lyrics` /
+`download` 互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 还维护
+任务队列、进度行和下载管理页。
+
+平台展示信息（短标记、命令行别名、链接解析、歌词名、登录 App 名）属于适配器：
+`Source.Mark` 是必选方法，其余是 `Aliased` / `TargetParser` / `LyricNamer` /
+`LoginNamer` 可选接口。`source` 核心包不再穷举平台名，`Registry` 负责别名查找、
+目标解析与展示兜底。
 
 ## 数据流
 
@@ -33,7 +50,8 @@
   → Update 拿到 KeyPressMsg
   → playSong()：置 buffering、记住当前曲目
   → playSongCmd（tea.Cmd，在 goroutine 里跑）
-       └─ registry.GetString(song.Source)
+       └─ app.Service.Resolve
+            └─ registry.GetString(song.Source)
             ├─ B 站：缺 CID 时 GET /x/web-interface/view，再 GET /x/player/playurl
             └─ 网易云：go-musicfox/netease-music 的 song_url_v1（weapi）
        └─ source.Resolve 返回 Resolved{Track, Stream}，元数据回写 songs 表
@@ -49,18 +67,19 @@
 **搜索与歌单**
 
 ```
-搜索页 s 切换：全部 / B站 / 网易云
-  → 对每个选中的 Source 并发 Search
+搜索页 s 切换：全部 / 各音源
+  → app.Service.Search 对每个带 CapSearch 的 Source 并发 Search
   → 结果带 [B] / [云] 标记合并，页码取各源最大值
   → 进入队列时只保留 source + external_id，播放时再按源解析
 
-登录后 loadPlaylistsCmd：
-  → 首次启动补一个本地默认歌单（删掉后不再重建）和网易云「每日推荐」入口
-  → 不调用 RemotePlaylists，两个平台的歌单都不自动导入
+登录后 app.Service.Playlists：
+  → 首次启动补一个本地默认歌单（删掉后不再重建）
+  → 任何 CapDailyRecommendations + DailyRecommender 的音源都补「每日推荐」入口
+  → 不调用 RemotePlaylists，远端歌单都不自动导入
 
 按需导入：
-  → 曲库按 f 进入选择页，s 在 B 站/网易云之间切换
-  → Source.RemotePlaylists 只拉候选，过滤已添加
+  → 曲库按 f 进入选择页，s 在支持远端歌单的音源之间切换
+  → app.Service.RemoteFolders 只拉候选，过滤已添加
   → enter 才 EnsurePlaylist，随后正常按需刷新曲目
 
 登录二维码：
@@ -110,6 +129,8 @@ a → 目标选择器（本地/混合/同源云端）
 // TUI → 音源（实际定义在 internal/source）
 type Source interface {
     ID() ID
+    Name() string
+    Mark() string
     Search(ctx, keyword string, page int) (SearchPage, error)
     Resolve(ctx, ref Ref, quality Quality) (Resolved, error)
     Lyrics(ctx, ref Ref) ([]lyrics.Line, string, error)
@@ -143,6 +164,10 @@ type audio.Event struct {
 音源负责把平台差异（Referer、cookie、编码选择、过期时间）压进 `Stream`，引擎只认它。
 播放直链**不落库**：B 站约 2 小时、网易云约 20 分钟过期，落库只会产出脏数据。
 
+已下载文件不走远程解析：`app.Resolve` 先查 `downloads` 索引，命中且文件有效时直接返回
+本地路径（`Quality = "本地"`，不校验用户选择的音质）；记录缺失或文件失效则回落远程。
+TUI 下载页强制首轮本地播放，引擎失败重试时跳过本地、改走远程，避免坏文件死循环。
+
 云端歌单写入是可选能力 `source.PlaylistWriter`，由 `CapPlaylistWrite` 标记；
 UI 只按能力显示云端目标，不按平台名分支。
 
@@ -160,6 +185,7 @@ playlist_excludes(playlist_id, song_id)                     -- 混合歌单里�
 queue(id=1, data, position, queue_index, updated)   -- 单行：队列 ID JSON + 进度
 settings(key, value)                                -- volume / comp_db / mode / quality / lyric_offset:<songID> / clip:<songID> / last_add_playlist
 accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
+downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载文件索引
 ```
 
 ## 事件循环约束（改 UI 前必读）
@@ -194,3 +220,10 @@ accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
 
 云端歌单只实现了「加歌」；删除、改名、取消收藏和完整分页仍未做。播放片段只做播放区间，
 不导出音频文件；区间末尾受 ffmpeg 输出缓冲影响，可能有约 100ms 的尾音。
+
+边界：`internal/app` 承接搜索、取流、歌词、歌单同步、登录、队列恢复、歌单 CRUD、
+偏好持久化、下载执行与本地优先解析等外部业务；`internal/player.Controller` 承接队列、当前曲目、
+播放状态、模式、重试、预解析、引擎控制与落盘；`internal/downloader.Manager` 承接
+下载任务、并发与取消。`Model` 只保留视图状态、按键路由和播放状态的只读镜像，
+不再决定「下一首是谁」「什么时候重试」「队列怎么变」；片段编辑器的整首预览
+也通过 `player.Controller` 完成。

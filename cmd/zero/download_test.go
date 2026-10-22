@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sheyiyuan/zero-beat/internal/bili"
+	"github.com/sheyiyuan/zero-beat/internal/netease"
 	"github.com/sheyiyuan/zero-beat/internal/source"
+	bilibilisource "github.com/sheyiyuan/zero-beat/internal/source/bilibili"
 )
 
 func TestParseDownloadArgs(t *testing.T) {
@@ -39,33 +42,35 @@ func TestParseDownloadArgs(t *testing.T) {
 }
 
 func TestParseDownloadTarget(t *testing.T) {
-	ref, err := parseDownloadTarget("BV1GJ411x7h7", 0)
-	if err != nil || ref.Source != source.Bilibili || ref.ExternalID != "BV1GJ411x7h7" || ref.Page != 1 {
-		t.Fatalf("BV 号解析失败: %+v %v", ref, err)
+	reg := source.NewRegistry(bilibilisource.New(bili.New()), netease.New())
+
+	ref, ok, err := reg.ParseTarget("BV1GJ411x7h7", 0)
+	if err != nil || !ok || ref.Source != source.Bilibili || ref.ExternalID != "BV1GJ411x7h7" || ref.Page != 1 {
+		t.Fatalf("BV 号解析失败: %+v %v ok=%v", ref, err, ok)
 	}
 
-	ref, err = parseDownloadTarget("https://www.bilibili.com/video/BV1GJ411x7h7?p=2", 0)
-	if err != nil || ref.Page != 2 {
-		t.Fatalf("B 站链接分 P 解析失败: %+v %v", ref, err)
+	ref, ok, err = reg.ParseTarget("https://www.bilibili.com/video/BV1GJ411x7h7?p=2", 0)
+	if err != nil || !ok || ref.Page != 2 {
+		t.Fatalf("B 站链接分 P 解析失败: %+v %v ok=%v", ref, err, ok)
 	}
 
-	ref, err = parseDownloadTarget("186016", 0)
-	if err != nil || ref.Source != source.NetEase || ref.ExternalID != "186016" {
-		t.Fatalf("网易云 ID 解析失败: %+v %v", ref, err)
+	ref, ok, err = reg.ParseTarget("186016", 0)
+	if err != nil || !ok || ref.Source != source.NetEase || ref.ExternalID != "186016" {
+		t.Fatalf("网易云 ID 解析失败: %+v %v ok=%v", ref, err, ok)
 	}
 
-	ref, err = parseDownloadTarget("https://music.163.com/song?id=186016", 0)
-	if err != nil || ref.Source != source.NetEase || ref.ExternalID != "186016" {
-		t.Fatalf("网易云链接解析失败: %+v %v", ref, err)
+	ref, ok, err = reg.ParseTarget("https://music.163.com/song?id=186016", 0)
+	if err != nil || !ok || ref.Source != source.NetEase || ref.ExternalID != "186016" {
+		t.Fatalf("网易云链接解析失败: %+v %v ok=%v", ref, err, ok)
 	}
 
-	ref, err = parseDownloadTarget("BV1GJ411x7h7", 3)
-	if err != nil || ref.Page != 3 {
-		t.Fatalf("--page 覆盖失败: %+v %v", ref, err)
+	ref, ok, err = reg.ParseTarget("BV1GJ411x7h7", 3)
+	if err != nil || !ok || ref.Page != 3 {
+		t.Fatalf("--page 覆盖失败: %+v %v ok=%v", ref, err, ok)
 	}
 
-	if _, err := parseDownloadTarget("not-a-target", 0); err == nil {
-		t.Fatal("无法识别的目标应报错")
+	if _, ok, _ := reg.ParseTarget("not-a-target", 0); ok {
+		t.Fatal("无法识别的目标不应被匹配")
 	}
 }
 

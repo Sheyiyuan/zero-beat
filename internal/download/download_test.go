@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sheyiyuan/zero-beat/internal/source"
 )
@@ -18,19 +19,16 @@ import (
 func TestExt(t *testing.T) {
 	cases := []struct {
 		codec string
-		src   source.ID
 		want  string
 	}{
-		{"mp4a.40.2", source.Bilibili, ".m4a"},
-		{"flac", source.Bilibili, ".flac"},
-		{"mp3", source.NetEase, ".mp3"},
-		{"flac", source.NetEase, ".flac"},
-		{"", source.NetEase, ".mp3"},
-		{"", source.Bilibili, ".m4a"},
+		{"mp4a.40.2", ".m4a"},
+		{"flac", ".flac"},
+		{"mp3", ".mp3"},
+		{"", ".m4a"},
 	}
 	for _, c := range cases {
-		if got := Ext(c.codec, c.src); got != c.want {
-			t.Fatalf("Ext(%q,%s) = %q，期望 %q", c.codec, c.src, got, c.want)
+		if got := Ext(c.codec); got != c.want {
+			t.Fatalf("Ext(%q) = %q，期望 %q", c.codec, got, c.want)
 		}
 	}
 }
@@ -164,5 +162,21 @@ func TestHumanBytes(t *testing.T) {
 		if got := HumanBytes(in); got != want {
 			t.Fatalf("HumanBytes(%d) = %q，期望 %q", in, got, want)
 		}
+	}
+}
+
+// TestRunZeroByteTargetIsNotExists 验证 0 字节空壳文件不算「已存在」：
+// 允许重新下载补全，而不是永远 ErrExists。
+func TestRunZeroByteTargetIsNotExists(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "empty.flac")
+	if err := os.WriteFile(out, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := Run(ctx, source.Track{}, source.Stream{URL: "http://example.invalid/a.flac"}, out, false, nil)
+	if errors.Is(err, ErrExists) {
+		t.Fatal("0 字节文件不应返回 ErrExists")
 	}
 }

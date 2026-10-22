@@ -24,6 +24,9 @@ func (m *Model) View() tea.View {
 	if m.palette != nil {
 		frame = m.overlayPalette(frame)
 	}
+	if m.aboutPopup {
+		frame = overlayBox(frame, m.aboutLines(), m.width, m.height)
+	}
 	if m.helpPopup {
 		frame = overlayBox(frame, m.helpPopupLines(), m.width, m.height)
 	}
@@ -33,8 +36,14 @@ func (m *Model) View() tea.View {
 	if m.clip != nil {
 		frame = overlayBox(frame, m.clipLines(), m.width, m.height)
 	}
+	if m.menu != nil {
+		frame = m.overlayMenu(frame)
+	}
 	v := tea.NewView(strings.Join(frame, "\n"))
 	v.AltScreen = true
+	if !m.mouseOff {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	v.WindowTitle = m.windowTitle()
 	return v
 }
@@ -48,7 +57,10 @@ func (m *Model) windowTitle() string {
 
 func (m *Model) viewTitle() string {
 	if m.view == viewSearch {
-		return "搜索 · " + m.searchMode.String()
+		if m.searchMode == searchSource {
+			return "音源搜索"
+		}
+		return "本地搜索"
 	}
 	return viewNames[m.view]
 }
@@ -56,16 +68,24 @@ func (m *Model) viewTitle() string {
 func (m *Model) render() []string {
 	w, h := m.width, m.height
 	if m.view == viewLogin {
-		// 登录页独占整屏：二维码需要的高度优先，不显示播放条/快捷键。
-		lines := m.renderLogin(h)
+		// 登录页保留顶栏与分隔线，但右侧不显示账户摘要。
+		left, _ := m.headerParts()
+		lines := []string{
+			padRight(truncate(left, w), w),
+			st.dim.Render(strings.Repeat("─", w)),
+		}
+		bodyH := h - len(lines)
+		if bodyH > 0 {
+			login := m.renderLogin(bodyH)
+			for _, line := range login {
+				if len(lines) >= h {
+					break
+				}
+				lines = append(lines, padRight(line, w))
+			}
+		}
 		for len(lines) < h {
-			lines = append(lines, "")
-		}
-		if len(lines) > h {
-			lines = lines[:h]
-		}
-		for i := range lines {
-			lines[i] = padRight(lines[i], w)
+			lines = append(lines, padRight("", w))
 		}
 		return lines
 	}
@@ -109,8 +129,8 @@ func (m *Model) render() []string {
 	return lines
 }
 
-func (m *Model) renderHeader() string {
-	left := st.title.Render(" zero ") + st.dim.Render("│") + " " + st.text.Render(m.viewTitle()) +
+func (m *Model) headerParts() (left, right string) {
+	left = st.title.Render(" zero ") + st.dim.Render("│") + " " + st.text.Render(m.viewTitle()) +
 		st.dim.Render(" · ") + st.accent.Render("Tab") + st.dim.Render(" 切换")
 	// 始终保留右上角的 L 账户入口；空间不足时优先截短账户名。
 	loginKey := m.firstKey(keymap.Login)
@@ -119,10 +139,15 @@ func (m *Model) renderHeader() string {
 	if maxAccount < 0 {
 		maxAccount = 0
 	}
-	right := suffix
+	right = suffix
 	if maxAccount > 0 {
 		right = st.muted.Render(truncate(m.accountSummary(), maxAccount)) + suffix
 	}
+	return left, right
+}
+
+func (m *Model) renderHeader() string {
+	left, right := m.headerParts()
 	gap := m.width - visWidth(left) - visWidth(right) - 1
 	if gap < 1 {
 		gap = 1
@@ -225,35 +250,93 @@ func lyricProgress(lines []lyrics.Line, idx, posMS, durationMS int) float64 {
 
 // platformLyricName 返回当前歌曲所在平台提供的歌词名称，用于空状态提示。
 func (m *Model) platformLyricName() string {
-	if m.current != nil {
-		switch source.ID(m.current.Source) {
-		case source.Bilibili:
-			return "B 站字幕"
-		case source.NetEase:
-			return "网易云歌词"
-		}
-		if m.sources != nil {
-			if src := m.sources.GetString(m.current.Source); src != nil {
-				return src.Name() + "歌词"
-			}
-		}
+	if m.current != nil && m.sources != nil {
+		return m.sources.LyricName(source.ID(m.current.Source))
 	}
 	return "平台歌词"
 }
 
-func (m *Model) renderNowPlaying() string {
-	icon := "■"
+// playbackIcon 返回左侧播放/暂停按钮的图标：显示的是点击后执行的动作。
+func (m *Model) playbackIcon() string {
 	switch m.state {
 	case audio.StatePlaying:
-		icon = "▶"
+		return "⏸"
 	case audio.StatePaused:
-		icon = "⏸"
+		return "▶"
 	case audio.StateBuffering:
-		icon = "…"
+		return "…"
 	case audio.StateFailed:
-		icon = "✕"
+		return "✕"
+	}
+	return "■"
+}
+
+// nowPlayingMeta 拼出底部状态行右侧的元信息，并返回播放模式片段的位置。
+// modeStart/modeWidth 以显示宽度计；没有模式片段时返回 -1。
+// metaSegment 表示底部播放状态行里某个可点击片段的位置与宽度；start<0 表示不存在。
+type metaSegment struct {
+	start int
+	width int
+}
+
+func (m *Model) nowPlayingMeta() (text string, mode, quality metaSegment) {
+	volume := fmt.Sprintf("音量 %d%%", int(m.volume*100))
+	if m.muted {
+		volume = "静音"
+	}
+	qualityText := m.qualityLabel()
+	if qualityText == "—" {
+		qualityText = "音质 " + m.qualityPrefLabel()
 	}
 
+	parts := make([]string, 0, 8)
+	modeIdx, qualityIdx := -1, -1
+	add := func(s string, isMode bool) {
+		if isMode {
+			modeIdx = len(parts)
+		}
+		parts = append(parts, s)
+	}
+	if m.current != nil && m.current.Source != "" {
+		add(m.sourceName(source.ID(m.current.Source)), false)
+	}
+	qualityIdx = len(parts)
+	add(qualityText, false)
+	add(m.mode.String(), true)
+	add(volume, false)
+	if tag := m.clipTag(); tag != "" {
+		add(tag, false)
+	}
+	if m.compDB != 0 {
+		add(fmt.Sprintf("补偿 %+.0f dB", m.compDB), false)
+	}
+	if !m.sleepUntil.IsZero() {
+		if left := time.Until(m.sleepUntil); left > 0 {
+			add("睡眠 "+formatDuration(left), false)
+		}
+	}
+	if m.resumeAt > 0 && m.state == audio.StatePaused {
+		add("断点 "+formatDuration(m.resumeAt), false)
+	}
+
+	mode.start, quality.start = -1, -1
+	offset := 0
+	for i, part := range parts {
+		if i > 0 {
+			offset += 3
+		}
+		if i == modeIdx {
+			mode.start, mode.width = offset, visWidth(part)
+		}
+		if i == qualityIdx {
+			quality.start, quality.width = offset, visWidth(part)
+		}
+		offset += visWidth(part)
+	}
+	return strings.Join(parts, " · "), mode, quality
+}
+
+func (m *Model) nowPlayingTitle() string {
 	title := "未在播放"
 	if m.current != nil && m.current.Title != "" {
 		title = m.current.Title
@@ -261,33 +344,14 @@ func (m *Model) renderNowPlaying() string {
 			title += " — " + m.current.Artist
 		}
 	}
+	return title
+}
 
-	volume := fmt.Sprintf("音量 %d%%", int(m.volume*100))
-	if m.muted {
-		volume = "静音"
-	}
-	quality := m.qualityLabel()
-	if quality == "—" {
-		quality = "音质 " + m.qualityPrefLabel()
-	}
-	meta := fmt.Sprintf("%s · %s · %s", quality, m.mode.String(), volume)
-	if m.current != nil && m.current.Source != "" {
-		meta = source.ID(m.current.Source).Label() + " · " + meta
-	}
-	if tag := m.clipTag(); tag != "" {
-		meta += " · " + tag
-	}
-	if m.compDB != 0 {
-		meta += fmt.Sprintf(" · 补偿 %+.0f dB", m.compDB)
-	}
-	if !m.sleepUntil.IsZero() {
-		if left := time.Until(m.sleepUntil); left > 0 {
-			meta += " · 睡眠 " + formatDuration(left)
-		}
-	}
-	if m.resumeAt > 0 && m.state == audio.StatePaused {
-		meta += " · 断点 " + formatDuration(m.resumeAt)
-	}
+func (m *Model) renderNowPlaying() string {
+	icon := m.playbackIcon()
+	title := m.nowPlayingTitle()
+
+	meta, _, _ := m.nowPlayingMeta()
 	if maxMeta := m.width - 6; maxMeta > 0 && visWidth(meta) > maxMeta {
 		meta = truncate(meta, maxMeta)
 	}
@@ -342,6 +406,8 @@ func (m *Model) renderHintLine() string {
 	switch {
 	case m.note.text != "" && m.note.isErr:
 		right = st.err.Render(m.note.text)
+	case m.note.text != "" && m.note.isWarn:
+		right = st.warn.Render(m.note.text)
 	case m.note.text != "":
 		right = st.ok.Render(m.note.text)
 	case m.songsBusy:
@@ -377,20 +443,27 @@ func (m *Model) renderBody(h int) []string {
 		return m.renderFolders(h)
 	case viewMix:
 		return m.renderMix(h)
+	case viewDownloads:
+		return m.renderDownloads(h)
 	}
 	return nil
 }
 
 // ---- 曲库 ----
 
-func (m *Model) renderLibrary(h int) []string {
-	sideW := 20
+func (m *Model) librarySideWidth() int {
+	sideW := 22
 	if m.width < 76 {
 		sideW = 14
 	}
 	if m.width-sideW-1 < 24 {
 		sideW = 0
 	}
+	return sideW
+}
+
+func (m *Model) renderLibrary(h int) []string {
+	sideW := m.librarySideWidth()
 	mainW := m.width - sideW - 1
 
 	side := make([]string, h)
@@ -399,32 +472,16 @@ func (m *Model) renderLibrary(h int) []string {
 		if m.libraryFocus == focusPlaylists {
 			side[0] = st.accent.Render(padRight("   歌单", sideW))
 		}
-		start, end := windowRange(len(m.playlists), m.playlistIdx, h-1)
+		start, end := m.windowRangeKeep(scrollLibraryPlaylists, len(m.playlists), m.playlistIdx, h-1)
 		for i := start; i < end; i++ {
 			p := m.playlists[i]
-			marker := "  "
-			if m.current != nil && m.playingPlaylistID != "" && p.ID == m.playingPlaylistID {
-				marker = "▶ "
-			}
-			prefix := marker + " "
-			if p.Kind == "remote" && p.Source != "" {
-				prefix = marker + " " + padRight(source.ID(p.Source).Mark(), 2) + " "
-			}
-			label := fmt.Sprintf("%s%s", prefix, p.Title)
-			if p.Count > 0 {
-				label = fmt.Sprintf("%s%s %d", prefix, p.Title, p.Count)
-			}
-			row := padRight(truncate(label, sideW), sideW)
-			selected := m.libraryFocus == focusPlaylists && i == m.playlistIdx
-			playing := !selected && m.current != nil && m.playingPlaylistID != "" && p.ID == m.playingPlaylistID
-			switch {
-			case selected:
-				side[1+i-start] = st.selected.Render(row)
-			case playing:
-				side[1+i-start] = st.playing.Render(row)
-			default:
-				side[1+i-start] = st.text.Render(row)
-			}
+			side[1+i-start] = m.renderPlaylistRow(playlistRowSpec{
+				Playing:  m.current != nil && m.playingPlaylistID != "" && p.ID == m.playingPlaylistID,
+				Selected: m.libraryFocus == focusPlaylists && i == m.playlistIdx,
+				Tag:      m.playlistTag(p),
+				Title:    p.Title,
+				Count:    p.Count,
+			}, sideW)
 		}
 	}
 
@@ -452,7 +509,7 @@ func (m *Model) renderLibrary(h int) []string {
 			main = append(main, st.dim.Render(" 按 ? 搜索音源，选中后按 a 加入歌单"))
 		}
 	} else {
-		start, end := windowRange(len(m.songs), m.songIdx, h-1)
+		start, end := m.windowRangeKeep(scrollLibrarySongs, len(m.songs), m.songIdx, h-1)
 		for i := start; i < end; i++ {
 			main = append(main, m.songRow(i, mainW))
 		}
@@ -481,41 +538,17 @@ func (m *Model) songRow(i, width int) string {
 	s := m.songs[i]
 	playing := m.current != nil && s.ID != "" && s.ID == m.current.ID
 	selected := m.libraryFocus == focusSongs && i == m.songIdx
-	marker := "  "
-	if playing {
-		marker = "▶ "
-	}
-	// 序号固定 3 列，超过 99 首时也只压缩标题宽度，保持 1/2/3 位对齐。
-	idx := fmt.Sprintf("%3d", i+1)
-	tag := padRight("["+source.ID(s.Source).Mark()+"]", 4)
-	artistW := 14
-	titleW := width - artistW - 19
-	if titleW < 8 {
-		artistW = 8
-		titleW = width - artistW - 19
-	}
-	if titleW < 4 {
-		titleW = 4
-	}
-	dur := formatDuration(time.Duration(s.Duration) * time.Second)
-	title := padRight(s.Title, titleW)
-	artist := padRight(truncate(s.Artist, artistW), artistW)
-	if selected {
-		title = padRight(scrollText(s.Title, titleW, m.marqueeOffset), titleW)
-		artist = padRight(scrollText(s.Artist, artistW, m.marqueeOffset), artistW)
-	}
-	if selected || playing {
-		// 先拼纯文本再整行套背景，避免嵌套 ANSI reset 把高亮背景截断。
-		plain := marker + tag + " " + idx + " " + title + " " + artist + " " + padLeft(dur, 5)
-		plain = padRight(plain, width)
-		if selected {
-			return st.selected.Render(plain)
-		}
-		return st.playing.Render(plain)
-	}
-	row := marker + st.dim.Render(tag) + " " + st.dim.Render(idx) + " " +
-		title + " " + artist + " " + padLeft(dur, 5)
-	return padRight(row, width)
+	return m.renderSongRow(songRowSpec{
+		Playing:  playing,
+		Selected: selected,
+		Tag:      m.sourceMark(source.ID(s.Source)),
+		Index:    i + 1,
+		Title:    s.Title,
+		Artist:   s.Artist,
+		Meta:     formatDuration(time.Duration(s.Duration) * time.Second),
+		MetaW:    rowDurW,
+		Marquee:  selected,
+	}, width)
 }
 
 func (m *Model) resetMarquee() {
@@ -570,7 +603,7 @@ func (m *Model) renderSearch(h int) []string {
 	if m.searchMode == searchSource {
 		sourceName := "全部"
 		if m.searchSource != "" {
-			sourceName = m.searchSource.Label()
+			sourceName = m.sourceName(m.searchSource)
 			if m.sources != nil {
 				if src := m.sources.Get(m.searchSource); src != nil {
 					sourceName = src.Name()
@@ -610,38 +643,33 @@ func (m *Model) renderSearch(h int) []string {
 			out = append(out, st.dim.Render(" 结果里 enter 直接播放，a 加入歌单，A 加入队列"))
 			return out
 		}
-		start, end := windowRange(len(m.searchResults), m.searchIdx, h-2)
+		start, end := m.windowRangeKeep(scrollSearchSource, len(m.searchResults), m.searchIdx, h-2)
 		for i := start; i < end; i++ {
 			item := m.searchResults[i]
-			play := ""
+			extra := ""
 			if item.Play > 0 {
-				play = fmt.Sprintf("%s 播放", comma(item.Play))
+				extra = fmt.Sprintf("%s 播放", comma(item.Play))
 			}
-			if item.Source == source.NetEase && (item.Fee == 1 || item.Fee == 4) {
-				play = strings.TrimSpace("VIP " + play)
+			if item.VIP {
+				extra = strings.TrimSpace("VIP " + extra)
 			}
-			if play == "" && item.Album != "" {
-				play = "《" + item.Album + "》"
+			if extra == "" && item.Album != "" {
+				extra = "《" + item.Album + "》"
 			}
-			dur := formatDuration(time.Duration(item.Duration) * time.Second)
-			metaW := 24
-			titleW := m.width - metaW - 6
-			if titleW < 10 {
-				titleW = 10
-			}
-			tag := padRight("["+item.Source.Mark()+"]", 4)
-			title := item.Title
-			if item.Artist != "" {
-				title += "  ·  " + item.Artist
-			}
-			row := " " + st.dim.Render(tag) + " " + padRight(title, titleW) +
-				st.muted.Render(padLeft(dur, 6)) + "  " + st.dim.Render(padLeft(play, metaW-8))
-			row = padRight(row, m.width)
-			if i == m.searchIdx {
-				out = append(out, st.selected.Render(row))
-			} else {
-				out = append(out, row)
-			}
+			song := m.searchResultSong(i)
+			out = append(out, m.renderSongRow(songRowSpec{
+				Playing:  m.current != nil && song.ID != "" && song.ID == m.current.ID,
+				Selected: i == m.searchIdx,
+				Tag:      m.sourceMark(item.Source),
+				Index:    i + 1,
+				Title:    item.Title,
+				Artist:   item.Artist,
+				Meta:     formatDuration(time.Duration(item.Duration) * time.Second),
+				MetaW:    rowDurW,
+				Extra:    extra,
+				ExtraW:   rowExtraW,
+				Marquee:  i == m.searchIdx,
+			}, m.width))
 		}
 		return out
 	}
@@ -651,25 +679,20 @@ func (m *Model) renderSearch(h int) []string {
 		out = append(out, st.dim.Render(" r 切换当前歌单/本地全部；enter 播放，a 加入歌单"))
 		return out
 	}
-	start, end := windowRange(len(m.localResults), m.searchIdx, h-2)
+	start, end := m.windowRangeKeep(scrollSearchLocal, len(m.localResults), m.searchIdx, h-2)
 	for i := start; i < end; i++ {
 		song := m.localResults[i]
-		dur := formatDuration(time.Duration(song.Duration) * time.Second)
-		artistW := 16
-		titleW := m.width - artistW - 18
-		if titleW < 8 {
-			artistW = 8
-			titleW = m.width - artistW - 18
-		}
-		tag := padRight("["+source.ID(song.Source).Mark()+"]", 4)
-		row := " " + st.dim.Render(tag) + " " + padRight(song.Title, titleW) + " " +
-			padRight(truncate(song.Artist, artistW), artistW) + " " + padLeft(dur, 5)
-		row = padRight(row, m.width)
-		if i == m.searchIdx {
-			out = append(out, st.selected.Render(row))
-		} else {
-			out = append(out, row)
-		}
+		out = append(out, m.renderSongRow(songRowSpec{
+			Playing:  m.current != nil && song.ID != "" && song.ID == m.current.ID,
+			Selected: i == m.searchIdx,
+			Tag:      m.sourceMark(source.ID(song.Source)),
+			Index:    i + 1,
+			Title:    song.Title,
+			Artist:   song.Artist,
+			Meta:     formatDuration(time.Duration(song.Duration) * time.Second),
+			MetaW:    rowDurW,
+			Marquee:  i == m.searchIdx,
+		}, m.width))
 	}
 	return out
 }
@@ -684,42 +707,90 @@ func (m *Model) renderQueue(h int) []string {
 		out = append(out, "", st.dim.Render(" 队列是空的：在曲库或搜索里按 enter 播放"))
 		return out
 	}
-	start, end := windowRange(len(m.queue), m.queueCursor, h-1)
+	start, end := m.windowRangeKeep(scrollQueue, len(m.queue), m.queueCursor, h-1)
 	for i := start; i < end; i++ {
 		s := m.queue[i]
-		marker := "  "
-		if i == m.queueIdx {
-			marker = "▶ "
-		}
-		dur := formatDuration(time.Duration(s.Duration) * time.Second)
-		tag := padRight("["+source.ID(s.Source).Mark()+"]", 4)
-		artistW := 16
-		titleW := m.width - artistW - 19
-		if titleW < 8 {
-			artistW = 8
-			titleW = m.width - artistW - 19
-		}
-		if titleW < 4 {
-			titleW = 4
-		}
-		row := marker + st.dim.Render(tag) + " " + st.dim.Render(fmt.Sprintf("%2d", i+1)) + " " +
-			padRight(s.Title, titleW) + " " +
-			padRight(truncate(s.Artist, artistW), artistW) + " " +
-			padLeft(dur, 5)
-		row = padRight(row, m.width)
-		if i == m.queueCursor {
-			out = append(out, st.selected.Render(row))
-		} else {
-			out = append(out, row)
-		}
+		out = append(out, m.renderSongRow(songRowSpec{
+			Playing:  m.current != nil && i == m.queueIdx,
+			Selected: i == m.queueCursor,
+			Tag:      m.sourceMark(source.ID(s.Source)),
+			Index:    i + 1,
+			Title:    s.Title,
+			Artist:   s.Artist,
+			Meta:     formatDuration(time.Duration(s.Duration) * time.Second),
+			MetaW:    rowDurW,
+			Marquee:  i == m.queueCursor,
+		}, m.width))
 	}
 	return out
+}
+
+// ---- 下载管理 ----
+
+func (m *Model) renderDownloads(h int) []string {
+	out := make([]string, 0, h)
+	total := int64(0)
+	missing := 0
+	for _, item := range m.downloadItems {
+		total += item.entry.Download.Size
+		if item.missing {
+			missing++
+		}
+	}
+	header := fmt.Sprintf(" 下载管理 · %d 首 · 占用 %s", len(m.downloadItems), humanSize(total))
+	if missing > 0 {
+		header += fmt.Sprintf(" · %d 个文件缺失", missing)
+	}
+	if m.downloadsBusy {
+		header = " 正在读取下载记录…"
+	}
+	out = append(out, st.muted.Render(truncate(header, m.width)))
+	if m.downloadsBusy {
+		out = append(out, "", st.dim.Render(" 请稍候"))
+		return out
+	}
+	if len(m.downloadItems) == 0 {
+		out = append(out, "", st.dim.Render(" 还没有下载记录"))
+		out = append(out, st.dim.Render(" 在曲库或搜索里按 w / W 下载后会自动出现在这里"))
+		return out
+	}
+	start, end := m.windowRangeKeep(scrollDownloads, len(m.downloadItems), m.downloadIdx, h-1)
+	for i := start; i < end; i++ {
+		out = append(out, m.downloadRow(i, m.width))
+	}
+	return out
+}
+
+func (m *Model) downloadRow(i, width int) string {
+	item := m.downloadItems[i]
+	entry := item.entry
+	playing := m.current != nil && entry.Song.ID != "" && entry.Song.ID == m.current.ID
+	meta := humanSize(entry.Download.Size)
+	if entry.Download.Codec != "" {
+		meta += " · " + entry.Download.Codec
+	}
+	if item.missing {
+		// 文件缺失时保留可读文案；颜色由 MetaErr 走 st.err。
+		meta = "文件缺失"
+	}
+	return m.renderSongRow(songRowSpec{
+		Playing:  playing,
+		Selected: i == m.downloadIdx,
+		Tag:      m.sourceMark(source.ID(entry.Song.Source)),
+		Index:    i + 1,
+		Title:    downloadTitle(item),
+		Artist:   entry.Song.Artist,
+		Meta:     meta,
+		MetaW:    rowDownloadW,
+		MetaErr:  item.missing,
+		Marquee:  i == m.downloadIdx,
+	}, width)
 }
 
 // ---- 收藏夹选择 ----
 
 func (m *Model) renderFolders(h int) []string {
-	name := m.folderSource.Label()
+	name := m.sourceName(m.folderSource)
 	if src := m.sources.Get(m.folderSource); src != nil {
 		name = src.Name()
 	}
@@ -738,25 +809,16 @@ func (m *Model) renderFolders(h int) []string {
 		out = append(out, st.dim.Render(" 已添加的不会重复出现；s 切换音源，r 重新读取"))
 		return out
 	}
-	start, end := windowRange(len(m.folderItems), m.folderIdx, h-1)
+	start, end := m.windowRangeKeep(scrollFolders, len(m.folderItems), m.folderIdx, h-1)
 	for i := start; i < end; i++ {
 		p := m.folderItems[i]
-		marker := "  "
-		if i == m.folderIdx {
-			marker = "▶ "
-		}
-		titleW := m.width - 10
-		if titleW < 10 {
-			titleW = 10
-		}
-		row := marker + st.dim.Render(fmt.Sprintf("%2d", i+1)) + " " +
-			padRight(p.Title, titleW) + st.muted.Render(fmt.Sprintf("%4d", p.Count))
-		row = padRight(row, m.width)
-		if i == m.folderIdx {
-			out = append(out, st.selected.Render(row))
-		} else {
-			out = append(out, row)
-		}
+		// ▶ 只表示正在播放；导入页的光标只用蓝底。
+		out = append(out, m.renderPlaylistRow(playlistRowSpec{
+			Selected: i == m.folderIdx,
+			Tag:      m.sourceMark(p.Source),
+			Title:    p.Title,
+			Count:    p.Count,
+		}, m.width))
 	}
 	return out
 }
@@ -768,6 +830,39 @@ type lyricRow struct {
 	text        string
 	lineIdx     int
 	translation bool
+}
+
+func (m *Model) lyricRows() ([]lyricRow, int) {
+	rows := make([]lyricRow, 0, len(m.lyricLines)*2)
+	current := -1
+	for i, line := range m.lyricLines {
+		if i == m.lyricIdx {
+			current = len(rows)
+		}
+		rows = append(rows, lyricRow{text: line.Text, lineIdx: i})
+		if t := strings.TrimSpace(line.Translation); t != "" && t != strings.TrimSpace(line.Text) {
+			rows = append(rows, lyricRow{text: t, lineIdx: i, translation: true})
+		}
+	}
+	return rows, current
+}
+
+// lyricWindow 返回当前高度下可见的歌词行与起始下标。
+// 焦点行固定居中，两端允许负起点/超出（渲染成留白行），不再有视口偏移。
+func (m *Model) lyricWindow(h int) ([]lyricRow, int) {
+	rows, _ := m.lyricRows()
+	if len(rows) == 0 {
+		return nil, 0
+	}
+	line := m.lyricFocusLine()
+	focusRow := 0
+	for i, row := range rows {
+		if row.lineIdx == line && !row.translation {
+			focusRow = i
+			break
+		}
+	}
+	return rows, focusRow - h/2
 }
 
 func (m *Model) renderLyricsView(h int) []string {
@@ -783,22 +878,13 @@ func (m *Model) renderLyricsView(h int) []string {
 		return out
 	}
 
-	rows := make([]lyricRow, 0, len(m.lyricLines)*2)
-	current := -1
-	for i, line := range m.lyricLines {
-		if i == m.lyricIdx {
-			current = len(rows)
-		}
-		rows = append(rows, lyricRow{text: line.Text, lineIdx: i})
-		if t := strings.TrimSpace(line.Translation); t != "" && t != strings.TrimSpace(line.Text) {
-			rows = append(rows, lyricRow{text: t, lineIdx: i, translation: true})
-		}
-	}
-
-	center := h / 2
-	start := current - center
+	rows, start := m.lyricWindow(h)
 	progress := lyricProgress(m.lyricLines, m.lyricIdx,
 		int(m.position/time.Millisecond), int(m.duration/time.Millisecond))
+	focusLine := m.lyricFocusLine()
+	// 左侧留 2 列 gutter：▶ 标记正在播放的行，焦点行用蓝底。
+	const gutterW = 2
+	textW := max(1, m.width-gutterW)
 	for i := 0; i < h; i++ {
 		idx := start + i
 		if idx < 0 || idx >= len(rows) {
@@ -806,18 +892,27 @@ func (m *Model) renderLyricsView(h int) []string {
 			continue
 		}
 		row := rows[idx]
-		text := truncate(row.text, m.width)
+		text := truncate(row.text, textW)
+		focused := row.lineIdx == focusLine && !row.translation
+		playing := row.lineIdx == m.lyricIdx && !row.translation
+		gutter := "  "
+		if playing {
+			gutter = "▶ "
+		}
 		switch {
-		case row.lineIdx == m.lyricIdx && !row.translation:
-			out = append(out, centerText(gradientText(text, progress, curPalette.text, curPalette.accent), m.width))
-		case row.lineIdx == m.lyricIdx && row.translation:
-			out = append(out, centerText(st.muted.Render(text), m.width))
+		case playing:
+			// 蓝色渐变 + ▶ 表示正在播放；焦点与播放行重合时保持渐变（不做灰底）。
+			out = append(out, gutter+centerText(gradientText(text, progress, curPalette.text, curPalette.accent), textW))
+		case focused:
+			// 浏览态：中央焦点行用灰底，蓝色只留给「正在播放」。
+			line := padRight(gutter+centerText(text, textW), m.width)
+			out = append(out, st.playing.Render(line))
 		case row.translation:
-			out = append(out, centerText(st.dim.Render(text), m.width))
+			out = append(out, gutter+centerText(st.dim.Render(text), textW))
 		case row.lineIdx < m.lyricIdx:
-			out = append(out, centerText(st.dim.Render(text), m.width))
+			out = append(out, gutter+centerText(st.dim.Render(text), textW))
 		default:
-			out = append(out, centerText(st.muted.Render(text), m.width))
+			out = append(out, gutter+centerText(st.muted.Render(text), textW))
 		}
 	}
 	return out
@@ -868,12 +963,14 @@ func (m *Model) qrLinesFor(h int) []string {
 }
 
 func (m *Model) renderLogin(h int) []string {
-	name := m.loginSource.Label()
-	if src := m.sources.Get(m.loginSource); src != nil {
-		name = src.Name()
+	name := m.sourceName(m.loginSource)
+	if m.sources != nil {
+		if src := m.sources.Get(m.loginSource); src != nil {
+			name = src.Name()
+		}
 	}
 	accounts := m.accountStatusLines()
-	panelTitle := st.muted.Render(" 账户 · B站 + 网易云 · s 切换登录源")
+	panelTitle := st.muted.Render(" 账户 · 多音源 · " + m.firstKey(keymap.Source) + " 切换登录源")
 
 	if u, ok := m.userFor(m.loginSource); ok {
 		return m.renderLoggedIn(h, u, name)
@@ -924,7 +1021,7 @@ func (m *Model) renderLogin(h int) []string {
 		"  "+st.accent.Render("扫码登录 "+name),
 		"  "+st.accent.Render(status),
 		"",
-		"  "+st.text.Render("1. 打开 "+loginAppName(m.loginSource)),
+		"  "+st.text.Render("1. 打开 "+m.loginAppName(m.loginSource)),
 		"  "+st.text.Render("2. 右上角「扫一扫」"),
 		"  "+st.text.Render("3. 确认登录"),
 		"",
@@ -986,7 +1083,7 @@ func (m *Model) renderLoggedIn(h int, u source.User, sourceName string) []string
 		"",
 		"  " + st.dim.Render(m.firstKey(keymap.Logout)+" 退出当前账号 · "+m.firstKey(keymap.Up)+"/"+m.firstKey(keymap.Down)+" 切换账号"),
 	}
-	right := []string{st.muted.Render(" 账户 · B站 + 网易云 · " + m.firstKey(keymap.Source) + " 切换登录源")}
+	right := []string{st.muted.Render(" 账户 · 多音源 · " + m.firstKey(keymap.Source) + " 切换登录源")}
 	right = append(right, m.accountStatusLines()...)
 	right = append(right,
 		"",
@@ -1016,15 +1113,13 @@ func (m *Model) renderLoggedIn(h int, u source.User, sourceName string) []string
 
 // accountStatusLines 同时列出两个平台的登录状态，不随当前扫码源切换而隐藏。
 func (m *Model) accountStatusLines() []string {
-	ids := []source.ID{source.Bilibili, source.NetEase}
+	var ids []source.ID
 	if m.sources != nil {
-		if got := m.sources.IDs(); len(got) > 0 {
-			ids = got
-		}
+		ids = m.sources.IDs()
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
-		name := id.Label()
+		name := m.sourceName(id)
 		var src source.Source
 		if m.sources != nil {
 			src = m.sources.Get(id)

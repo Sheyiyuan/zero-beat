@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,19 +13,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/internal/bili"
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/download"
 	"github.com/sheyiyuan/zero-beat/internal/source"
+	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
 var errDownloadHelp = errors.New("download help")
 
 const downloadUsage = `用法: zero download <目标...> [选项]
-目标: BV号 / B站链接 / 网易云数字 ID / 网易云歌曲链接
+目标: 各音源支持的链接或 ID（由音源适配器解析）
 选项:
   -o, --out <目录或文件>   输出位置（默认 ~/Music/zero-beat）
   -q, --quality <档位>     auto|high|lossless（默认 auto）
-  -p, --page <分P>         B 站分 P（默认从链接读取，否则 1）
+  -p, --page <分P>         分页/分 P（默认从链接读取，否则 1）
   -j, --jobs <数量>        并发下载数（默认 2，范围 1-8）
   -f, --force              覆盖已存在的文件，并从零开始下载
 `
@@ -140,59 +140,6 @@ func parseDownloadQuality(s string) (source.Quality, error) {
 	}
 }
 
-func parseDownloadTarget(input string, pageOverride int) (source.Ref, error) {
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return source.Ref{}, errors.New("下载目标不能为空")
-	}
-	if u, err := url.Parse(input); err == nil && u.Host != "" {
-		if strings.Contains(strings.ToLower(u.Host), "music.163.com") {
-			id := strings.TrimSpace(u.Query().Get("id"))
-			if id == "" {
-				return source.Ref{}, errors.New("网易云链接里找不到 id")
-			}
-			if _, err := strconv.ParseInt(id, 10, 64); err != nil {
-				return source.Ref{}, fmt.Errorf("网易云歌曲 ID 无效: %s", id)
-			}
-			return source.Ref{Source: source.NetEase, ExternalID: id, Page: 1}, nil
-		}
-	}
-	if isDigits(input) {
-		if _, err := strconv.ParseInt(input, 10, 64); err != nil {
-			return source.Ref{}, fmt.Errorf("网易云歌曲 ID 无效: %s", input)
-		}
-		return source.Ref{Source: source.NetEase, ExternalID: input, Page: 1}, nil
-	}
-
-	bvid, err := bili.ParseBVID(input)
-	if err != nil {
-		return source.Ref{}, fmt.Errorf("无法识别下载目标（支持 BV 号 / B 站链接 / 网易云数字 ID / 网易云链接）")
-	}
-	page := 1
-	if pageOverride > 0 {
-		page = pageOverride
-	} else if u, err := url.Parse(input); err == nil {
-		if v := u.Query().Get("p"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				page = n
-			}
-		}
-	}
-	return source.Ref{Source: source.Bilibili, ExternalID: bvid, Page: page}, nil
-}
-
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 type trackLookup interface {
 	Track(context.Context, source.Ref) (source.Track, error)
 }
@@ -251,6 +198,16 @@ type downloadJob struct {
 	outPath string
 	label   string
 	skip    bool
+	store   *store.Store
+}
+
+// record 把落盘结果登记进下载索引；索引失败不影响下载结果。
+func (job *downloadJob) record(size int64) {
+	if job.store == nil {
+		return
+	}
+	song := app.SongFromTrack(job.track)
+	_ = app.New(nil, job.store, nil).RecordDownload(song, job.outPath, size, job.stream.Codec, job.stream.Duration)
 }
 
 func runDownload(args []string) error {
@@ -267,24 +224,27 @@ func runDownload(args []string) error {
 		return err
 	}
 
-	refs := make([]source.Ref, 0, len(opts.targets))
-	for _, target := range opts.targets {
-		ref, err := parseDownloadTarget(target, opts.page)
-		if err != nil {
-			return fmt.Errorf("%s: %w", target, err)
-		}
-		refs = append(refs, ref)
-	}
-	if len(refs) > 1 && opts.out != "" && !isDirArg(opts.out) {
-		return errors.New("下载多个目标时 -o 必须是目录")
-	}
-
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 	sources := newSources(st)
+
+	refs := make([]source.Ref, 0, len(opts.targets))
+	for _, target := range opts.targets {
+		ref, matched, err := sources.ParseTarget(target, opts.page)
+		if err != nil {
+			return fmt.Errorf("%s: %w", target, err)
+		}
+		if !matched {
+			return fmt.Errorf("%s: 无法识别的下载目标", target)
+		}
+		refs = append(refs, ref)
+	}
+	if len(refs) > 1 && opts.out != "" && !isDirArg(opts.out) {
+		return errors.New("下载多个目标时 -o 必须是目录")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -310,7 +270,9 @@ func runDownload(args []string) error {
 			resolveErrs = append(resolveErrs, err)
 			continue
 		}
+		job.store = st
 		if job.skip {
+			job.record(0)
 			fmt.Printf("已存在，跳过：%s\n", job.outPath)
 			continue
 		}
@@ -419,14 +381,14 @@ func buildDownloadJob(ctx context.Context, src source.Source, ref source.Ref, qu
 		track.ExternalID = ref.ExternalID
 	}
 
-	ext := download.Ext(stream.Codec, ref.Source)
+	ext := download.Ext(stream.Codec)
 	outPath, err := resolveDownloadOutput(opts.out, track, ext)
 	if err != nil {
 		return nil, err
 	}
 	if !opts.force {
 		if _, err := os.Stat(outPath); err == nil {
-			return &downloadJob{outPath: outPath, skip: true}, nil
+			return &downloadJob{outPath: outPath, track: track, stream: stream, skip: true}, nil
 		}
 	}
 	return &downloadJob{
@@ -485,11 +447,13 @@ func downloadJobFile(ctx context.Context, job *downloadJob, multi bool, force bo
 	}
 	if err != nil {
 		if errors.Is(err, download.ErrExists) {
+			job.record(0)
 			fmt.Printf("已存在，跳过：%s\n", job.outPath)
 			return nil
 		}
 		return err
 	}
+	job.record(result.Size)
 
 	done := fmt.Sprintf("已下载：%s", result.Path)
 	if result.Size > 0 {

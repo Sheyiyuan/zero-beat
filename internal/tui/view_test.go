@@ -22,6 +22,7 @@ func fixtureModel() *Model {
 		{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星", Artist: "不才", Duration: 287},
 	}
 	m := &Model{
+		lyricFocus:  -1,
 		width:       100,
 		height:      30,
 		view:        viewLibrary,
@@ -29,6 +30,10 @@ func fixtureModel() *Model {
 		mode:        modeSequence,
 		state:       audio.StatePlaying,
 		loginSource: source.Bilibili,
+		sources: source.NewRegistry(
+			&fakeSource{id: source.Bilibili, name: "Bilibili", mark: "B", lyricName: "B 站字幕"},
+			&fakeSource{id: source.NetEase, name: "网易云", mark: "云", lyricName: "网易云歌词"},
+		),
 	}
 	m.playlists = []store.Playlist{
 		{ID: "bili-fav-1", Title: "我喜欢的音乐", Kind: "remote", Count: 2},
@@ -195,9 +200,12 @@ func TestSearchEnterStartsSearch(t *testing.T) {
 	}
 }
 
-func TestTabCyclesViews(t *testing.T) {
+func TestTabCyclesPages(t *testing.T) {
 	m := fixtureModel()
-	want := []view{viewQueue, viewLyrics, viewLibrary}
+	want := []view{
+		viewSearch, viewSearch, viewQueue, viewLyrics, viewHelp, viewLogin,
+		viewFolders, viewDownloads, viewLibrary,
+	}
 	for i, w := range want {
 		updated, _ := m.Update(keyPress("", tea.KeyTab))
 		m = updated.(*Model)
@@ -205,13 +213,68 @@ func TestTabCyclesViews(t *testing.T) {
 			t.Fatalf("第 %d 次 Tab 应切到 %v，实际 %v", i+1, viewNames[w], viewNames[m.view])
 		}
 	}
+}
 
-	// 搜索页不参与轮转，Tab 回到曲库。
-	m.view = viewSearch
-	updated, _ := m.Update(keyPress("", tea.KeyTab))
+func TestVimDirectionKeysAndLyricsShortcut(t *testing.T) {
+	m := fixtureModel()
+	m.libraryFocus = focusSongs
+	m.songIdx = 0
+
+	// j/k 恢复为上下移动。
+	updated, _ := m.Update(keyPress("j", 'j'))
+	m = updated.(*Model)
+	if m.songIdx != 1 {
+		t.Fatalf("j 应下移选中项，实际 %d", m.songIdx)
+	}
+	updated, _ = m.Update(keyPress("k", 'k'))
+	m = updated.(*Model)
+	if m.songIdx != 0 {
+		t.Fatalf("k 应上移选中项，实际 %d", m.songIdx)
+	}
+
+	// h/l 恢复为左右切换焦点。
+	updated, _ = m.Update(keyPress("h", 'h'))
+	m = updated.(*Model)
+	if m.libraryFocus != focusPlaylists {
+		t.Fatal("h 应切到歌单焦点")
+	}
+	updated, _ = m.Update(keyPress("l", 'l'))
+	m = updated.(*Model)
+	if m.libraryFocus != focusSongs {
+		t.Fatalf("l 应切回歌曲焦点，实际 %v", m.libraryFocus)
+	}
+
+	// 歌词改用单键 T（ctrl+l 仍可），单键 l 不再切页。
+	updated, _ = m.Update(keyPress("l", 'l'))
 	m = updated.(*Model)
 	if m.view != viewLibrary {
-		t.Fatalf("从搜索页按 Tab 应回曲库，实际 %v", viewNames[m.view])
+		t.Fatalf("l 不应再打开歌词页，实际 %v", viewNames[m.view])
+	}
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 't', Text: "T"}))
+	m = updated.(*Model)
+	if m.view != viewLyrics {
+		t.Fatalf("T 应打开歌词页，实际 %v", viewNames[m.view])
+	}
+	m.view = viewLibrary
+	updated, _ = m.Update(tea.KeyPressMsg(tea.Key{Code: 'l', Mod: tea.ModCtrl}))
+	m = updated.(*Model)
+	if m.view != viewLyrics {
+		t.Fatalf("ctrl+l 应仍可打开歌词页，实际 %v", viewNames[m.view])
+	}
+}
+
+func TestShiftTabCyclesPagesBackwards(t *testing.T) {
+	m := fixtureModel()
+	want := []view{
+		viewDownloads, viewFolders, viewLogin, viewHelp, viewLyrics,
+		viewQueue, viewSearch, viewSearch, viewLibrary,
+	}
+	for i, w := range want {
+		updated, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
+		m = updated.(*Model)
+		if m.view != w {
+			t.Fatalf("第 %d 次 Shift+Tab 应切到 %v，实际 %v", i+1, viewNames[w], viewNames[m.view])
+		}
 	}
 }
 
@@ -330,6 +393,36 @@ func TestLyricsEmptyHintNamesCurrentPlatform(t *testing.T) {
 	frame = ansi.Strip(m.View().Content)
 	if !strings.Contains(frame, "B 站字幕与 LRCLIB 都没有收录") {
 		t.Fatalf("B 站歌曲的无歌词提示应点名 B 站字幕：\n%s", frame)
+	}
+}
+
+func TestPlaySearchResultAppendsAndSelects(t *testing.T) {
+	m := fixtureModel()
+	m.searchMode = searchSource
+	m.searchResults = []source.Candidate{{
+		Track: source.Track{
+			Source: source.Bilibili, ExternalID: "BV9", Page: 1,
+			Title: "新搜到的歌", Artist: "测试", Duration: 100,
+		},
+	}}
+	before := len(m.queue)
+	_ = m.playSearchResult(0)
+	if len(m.queue) != before+1 {
+		t.Fatalf("结果入队后队列应为 %d 首，实际 %d", before+1, len(m.queue))
+	}
+	if m.queueIdx != before {
+		t.Fatalf("当前索引应指向追加位置 %d，实际 %d", before, m.queueIdx)
+	}
+	if m.current == nil || m.current.ID != m.queue[before].ID {
+		t.Fatalf("当前曲目应为追加的搜索结果，实际 %+v", m.current)
+	}
+	// 顺序模式播完应回绕到队首，而不是重播刚播的这首。
+	_ = m.advance()
+	if m.queueIdx != 0 {
+		t.Fatalf("播完应回绕到队首，实际索引 %d", m.queueIdx)
+	}
+	if m.current == nil || m.current.ID != m.queue[0].ID {
+		t.Fatalf("播完应播放队首，实际 %+v", m.current)
 	}
 }
 
@@ -557,6 +650,28 @@ func TestLoginViewNetEaseFits24Rows(t *testing.T) {
 	assertFrame(t, m.View().Content, 100, 24)
 }
 
+func TestLoginViewHasHeaderWithoutAccount(t *testing.T) {
+	m := fixtureModel()
+	m.view = viewLogin
+	m.loginSource = source.Bilibili
+	m.users = map[source.ID]source.User{
+		source.Bilibili: {Name: "", LoggedIn: false},
+		source.NetEase:  {Name: "", LoggedIn: false},
+	}
+	m.qrStatus = "等待扫码"
+	m.setQRCode("https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=8f3c1d2e4b5a69788796a5b4c3d2e1f0")
+	frame := m.View().Content
+	assertFrame(t, frame, 100, 30)
+	lines := strings.Split(frame, "\n")
+	top := ansi.Strip(lines[0])
+	if !strings.Contains(top, "zero") || !strings.Contains(top, "登录") || !strings.Contains(top, "Tab") {
+		t.Fatalf("登录页顶栏缺失：%q", top)
+	}
+	if strings.Contains(top, "账户") {
+		t.Fatalf("登录页顶栏不应显示右侧账户信息：%q", top)
+	}
+}
+
 func TestPaletteOverlayAndCreateBlank(t *testing.T) {
 	m := fixtureModel()
 	m.width, m.height = 100, 30
@@ -564,7 +679,7 @@ func TestPaletteOverlayAndCreateBlank(t *testing.T) {
 	m.openPalette()
 	frame := m.View().Content
 	body := ansi.Strip(frame)
-	for _, want := range []string{"新建空白歌单", "同步 B 站收藏夹", "新建混合歌单", "╭"} {
+	for _, want := range []string{"新建空白歌单", "同步 Bilibili 歌单/收藏夹", "新建混合歌单", "╭"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("命令面板缺少 %q：\n%s", want, body)
 		}
@@ -702,6 +817,18 @@ func TestMixinAndUnlockKeys(t *testing.T) {
 	}
 }
 
+// TestHelpLinesKeepLongKeyCombo 验证帮助页按键列按最长组合自适应，
+// 不再把「ctrl+u / PgUp / ctrl+d / PgDn」硬截成 20 列。
+func TestHelpLinesKeepLongKeyCombo(t *testing.T) {
+	m := fixtureModel()
+	m.view = viewHelp
+	body := ansi.Strip(strings.Join(m.helpLines(), "\n"))
+	if !strings.Contains(body, "ctrl+u / PgUp / ctrl+d") {
+		t.Fatalf("帮助页应完整显示翻页按键组合，实际：\n%s", body)
+	}
+	assertFrame(t, m.View().Content, 100, 30)
+}
+
 func TestHelpPopupAndAccountHint(t *testing.T) {
 	m := fixtureModel()
 	m.width, m.height = 100, 30
@@ -727,6 +854,163 @@ func TestHelpPopupAndAccountHint(t *testing.T) {
 	mm = updated.(*Model)
 	if mm.helpPopup {
 		t.Fatal("再次按 H 应关闭弹窗")
+	}
+}
+
+// TestLoginPageOOpensQRImage 验证登录页按 login_image（默认 o）触发打开二维码图片；
+// 旧的 v 键继续兼容。
+func TestLoginPageOOpensQRImage(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		code rune
+	}{
+		{"配置键 o", "o", 'o'},
+		{"兼容键 v", "v", 'v'},
+	}
+	for _, c := range cases {
+		m := fixtureModel()
+		m.view = viewLogin
+		m.qrPath = ""
+		updated, _ := m.Update(keyPress(c.text, c.code))
+		mm := updated.(*Model)
+		if mm.note.text != "二维码图片还没生成" {
+			t.Fatalf("%s：登录页按键应尝试打开二维码图片，实际提示 %q", c.name, mm.note.text)
+		}
+		if mm.note.isErr {
+			t.Fatalf("%s：二维码未生成应是普通提示而非错误", c.name)
+		}
+	}
+}
+
+// TestPaletteAboutOpensPopup 验证命令面板里的「关于 zero-beat」入口：
+// 选中后关闭命令面板并弹出关于（替代已移除的「曲库 esc」入口）。
+func TestPaletteAboutOpensPopup(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.openPalette()
+	items := m.filteredPaletteItems()
+	idx := -1
+	for i, item := range items {
+		if item.action == palAbout {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("命令面板缺少「关于」入口")
+	}
+	m.palette.idx = idx
+
+	updated, _ := m.Update(keyPress("", tea.KeyEnter))
+	mm := updated.(*Model)
+	if mm.palette != nil {
+		t.Fatal("选中「关于」后命令面板应关闭")
+	}
+	if !mm.aboutPopup {
+		t.Fatal("命令面板选「关于 zero-beat」应打开关于弹窗")
+	}
+	body := ansi.Strip(mm.View().Content)
+	for _, want := range []string{"关于", "版本", "AGPL-3.0", "github.com/Sheyiyuan/zero-beat"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("关于弹窗缺少 %q：\n%s", want, body)
+		}
+	}
+	assertFrame(t, mm.View().Content, 100, 30)
+
+	updated, _ = mm.Update(keyPress("", tea.KeyEscape))
+	mm = updated.(*Model)
+	if mm.aboutPopup {
+		t.Fatal("esc 应关闭关于弹窗")
+	}
+	if mm.view != viewLibrary {
+		t.Fatalf("关闭关于弹窗后应留在曲库，实际 %v", mm.view)
+	}
+}
+
+// TestRenderDemoMenuAndAbout 验证 zero demo 新增的页面菜单与关于视图可截图。
+func TestRenderDemoMenuAndAbout(t *testing.T) {
+	cases := []struct {
+		name string
+		want []string
+	}{
+		{"menu", []string{"页面", "曲库", "本地搜索", "下载"}},
+		{"about", []string{"关于", "AGPL-3.0", "github.com/Sheyiyuan/zero-beat"}},
+	}
+	for _, c := range cases {
+		frame := RenderDemo(c.name, 100, 30)
+		assertFrame(t, frame, 100, 30)
+		body := ansi.Strip(frame)
+		for _, want := range c.want {
+			if !strings.Contains(body, want) {
+				t.Fatalf("zero demo %s 缺少 %q：\n%s", c.name, want, body)
+			}
+		}
+	}
+}
+
+// TestAdvanceRewindSyncQueueCursor 验证切歌后队列页游标跟随播放索引，
+// 不会出现「正在播放」与选中行错位。
+func TestAdvanceRewindSyncQueueCursor(t *testing.T) {
+	m := fixtureModel()
+	m.queue = threeSongQueue()
+	m.queueIdx = 0
+	m.queueCursor = 0
+	current := m.queue[0]
+	m.current = &current
+	m.state = audio.StatePlaying
+
+	_ = m.advance()
+	if m.queueIdx != 1 || m.queueCursor != 1 {
+		t.Fatalf("advance 后游标应跟随新索引: idx=%d cursor=%d", m.queueIdx, m.queueCursor)
+	}
+
+	_ = m.rewind()
+	if m.queueIdx != 0 || m.queueCursor != 0 {
+		t.Fatalf("rewind 后游标应跟随新索引: idx=%d cursor=%d", m.queueIdx, m.queueCursor)
+	}
+
+	// 顺序模式从最后一首回到第一首。
+	m.queueIdx = 2
+	m.queueCursor = 2
+	_ = m.advance()
+	if m.queueIdx != 0 || m.queueCursor != 0 {
+		t.Fatalf("循环回到第一首后游标应跟随: idx=%d cursor=%d", m.queueIdx, m.queueCursor)
+	}
+}
+
+// TestPlaySongPersistsQueue 验证开始播放会立刻把队列落地，
+// 退出后能在下次启动恢复最近的队列。
+func TestPlaySongPersistsQueue(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	songs := threeSongQueue()
+	for _, s := range songs {
+		if _, err := st.UpsertSong(s); err != nil {
+			t.Fatalf("写入歌曲失败: %v", err)
+		}
+	}
+	m := fixtureModel()
+	m.store = st
+	m.queue = songs
+	m.queueIdx = 1
+	m.current = &m.queue[1]
+
+	_ = m.playSong(m.queue[2])
+
+	saved, err := st.LoadQueue()
+	if err != nil {
+		t.Fatalf("读取队列失败: %v", err)
+	}
+	if len(saved.IDs) != len(songs) {
+		t.Fatalf("播放后应立即持久化队列，实际 %+v", saved)
+	}
+	if saved.Index != 1 {
+		t.Fatalf("持久化的队列索引不符: %+v", saved)
 	}
 }
 
@@ -911,5 +1195,142 @@ func TestMarqueeSpeed(t *testing.T) {
 	m.advanceMarquee()
 	if m.marqueeOffset != 4 {
 		t.Fatalf("第二次应到 4 列: %d", m.marqueeOffset)
+	}
+}
+
+// TestListScrollOnlyWhenCursorLeavesWindow 验证列表只在光标移出窗口时滚动，
+// 不会像旧实现（windowRange 居中）那样每换一行就整屏重排。
+func TestListScrollOnlyWhenCursorLeavesWindow(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.view = viewLibrary
+	m.libraryFocus = focusSongs
+	m.songs = make([]store.Song, 60)
+	for i := range m.songs {
+		m.songs[i] = store.Song{
+			ID: fmt.Sprintf("bilibili:BV%d:1", i), Source: "bilibili",
+			BVID: fmt.Sprintf("BV%d", i), Page: 1,
+			Title: fmt.Sprintf("歌曲 %d", i), Artist: "歌手", Duration: 100,
+		}
+	}
+	songHeight := m.bodyHeight() - 1
+
+	m.songIdx = 0
+	m.renderLibrary(m.bodyHeight())
+	if got := m.listScroll[scrollLibrarySongs]; got != 0 {
+		t.Fatalf("初始窗口应从 0 开始，实际 %d", got)
+	}
+
+	// 在窗口内移动：不滚动。
+	m.songIdx = 3
+	m.renderLibrary(m.bodyHeight())
+	if got := m.listScroll[scrollLibrarySongs]; got != 0 {
+		t.Fatalf("光标在窗口内时不应滚动，实际 %d", got)
+	}
+
+	// 光标移出窗口下沿：只滚到刚好露出光标，不居中。
+	m.songIdx = songHeight + 2
+	m.renderLibrary(m.bodyHeight())
+	want := m.songIdx - songHeight + 1
+	if got := m.listScroll[scrollLibrarySongs]; got != want {
+		t.Fatalf("移出窗口应最小滚动到 %d，实际 %d", want, got)
+	}
+
+	// 回到顶部：窗口跟随回到 0。
+	m.songIdx = 0
+	m.renderLibrary(m.bodyHeight())
+	if got := m.listScroll[scrollLibrarySongs]; got != 0 {
+		t.Fatalf("回到首行时窗口应回到 0，实际 %d", got)
+	}
+}
+
+// TestRightClickSongKeepsMenuAnchored 验证右键歌曲时列表不再重排：
+// 菜单位置仍贴着被点的那一行。
+func TestRightClickSongKeepsMenuAnchored(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.view = viewLibrary
+	m.libraryFocus = focusSongs
+	m.songs = make([]store.Song, 60)
+	for i := range m.songs {
+		m.songs[i] = store.Song{
+			ID: fmt.Sprintf("bilibili:BV%d:1", i), Source: "bilibili",
+			BVID: fmt.Sprintf("BV%d", i), Page: 1,
+			Title: fmt.Sprintf("歌曲 %d", i), Artist: "歌手", Duration: 100,
+		}
+	}
+	// 先把光标挪到窗口底部附近，让窗口滚动起来。
+	m.songIdx = 30
+	m.renderLibrary(m.bodyHeight())
+	startBefore := m.listScroll[scrollLibrarySongs]
+
+	// 取当前可见的最后一首歌的命中区，右键它。
+	var zone hitZone
+	for _, z := range m.hitZones() {
+		if z.target == hitLibrarySong {
+			zone = z
+		}
+	}
+	if zone.index != m.songIdx && zone.index < 0 {
+		t.Fatal("未找到可见歌曲行")
+	}
+	rowY := zone.y
+	clicked := zone.index
+
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 5, Y: rowY, Button: tea.MouseRight})
+	mm := updated.(*Model)
+	if mm.menu == nil || mm.menu.kind != menuSong {
+		t.Fatalf("右键歌曲应打开歌曲菜单，实际 %+v", mm.menu)
+	}
+	if mm.songIdx != clicked {
+		t.Fatalf("右键应选中被点的歌曲 %d，实际 %d", clicked, mm.songIdx)
+	}
+	if got := mm.listScroll[scrollLibrarySongs]; got != startBefore {
+		t.Fatalf("右键单行不应导致列表滚动：%d -> %d", startBefore, got)
+	}
+	if mm.menu.y != rowY {
+		t.Fatalf("菜单应贴着被点的行：menu.y=%d row.y=%d", mm.menu.y, rowY)
+	}
+}
+
+// TestHitZonesMatchRenderedRows 验证列表滚动后，点击命中区与画面行严格对应
+// （渲染和命中区必须共用同一个窗口起点，否则会点错行）。
+func TestHitZonesMatchRenderedRows(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.view = viewLibrary
+	m.libraryFocus = focusSongs
+	m.songs = make([]store.Song, 60)
+	for i := range m.songs {
+		m.songs[i] = store.Song{
+			ID: fmt.Sprintf("bilibili:BV%d:1", i), Source: "bilibili",
+			BVID: fmt.Sprintf("BV%d", i), Page: 1,
+			Title: fmt.Sprintf("歌曲 %d", i), Artist: "歌手", Duration: 100,
+		}
+	}
+	m.songIdx = 40 // 让窗口滚动到中后段
+	body := m.renderLibrary(m.bodyHeight())
+
+	byY := map[int]int{}
+	for _, z := range m.hitZones() {
+		if z.target == hitLibrarySong {
+			byY[z.y] = z.index
+		}
+	}
+	matched := 0
+	for y, idx := range byY {
+		bodyIdx := y - 2
+		if bodyIdx < 0 || bodyIdx >= len(body) {
+			t.Fatalf("命中区 y=%d 超出正文范围", y)
+		}
+		line := ansi.Strip(body[bodyIdx])
+		want := fmt.Sprintf("歌曲 %d", idx)
+		if !strings.Contains(line, want) {
+			t.Fatalf("第 %d 行命中索引 %d，但画面是 %q（期望包含 %s）", y, idx, line, want)
+		}
+		matched++
+	}
+	if matched < 5 {
+		t.Fatalf("可见歌曲行命中区太少：%d", matched)
 	}
 }

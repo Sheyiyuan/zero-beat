@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
@@ -61,7 +62,7 @@ type playlistAddMsg struct {
 }
 
 func (m *Model) openAddSongPicker(song store.Song) tea.Cmd {
-	song = normalizeSong(song)
+	song = store.NormalizeSong(song)
 	if song.ID == "" {
 		m.setNotice("这首歌缺少来源信息，无法加入歌单", true)
 		return nil
@@ -94,7 +95,7 @@ func (m *Model) openMergePicker() tea.Cmd {
 		m.setNotice("混合歌单不能作为引用源（不支持嵌套）", true)
 		return nil
 	}
-	if sourcePlaylist.ID == dailyPlaylistID {
+	if app.IsDailyPlaylist(sourcePlaylist) {
 		m.setNotice("「每日推荐」是动态列表，不能作为引用源", true)
 		return nil
 	}
@@ -144,7 +145,7 @@ func (m *Model) localTargets(mergeOnly bool, excludeID string) []playlistTarget 
 	src := m.sources.GetString(songSource)
 	writableCloud := src != nil && src.LoggedIn() && src.Caps().Has(source.CapPlaylistWrite)
 	for _, p := range m.playlists {
-		if !writableCloud || p.Kind != "remote" || p.RemoteID == "" || p.ID == dailyPlaylistID || p.Source != songSource {
+		if !writableCloud || p.Kind != "remote" || p.RemoteID == "" || app.IsDailyPlaylist(p) || p.Source != songSource {
 			continue
 		}
 		out = append(out, playlistTarget{
@@ -171,7 +172,7 @@ func (m *Model) pickerSongSource() string {
 func (m *Model) preferCurrentTarget(items []playlistTarget) []playlistTarget {
 	id := m.currentPlaylistID()
 	if id == "" && m.store != nil {
-		id = m.store.Setting("last_add_playlist", "")
+		id = m.service().LastAddPlaylist()
 	}
 	if id == "" {
 		return items
@@ -187,26 +188,12 @@ func (m *Model) preferCurrentTarget(items []playlistTarget) []playlistTarget {
 }
 
 func (m *Model) loadTargetRemotesCmd(srcID source.ID) tea.Cmd {
-	sources := m.sources
+	svc := m.service()
 	return func() tea.Msg {
-		src := sources.Get(srcID)
-		if src == nil {
-			return targetRemotesMsg{source: srcID, err: fmt.Errorf("音源不可用")}
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		lists, err := src.RemotePlaylists(ctx)
-		if err != nil {
-			return targetRemotesMsg{source: srcID, err: err}
-		}
-		out := make([]source.Playlist, 0, len(lists))
-		for _, p := range lists {
-			if p.RemoteID == "" || p.RemoteID == "daily" || p.ID == dailyPlaylistID {
-				continue
-			}
-			out = append(out, p)
-		}
-		return targetRemotesMsg{source: srcID, items: out}
+		items, err := svc.CloudPlaylists(ctx, srcID)
+		return targetRemotesMsg{source: srcID, items: items, err: err}
 	}
 }
 
@@ -321,7 +308,7 @@ func (m *Model) commitLocalAdd(target playlistTarget, song store.Song) tea.Cmd {
 	if m.store == nil {
 		return nil
 	}
-	if err := m.store.AddSongToPlaylist(target.ID, song); err != nil {
+	if err := m.service().AddSongToPlaylist(target.ID, song); err != nil {
 		if m.picker != nil {
 			m.picker.err = err.Error()
 		}
@@ -330,7 +317,7 @@ func (m *Model) commitLocalAdd(target playlistTarget, song store.Song) tea.Cmd {
 	}
 	m.picker = nil
 	if m.store != nil {
-		_ = m.store.SetSetting("last_add_playlist", target.ID)
+		m.service().SaveLastAddPlaylist(target.ID)
 	}
 	m.setNotice(fmt.Sprintf("已加入歌单：%s", target.Title), false)
 	return m.loadLocalPlaylistsCmd()
@@ -338,23 +325,15 @@ func (m *Model) commitLocalAdd(target playlistTarget, song store.Song) tea.Cmd {
 
 func (m *Model) addSongToCloudCmd(song store.Song, target playlistTarget) tea.Cmd {
 	sources := m.sources
-	song = normalizeSong(song)
+	song = store.NormalizeSong(song)
 	if m.picker != nil {
 		m.picker = nil
 	}
 	m.setNotice("正在加入云端歌单…", false)
 	return func() tea.Msg {
-		src := sources.GetString(song.Source)
-		if src == nil {
-			return playlistAddMsg{target: target, song: song, err: fmt.Errorf("未知音源 %s", song.Source)}
-		}
-		writer, ok := src.(source.PlaylistWriter)
-		if !ok || !src.Caps().Has(source.CapPlaylistWrite) {
-			return playlistAddMsg{target: target, song: song, err: fmt.Errorf("%s 不支持写入云端歌单", src.Name())}
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		err := writer.AddToPlaylist(ctx, target.RemoteID, refFromSong(song))
+		err := app.New(sources, nil, nil).AddToCloudPlaylist(ctx, song, target.RemoteID)
 		return playlistAddMsg{target: target, song: song, err: err}
 	}
 }
@@ -363,7 +342,7 @@ func (m *Model) commitMergeRef(target playlistTarget) tea.Cmd {
 	if m.store == nil || m.picker == nil {
 		return nil
 	}
-	added, err := m.store.AddMixinRef(target.ID, m.picker.sourcePlaylistID)
+	added, err := m.service().AddMixinRef(target.ID, m.picker.sourcePlaylistID)
 	if err != nil {
 		m.picker.err = err.Error()
 		m.setError(err)
@@ -421,29 +400,23 @@ func (m *Model) targetPickerLines() []string {
 		start, end := windowRange(len(items), p.idx, maxRows)
 		for i := start; i < end; i++ {
 			item := items[i]
-			marker := "  "
-			if i == p.idx {
-				marker = "▶ "
-			}
-			tag := "本地"
+			tag := "本"
 			switch {
 			case item.Create:
-				tag = "新建"
+				tag = "新"
 			case item.Cloud:
-				tag = source.ID(item.Source).Mark() + " 云端"
+				tag = m.sourceMark(source.ID(item.Source))
 			case item.Kind == "mixin":
-				tag = "混合"
+				tag = "混"
 			}
-			row := marker + st.dim.Render(padRight("["+tag+"]", 9)) + " " + item.Title
-			if item.Count > 0 {
-				row += st.muted.Render(fmt.Sprintf("  %d", item.Count))
-			}
-			row = truncate(row, inner-1)
-			if i == p.idx {
-				out = append(out, boxLine(st.selected.Render(padRight(row, inner-1)), inner))
-			} else {
-				out = append(out, boxLine(row, inner))
-			}
+			// 浮层里每行占 inner-1 列，再由 boxLine 补上左侧 1 列空白。
+			row := m.renderPlaylistRow(playlistRowSpec{
+				Selected: i == p.idx,
+				Tag:      tag,
+				Title:    item.Title,
+				Count:    item.Count,
+			}, inner-1)
+			out = append(out, boxLine(row, inner))
 		}
 	}
 

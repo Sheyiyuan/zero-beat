@@ -18,18 +18,22 @@ func TestParseSearch(t *testing.T) {
 	body := []byte(`{"code":200,"result":{"songCount":31,"songs":[
 		{"id":1431292823,"name":"夜航星 (Night Voyager)","dt":303701,"fee":8,
 		 "ar":[{"name":"蔡明希（不才）"},{"name":"三体宇宙"}],
-		 "al":{"name":"我的三体之章北海传 原声音乐集","picUrl":"//p1/x.jpg"}}
+		 "al":{"name":"我的三体之章北海传 原声音乐集","picUrl":"//p1/x.jpg"}},
+		{"id":2,"name":"VIP 曲目","dt":1000,"fee":1,"ar":[{"name":"A"}],"al":{"name":"B"}}
 	]}}`)
 	page, err := parseSearch(body, 2, 30)
 	if err != nil {
 		t.Fatalf("解析失败: %v", err)
 	}
-	if page.Page != 2 || page.Pages != 2 || len(page.Candidates) != 1 {
+	if page.Page != 2 || page.Pages != 2 || len(page.Candidates) != 2 {
 		t.Fatalf("分页结果不符: %+v", page)
 	}
 	item := page.Candidates[0]
-	if item.ExternalID != "1431292823" || item.Duration != 304 || item.Fee != 8 {
+	if item.ExternalID != "1431292823" || item.Duration != 304 || item.VIP {
 		t.Fatalf("条目字段不符: %+v", item)
+	}
+	if !page.Candidates[1].VIP {
+		t.Fatalf("fee=1 应标记为 VIP: %+v", page.Candidates[1])
 	}
 	if item.Artist != "蔡明希（不才） / 三体宇宙" || item.Album == "" || item.Cover != "https://p1/x.jpg" {
 		t.Fatalf("艺术家/专辑/封面不符: %+v", item.Track)
