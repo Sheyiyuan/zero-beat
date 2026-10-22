@@ -106,7 +106,7 @@ zero                     # 终端界面
 zero login bilibili       # 只扫码登录 B 站，保存 cookie
 zero login netease        # 只扫码登录网易云，保存 cookie
 zero play BV1GJ411x7h7    # headless 播放（B 站/网易云），验证音频链路
-zero demo [view]          # 打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker/downloads）
+zero demo [view]          # 打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker/downloads/menu/about）
 zero clean-playlists      # 清空已导入的远端歌单，保留本地歌单
 zero theme [auto|dark|light]  # 查看/设置主题（auto 读 COLORFGBG）
 zero download <目标...>   # 下载单曲（-o 目录/文件，-q 档位，-j 并发数）

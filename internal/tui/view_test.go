@@ -927,6 +927,27 @@ func TestPaletteAboutOpensPopup(t *testing.T) {
 	}
 }
 
+// TestRenderDemoMenuAndAbout 验证 zero demo 新增的页面菜单与关于视图可截图。
+func TestRenderDemoMenuAndAbout(t *testing.T) {
+	cases := []struct {
+		name string
+		want []string
+	}{
+		{"menu", []string{"页面", "曲库", "本地搜索", "下载"}},
+		{"about", []string{"关于", "AGPL-3.0", "github.com/Sheyiyuan/zero-beat"}},
+	}
+	for _, c := range cases {
+		frame := RenderDemo(c.name, 100, 30)
+		assertFrame(t, frame, 100, 30)
+		body := ansi.Strip(frame)
+		for _, want := range c.want {
+			if !strings.Contains(body, want) {
+				t.Fatalf("zero demo %s 缺少 %q：\n%s", c.name, want, body)
+			}
+		}
+	}
+}
+
 func TestLoginSourceUpDown(t *testing.T) {
 	b, n, reg := twoFakes()
 	b.logged, n.logged = false, false

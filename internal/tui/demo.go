@@ -128,6 +128,11 @@ func RenderDemo(name string, width, height int) string {
 				{Title: "＋ 新建本地歌单并加入", Create: true},
 			},
 		}
+	case "menu":
+		// 页头「曲库」下方的页面菜单（与点击页头页面名一致，9 项）。
+		m.openPageMenu(6, 2)
+	case "about":
+		m.aboutPopup = true
 	default:
 		m.view = viewLibrary
 	}
