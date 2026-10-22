@@ -441,7 +441,7 @@ func (m *Model) renderBody(h int) []string {
 // ---- 曲库 ----
 
 func (m *Model) librarySideWidth() int {
-	sideW := 20
+	sideW := 22
 	if m.width < 76 {
 		sideW = 14
 	}
@@ -464,29 +464,13 @@ func (m *Model) renderLibrary(h int) []string {
 		start, end := windowRange(len(m.playlists), m.playlistIdx, h-1)
 		for i := start; i < end; i++ {
 			p := m.playlists[i]
-			marker := "  "
-			if m.current != nil && m.playingPlaylistID != "" && p.ID == m.playingPlaylistID {
-				marker = "▶ "
-			}
-			prefix := marker + " "
-			if p.Kind == "remote" && p.Source != "" {
-				prefix = marker + " " + padRight(m.sourceMark(source.ID(p.Source)), 2) + " "
-			}
-			label := fmt.Sprintf("%s%s", prefix, p.Title)
-			if p.Count > 0 {
-				label = fmt.Sprintf("%s%s %d", prefix, p.Title, p.Count)
-			}
-			row := padRight(truncate(label, sideW), sideW)
-			selected := m.libraryFocus == focusPlaylists && i == m.playlistIdx
-			playing := !selected && m.current != nil && m.playingPlaylistID != "" && p.ID == m.playingPlaylistID
-			switch {
-			case selected:
-				side[1+i-start] = st.selected.Render(row)
-			case playing:
-				side[1+i-start] = st.playing.Render(row)
-			default:
-				side[1+i-start] = st.text.Render(row)
-			}
+			side[1+i-start] = m.renderPlaylistRow(playlistRowSpec{
+				Playing:  m.current != nil && m.playingPlaylistID != "" && p.ID == m.playingPlaylistID,
+				Selected: m.libraryFocus == focusPlaylists && i == m.playlistIdx,
+				Tag:      m.playlistTag(p),
+				Title:    p.Title,
+				Count:    p.Count,
+			}, sideW)
 		}
 	}
 
@@ -543,41 +527,17 @@ func (m *Model) songRow(i, width int) string {
 	s := m.songs[i]
 	playing := m.current != nil && s.ID != "" && s.ID == m.current.ID
 	selected := m.libraryFocus == focusSongs && i == m.songIdx
-	marker := "  "
-	if playing {
-		marker = "▶ "
-	}
-	// 序号固定 3 列，超过 99 首时也只压缩标题宽度，保持 1/2/3 位对齐。
-	idx := fmt.Sprintf("%3d", i+1)
-	tag := padRight("["+m.sourceMark(source.ID(s.Source))+"]", 4)
-	artistW := 14
-	titleW := width - artistW - 19
-	if titleW < 8 {
-		artistW = 8
-		titleW = width - artistW - 19
-	}
-	if titleW < 4 {
-		titleW = 4
-	}
-	dur := formatDuration(time.Duration(s.Duration) * time.Second)
-	title := padRight(s.Title, titleW)
-	artist := padRight(truncate(s.Artist, artistW), artistW)
-	if selected {
-		title = padRight(scrollText(s.Title, titleW, m.marqueeOffset), titleW)
-		artist = padRight(scrollText(s.Artist, artistW, m.marqueeOffset), artistW)
-	}
-	if selected || playing {
-		// 先拼纯文本再整行套背景，避免嵌套 ANSI reset 把高亮背景截断。
-		plain := marker + tag + " " + idx + " " + title + " " + artist + " " + padLeft(dur, 5)
-		plain = padRight(plain, width)
-		if selected {
-			return st.selected.Render(plain)
-		}
-		return st.playing.Render(plain)
-	}
-	row := marker + st.dim.Render(tag) + " " + st.dim.Render(idx) + " " +
-		title + " " + artist + " " + padLeft(dur, 5)
-	return padRight(row, width)
+	return m.renderSongRow(songRowSpec{
+		Playing:  playing,
+		Selected: selected,
+		Tag:      m.sourceMark(source.ID(s.Source)),
+		Index:    i + 1,
+		Title:    s.Title,
+		Artist:   s.Artist,
+		Meta:     formatDuration(time.Duration(s.Duration) * time.Second),
+		MetaW:    rowDurW,
+		Marquee:  selected,
+	}, width)
 }
 
 func (m *Model) resetMarquee() {
@@ -675,35 +635,30 @@ func (m *Model) renderSearch(h int) []string {
 		start, end := windowRange(len(m.searchResults), m.searchIdx, h-2)
 		for i := start; i < end; i++ {
 			item := m.searchResults[i]
-			play := ""
+			extra := ""
 			if item.Play > 0 {
-				play = fmt.Sprintf("%s 播放", comma(item.Play))
+				extra = fmt.Sprintf("%s 播放", comma(item.Play))
 			}
 			if item.VIP {
-				play = strings.TrimSpace("VIP " + play)
+				extra = strings.TrimSpace("VIP " + extra)
 			}
-			if play == "" && item.Album != "" {
-				play = "《" + item.Album + "》"
+			if extra == "" && item.Album != "" {
+				extra = "《" + item.Album + "》"
 			}
-			dur := formatDuration(time.Duration(item.Duration) * time.Second)
-			metaW := 24
-			titleW := m.width - metaW - 6
-			if titleW < 10 {
-				titleW = 10
-			}
-			tag := padRight("["+m.sourceMark(item.Source)+"]", 4)
-			title := item.Title
-			if item.Artist != "" {
-				title += "  ·  " + item.Artist
-			}
-			row := " " + st.dim.Render(tag) + " " + padRight(title, titleW) +
-				st.muted.Render(padLeft(dur, 6)) + "  " + st.dim.Render(padLeft(play, metaW-8))
-			row = padRight(row, m.width)
-			if i == m.searchIdx {
-				out = append(out, st.selected.Render(row))
-			} else {
-				out = append(out, row)
-			}
+			song := m.searchResultSong(i)
+			out = append(out, m.renderSongRow(songRowSpec{
+				Playing:  m.current != nil && song.ID != "" && song.ID == m.current.ID,
+				Selected: i == m.searchIdx,
+				Tag:      m.sourceMark(item.Source),
+				Index:    i + 1,
+				Title:    item.Title,
+				Artist:   item.Artist,
+				Meta:     formatDuration(time.Duration(item.Duration) * time.Second),
+				MetaW:    rowDurW,
+				Extra:    extra,
+				ExtraW:   rowExtraW,
+				Marquee:  i == m.searchIdx,
+			}, m.width))
 		}
 		return out
 	}
@@ -716,22 +671,17 @@ func (m *Model) renderSearch(h int) []string {
 	start, end := windowRange(len(m.localResults), m.searchIdx, h-2)
 	for i := start; i < end; i++ {
 		song := m.localResults[i]
-		dur := formatDuration(time.Duration(song.Duration) * time.Second)
-		artistW := 16
-		titleW := m.width - artistW - 18
-		if titleW < 8 {
-			artistW = 8
-			titleW = m.width - artistW - 18
-		}
-		tag := padRight("["+m.sourceMark(source.ID(song.Source))+"]", 4)
-		row := " " + st.dim.Render(tag) + " " + padRight(song.Title, titleW) + " " +
-			padRight(truncate(song.Artist, artistW), artistW) + " " + padLeft(dur, 5)
-		row = padRight(row, m.width)
-		if i == m.searchIdx {
-			out = append(out, st.selected.Render(row))
-		} else {
-			out = append(out, row)
-		}
+		out = append(out, m.renderSongRow(songRowSpec{
+			Playing:  m.current != nil && song.ID != "" && song.ID == m.current.ID,
+			Selected: i == m.searchIdx,
+			Tag:      m.sourceMark(source.ID(song.Source)),
+			Index:    i + 1,
+			Title:    song.Title,
+			Artist:   song.Artist,
+			Meta:     formatDuration(time.Duration(song.Duration) * time.Second),
+			MetaW:    rowDurW,
+			Marquee:  i == m.searchIdx,
+		}, m.width))
 	}
 	return out
 }
@@ -749,31 +699,17 @@ func (m *Model) renderQueue(h int) []string {
 	start, end := windowRange(len(m.queue), m.queueCursor, h-1)
 	for i := start; i < end; i++ {
 		s := m.queue[i]
-		marker := "  "
-		if i == m.queueIdx {
-			marker = "▶ "
-		}
-		dur := formatDuration(time.Duration(s.Duration) * time.Second)
-		tag := padRight("["+m.sourceMark(source.ID(s.Source))+"]", 4)
-		artistW := 16
-		titleW := m.width - artistW - 19
-		if titleW < 8 {
-			artistW = 8
-			titleW = m.width - artistW - 19
-		}
-		if titleW < 4 {
-			titleW = 4
-		}
-		row := marker + st.dim.Render(tag) + " " + st.dim.Render(fmt.Sprintf("%2d", i+1)) + " " +
-			padRight(s.Title, titleW) + " " +
-			padRight(truncate(s.Artist, artistW), artistW) + " " +
-			padLeft(dur, 5)
-		row = padRight(row, m.width)
-		if i == m.queueCursor {
-			out = append(out, st.selected.Render(row))
-		} else {
-			out = append(out, row)
-		}
+		out = append(out, m.renderSongRow(songRowSpec{
+			Playing:  m.current != nil && i == m.queueIdx,
+			Selected: i == m.queueCursor,
+			Tag:      m.sourceMark(source.ID(s.Source)),
+			Index:    i + 1,
+			Title:    s.Title,
+			Artist:   s.Artist,
+			Meta:     formatDuration(time.Duration(s.Duration) * time.Second),
+			MetaW:    rowDurW,
+			Marquee:  i == m.queueCursor,
+		}, m.width))
 	}
 	return out
 }
@@ -818,50 +754,26 @@ func (m *Model) downloadRow(i, width int) string {
 	item := m.downloadItems[i]
 	entry := item.entry
 	playing := m.current != nil && entry.Song.ID != "" && entry.Song.ID == m.current.ID
-	marker := "  "
-	if playing {
-		marker = "▶ "
-	}
-	tag := padRight("["+m.sourceMark(source.ID(entry.Song.Source))+"]", 4)
-	idx := fmt.Sprintf("%3d", i+1)
-	artist := entry.Song.Artist
-	size := humanSize(entry.Download.Size)
-	meta := size
+	meta := humanSize(entry.Download.Size)
 	if entry.Download.Codec != "" {
 		meta += " · " + entry.Download.Codec
 	}
 	if item.missing {
+		// 文件缺失时保留可读文案；颜色由 MetaErr 走 st.err。
 		meta = "文件缺失"
 	}
-	metaW := 18
-	artistW := 14
-	titleW := width - metaW - artistW - 19
-	if titleW < 8 {
-		artistW = 8
-		titleW = width - metaW - artistW - 19
-	}
-	if titleW < 4 {
-		titleW = 4
-	}
-	title := padRight(downloadTitle(item), titleW)
-	artist = padRight(truncate(artist, artistW), artistW)
-	if i == m.downloadIdx {
-		title = padRight(scrollText(downloadTitle(item), titleW, m.marqueeOffset), titleW)
-		artist = padRight(scrollText(entry.Song.Artist, artistW, m.marqueeOffset), artistW)
-	}
-	plain := marker + tag + " " + idx + " " + title + " " + artist + " " + padLeft(meta, metaW)
-	plain = padRight(plain, width)
-	if i == m.downloadIdx {
-		return st.selected.Render(plain)
-	}
-	if item.missing {
-		return marker + st.dim.Render(tag) + " " + st.dim.Render(idx) + " " +
-			padRight(downloadTitle(item), titleW) + " " + padRight(truncate(artist, artistW), artistW) + " " +
-			st.err.Render(padLeft(meta, metaW))
-	}
-	row := marker + st.dim.Render(tag) + " " + st.dim.Render(idx) + " " +
-		title + " " + artist + " " + st.muted.Render(padLeft(meta, metaW))
-	return padRight(row, width)
+	return m.renderSongRow(songRowSpec{
+		Playing:  playing,
+		Selected: i == m.downloadIdx,
+		Tag:      m.sourceMark(source.ID(entry.Song.Source)),
+		Index:    i + 1,
+		Title:    downloadTitle(item),
+		Artist:   entry.Song.Artist,
+		Meta:     meta,
+		MetaW:    rowDownloadW,
+		MetaErr:  item.missing,
+		Marquee:  i == m.downloadIdx,
+	}, width)
 }
 
 // ---- 收藏夹选择 ----
@@ -889,22 +801,13 @@ func (m *Model) renderFolders(h int) []string {
 	start, end := windowRange(len(m.folderItems), m.folderIdx, h-1)
 	for i := start; i < end; i++ {
 		p := m.folderItems[i]
-		marker := "  "
-		if i == m.folderIdx {
-			marker = "▶ "
-		}
-		titleW := m.width - 10
-		if titleW < 10 {
-			titleW = 10
-		}
-		row := marker + st.dim.Render(fmt.Sprintf("%2d", i+1)) + " " +
-			padRight(p.Title, titleW) + st.muted.Render(fmt.Sprintf("%4d", p.Count))
-		row = padRight(row, m.width)
-		if i == m.folderIdx {
-			out = append(out, st.selected.Render(row))
-		} else {
-			out = append(out, row)
-		}
+		// ▶ 只表示正在播放；导入页的光标只用蓝底。
+		out = append(out, m.renderPlaylistRow(playlistRowSpec{
+			Selected: i == m.folderIdx,
+			Tag:      m.sourceMark(p.Source),
+			Title:    p.Title,
+			Count:    p.Count,
+		}, m.width))
 	}
 	return out
 }

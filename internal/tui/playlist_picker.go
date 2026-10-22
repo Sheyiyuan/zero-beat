@@ -400,29 +400,23 @@ func (m *Model) targetPickerLines() []string {
 		start, end := windowRange(len(items), p.idx, maxRows)
 		for i := start; i < end; i++ {
 			item := items[i]
-			marker := "  "
-			if i == p.idx {
-				marker = "▶ "
-			}
-			tag := "本地"
+			tag := "本"
 			switch {
 			case item.Create:
-				tag = "新建"
+				tag = "新"
 			case item.Cloud:
-				tag = m.sourceMark(source.ID(item.Source)) + " 云端"
+				tag = m.sourceMark(source.ID(item.Source))
 			case item.Kind == "mixin":
-				tag = "混合"
+				tag = "混"
 			}
-			row := marker + st.dim.Render(padRight("["+tag+"]", 9)) + " " + item.Title
-			if item.Count > 0 {
-				row += st.muted.Render(fmt.Sprintf("  %d", item.Count))
-			}
-			row = truncate(row, inner-1)
-			if i == p.idx {
-				out = append(out, boxLine(st.selected.Render(padRight(row, inner-1)), inner))
-			} else {
-				out = append(out, boxLine(row, inner))
-			}
+			// 浮层里每行占 inner-1 列，再由 boxLine 补上左侧 1 列空白。
+			row := m.renderPlaylistRow(playlistRowSpec{
+				Selected: i == p.idx,
+				Tag:      tag,
+				Title:    item.Title,
+				Count:    item.Count,
+			}, inner-1)
+			out = append(out, boxLine(row, inner))
 		}
 	}
 
