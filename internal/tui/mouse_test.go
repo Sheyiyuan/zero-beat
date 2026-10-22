@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/player"
+	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
@@ -522,5 +524,49 @@ func TestPlaylistMenuPlayWaitsForSongs(t *testing.T) {
 	}
 	if mm.current == nil || mm.current.ID != items[0].ID || mm.queueIdx != 0 {
 		t.Fatalf("应从第一首起播，实际 current=%+v idx=%d", mm.current, mm.queueIdx)
+	}
+}
+
+// TestMouseClickQualityCycles 验证点击底部音质档位等同按 y 切换音质偏好，
+// 且不会误切播放模式；两次点击后再次更新位置仍可命中。
+func TestMouseClickQualityCycles(t *testing.T) {
+	m := fixtureModel()
+	m.quality = source.QualityAuto
+	beforeMode := m.mode
+
+	zone := findZone(t, m, hitQuality)
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseLeft})
+	mm := updated.(*Model)
+	if mm.quality != source.QualityHigh {
+		t.Fatalf("点击音质应切到高音质，实际 %v", mm.quality)
+	}
+	if mm.mode != beforeMode {
+		t.Fatalf("点击音质不应切换播放模式：%v -> %v", beforeMode, mm.mode)
+	}
+	if !strings.Contains(mm.note.text, "音质偏好") {
+		t.Fatalf("应提示音质偏好已切换，实际 %q", mm.note.text)
+	}
+
+	zone = findZone(t, mm, hitQuality) // 标签宽度变化后重新取位置
+	updated, _ = mm.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseLeft})
+	mm = updated.(*Model)
+	if mm.quality != source.QualityLossless {
+		t.Fatalf("再次点击应切到无损，实际 %v", mm.quality)
+	}
+
+	// 音质与模式两个命中区不能重叠。
+	qz, qw, qok := mm.qualityZone()
+	mz, _, mok := mm.modeZone()
+	if qok && mok && qz+qw > mz {
+		t.Fatalf("音质区与模式区重叠：quality=%d..%d mode=%d", qz, qz+qw, mz)
+	}
+}
+
+// TestQualityZoneHiddenWhenMetaTruncated 窄终端 meta 被截断时不注册音质命中区。
+func TestQualityZoneHiddenWhenMetaTruncated(t *testing.T) {
+	m := fixtureModel()
+	m.width = 30
+	if _, _, ok := m.qualityZone(); ok {
+		t.Fatal("meta 被截断时不应有音质命中区")
 	}
 }

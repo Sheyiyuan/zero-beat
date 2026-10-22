@@ -72,6 +72,9 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	case hitMode:
 		m.setMode((m.mode + 1) % 3)
 		return m, nil
+	case hitQuality:
+		m.cycleQuality()
+		return m, nil
 	case hitLyricStrip:
 		m.view = viewLyrics
 		return m, m.onViewChanged()

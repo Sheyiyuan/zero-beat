@@ -10,6 +10,7 @@ const (
 	hitAccount
 	hitPlayPause
 	hitMode
+	hitQuality
 	hitLyricStrip
 	hitLibraryPlaylist
 	hitLibrarySong
@@ -52,10 +53,9 @@ func (m *Model) headerAccountStart() int {
 	return x
 }
 
-// modeZone 返回底部播放模式片段的位置；meta 被截断时返回 ok=false。
-func (m *Model) modeZone() (x, w int, ok bool) {
-	meta, modeStart, modeWidth := m.nowPlayingMeta()
-	if modeStart < 0 || modeWidth <= 0 {
+// metaZone 把 nowPlayingMeta 的某个片段换算成屏幕列；meta 被截断时返回 ok=false。
+func (m *Model) metaZone(meta string, seg metaSegment) (x, w int, ok bool) {
+	if seg.start < 0 || seg.width <= 0 {
 		return 0, 0, false
 	}
 	if maxMeta := m.width - 6; maxMeta > 0 && visWidth(meta) > maxMeta {
@@ -68,11 +68,23 @@ func (m *Model) modeZone() (x, w int, ok bool) {
 	if gap < 1 {
 		gap = 1
 	}
-	start := leftW + gap + modeStart
-	if start < 0 || start+modeWidth > m.width {
+	start := leftW + gap + seg.start
+	if start < 0 || start+seg.width > m.width {
 		return 0, 0, false
 	}
-	return start, modeWidth, true
+	return start, seg.width, true
+}
+
+// modeZone 返回底部播放模式片段的位置；meta 被截断时返回 ok=false。
+func (m *Model) modeZone() (x, w int, ok bool) {
+	meta, mode, _ := m.nowPlayingMeta()
+	return m.metaZone(meta, mode)
+}
+
+// qualityZone 返回底部音质档位片段的位置；点击等同按 y 切换音质偏好。
+func (m *Model) qualityZone() (x, w int, ok bool) {
+	meta, _, quality := m.nowPlayingMeta()
+	return m.metaZone(meta, quality)
 }
 
 func (m *Model) hitAt(x, y int) (hitZone, bool) {
@@ -181,6 +193,9 @@ func (m *Model) hitZones() []hitZone {
 		zones = append(zones, hitZone{
 			target: hitPlayPause, x: 0, y: m.height - 3, w: visWidth(" " + m.playbackIcon() + " "), h: 1,
 		})
+		if x, w, ok := m.qualityZone(); ok {
+			zones = append(zones, hitZone{target: hitQuality, x: x, y: m.height - 3, w: w, h: 1})
+		}
 		if x, w, ok := m.modeZone(); ok {
 			zones = append(zones, hitZone{target: hitMode, x: x, y: m.height - 3, w: w, h: 1})
 		}

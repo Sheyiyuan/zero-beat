@@ -273,18 +273,24 @@ func (m *Model) playbackIcon() string {
 
 // nowPlayingMeta 拼出底部状态行右侧的元信息，并返回播放模式片段的位置。
 // modeStart/modeWidth 以显示宽度计；没有模式片段时返回 -1。
-func (m *Model) nowPlayingMeta() (text string, modeStart, modeWidth int) {
+// metaSegment 表示底部播放状态行里某个可点击片段的位置与宽度；start<0 表示不存在。
+type metaSegment struct {
+	start int
+	width int
+}
+
+func (m *Model) nowPlayingMeta() (text string, mode, quality metaSegment) {
 	volume := fmt.Sprintf("音量 %d%%", int(m.volume*100))
 	if m.muted {
 		volume = "静音"
 	}
-	quality := m.qualityLabel()
-	if quality == "—" {
-		quality = "音质 " + m.qualityPrefLabel()
+	qualityText := m.qualityLabel()
+	if qualityText == "—" {
+		qualityText = "音质 " + m.qualityPrefLabel()
 	}
 
 	parts := make([]string, 0, 8)
-	modeIdx := -1
+	modeIdx, qualityIdx := -1, -1
 	add := func(s string, isMode bool) {
 		if isMode {
 			modeIdx = len(parts)
@@ -294,7 +300,8 @@ func (m *Model) nowPlayingMeta() (text string, modeStart, modeWidth int) {
 	if m.current != nil && m.current.Source != "" {
 		add(m.sourceName(source.ID(m.current.Source)), false)
 	}
-	add(quality, false)
+	qualityIdx = len(parts)
+	add(qualityText, false)
 	add(m.mode.String(), true)
 	add(volume, false)
 	if tag := m.clipTag(); tag != "" {
@@ -312,21 +319,21 @@ func (m *Model) nowPlayingMeta() (text string, modeStart, modeWidth int) {
 		add("断点 "+formatDuration(m.resumeAt), false)
 	}
 
+	mode.start, quality.start = -1, -1
 	offset := 0
 	for i, part := range parts {
 		if i > 0 {
 			offset += 3
 		}
 		if i == modeIdx {
-			modeStart = offset
-			modeWidth = visWidth(part)
+			mode.start, mode.width = offset, visWidth(part)
+		}
+		if i == qualityIdx {
+			quality.start, quality.width = offset, visWidth(part)
 		}
 		offset += visWidth(part)
 	}
-	if modeIdx < 0 {
-		modeStart = -1
-	}
-	return strings.Join(parts, " · "), modeStart, modeWidth
+	return strings.Join(parts, " · "), mode, quality
 }
 
 func (m *Model) nowPlayingTitle() string {
