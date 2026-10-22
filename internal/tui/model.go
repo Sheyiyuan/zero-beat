@@ -841,14 +841,13 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		m.shutdown()
 		return m, tea.Quit
 	case key.Code == tea.KeyEscape:
+		// esc 只做「取消 / 返回曲库」；关于入口在页头 zero 与命令面板。
 		if m.view == viewMix {
 			m.mix = nil
 		}
 		if m.view != viewLibrary {
 			m.view = viewLibrary
-			return m, nil
 		}
-		m.aboutPopup = true
 		return m, nil
 	case m.match(keymap.Back, key):
 		if m.view == viewMix {

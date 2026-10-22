@@ -882,6 +882,51 @@ func TestLoginPageOOpensQRImage(t *testing.T) {
 	}
 }
 
+// TestPaletteAboutOpensPopup 验证命令面板里的「关于 zero-beat」入口：
+// 选中后关闭命令面板并弹出关于（替代已移除的「曲库 esc」入口）。
+func TestPaletteAboutOpensPopup(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 100, 30
+	m.openPalette()
+	items := m.filteredPaletteItems()
+	idx := -1
+	for i, item := range items {
+		if item.action == palAbout {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("命令面板缺少「关于」入口")
+	}
+	m.palette.idx = idx
+
+	updated, _ := m.Update(keyPress("", tea.KeyEnter))
+	mm := updated.(*Model)
+	if mm.palette != nil {
+		t.Fatal("选中「关于」后命令面板应关闭")
+	}
+	if !mm.aboutPopup {
+		t.Fatal("命令面板选「关于 zero-beat」应打开关于弹窗")
+	}
+	body := ansi.Strip(mm.View().Content)
+	for _, want := range []string{"关于", "版本", "AGPL-3.0", "github.com/Sheyiyuan/zero-beat"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("关于弹窗缺少 %q：\n%s", want, body)
+		}
+	}
+	assertFrame(t, mm.View().Content, 100, 30)
+
+	updated, _ = mm.Update(keyPress("", tea.KeyEscape))
+	mm = updated.(*Model)
+	if mm.aboutPopup {
+		t.Fatal("esc 应关闭关于弹窗")
+	}
+	if mm.view != viewLibrary {
+		t.Fatalf("关闭关于弹窗后应留在曲库，实际 %v", mm.view)
+	}
+}
+
 func TestLoginSourceUpDown(t *testing.T) {
 	b, n, reg := twoFakes()
 	b.logged, n.logged = false, false

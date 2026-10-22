@@ -28,6 +28,7 @@ const (
 	palUnlock     paletteAction = "unlock"
 	palAddCurrent paletteAction = "add-current"
 	palLocalFirst paletteAction = "local-first"
+	palAbout      paletteAction = "about"
 )
 
 type paletteItem struct {
@@ -57,6 +58,7 @@ func (m *Model) paletteItems() []paletteItem {
 		{palMix, "新建混合歌单", "引用多个歌单，自己加歌不影响源歌单"},
 		{palAddCurrent, "将正在播放加入歌单", "选择本地、混合或同源云端歌单"},
 		{palLocalFirst, "本地优先：" + localState, "已下载歌曲优先播放本地文件"},
+		{palAbout, "关于 zero-beat", "版本、许可证与项目地址"},
 	}
 	if m.sources != nil {
 		for _, src := range m.sources.All() {
@@ -200,6 +202,9 @@ func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 			state = "开启"
 		}
 		m.setNotice("本地优先已"+state+"（下一首生效）", false)
+		return nil
+	case palAbout:
+		m.aboutPopup = true
 		return nil
 	}
 	return nil

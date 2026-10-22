@@ -104,7 +104,7 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.Left), m.helpKeys(keymap.Right)), "切换歌单 / 歌曲操作焦点（曲库）")
 	add(m.helpKeys(keymap.QueueView), "打开播放列表")
 	add(m.helpKeys(keymap.LyricsView), "打开歌词")
-	add(m.helpKeys(keymap.New), "打开新建命令面板")
+	add(m.helpKeys(keymap.New), "打开命令面板（新建歌单 / 关于等）")
 	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
 	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/删除/查看缺失文件）")
 	add(joinKeys(m.helpKeys(keymap.MixEdit), m.helpKeys(keymap.Unlock)), "编辑混合歌单引用 / 解锁同步歌单（歌单焦点）")
@@ -129,7 +129,7 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.Login), m.helpKeys(keymap.Logout)), "登录管理 / 退出登录（登录页，W 仍兼容）")
 	add(m.helpKeys(keymap.LoginImage), "打开二维码图片（登录页）")
 	add(m.helpKeys(keymap.HelpPopup), "打开/关闭快捷键弹窗")
-	add(joinKeys(m.helpKeys(keymap.Back), "esc"), "返回曲库 / 取消输入；曲库首页打开关于")
+	add(joinKeys(m.helpKeys(keymap.Back), "esc"), "返回曲库 / 取消输入")
 	add(joinKeys(m.helpKeys(keymap.Quit), "ctrl+c"), "退出")
 
 	keyW := 12
