@@ -120,7 +120,7 @@ func (m *Model) helpLines() []string {
 	add("左键", "点击按钮、页头或列表项；双击歌曲播放；单击歌词跳到该句")
 	add("右键", "歌曲 / 歌单 / 歌词上下文菜单（菜单项旁标注快捷键）")
 	add("滚轮", "歌词页滚动；在底部播放状态行上调节音量")
-	add("歌词页", "↑/↓ 或滚轮滚动，5 秒无操作回到当前句")
+	add("歌词页", "↑/↓/滚轮移动焦点（居中）；enter 跳到该句，esc 回到正在播放的行")
 
 	section("其它")
 	add(m.helpKeys(keymap.LocalSearch), "搜索当前歌单；r 切到本地全部")
@@ -188,7 +188,7 @@ func (m *Model) hintLine() string {
 		if m.lyricOffsetMS != 0 {
 			source = " · 偏移 " + signedSeconds(m.lyricOffsetMS)
 		}
-		return m.firstKey(keymap.Download) + " 下载当前 · " + m.firstKey(keymap.PlayPause) + " 暂停 · " + m.firstKey(keymap.Previous) + " " + m.firstKey(keymap.Next) + " 切歌 · " + m.firstKey(keymap.HelpPopup) + " 帮助" + source
+		return "↑/↓ 选句 · enter 跳转 · esc 回播放 · " + m.firstKey(keymap.Download) + " 下载 · " + m.firstKey(keymap.PlayPause) + " 暂停 · " + m.firstKey(keymap.HelpPopup) + " 帮助" + source
 	case viewHelp:
 		return m.firstKey(keymap.HelpPopup) + " 弹窗 · esc 返回"
 	case viewLogin:

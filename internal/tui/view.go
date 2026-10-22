@@ -841,17 +841,21 @@ func (m *Model) lyricRows() ([]lyricRow, int) {
 }
 
 // lyricWindow 返回当前高度下可见的歌词行与起始下标。
+// 焦点行固定居中，两端允许负起点/超出（渲染成留白行），不再有视口偏移。
 func (m *Model) lyricWindow(h int) ([]lyricRow, int) {
-	rows, current := m.lyricRows()
+	rows, _ := m.lyricRows()
 	if len(rows) == 0 {
 		return nil, 0
 	}
-	start := current - h/2
-	if m.lyricScroll != 0 {
-		// 手动滚动时同样保留负起点（顶部留白），否则滚一次就会贴顶跳变。
-		start = clampInt(start+m.lyricScroll, min(0, start), max(0, len(rows)-h))
+	line := m.lyricFocusLine()
+	focusRow := 0
+	for i, row := range rows {
+		if row.lineIdx == line && !row.translation {
+			focusRow = i
+			break
+		}
 	}
-	return rows, start
+	return rows, focusRow - h/2
 }
 
 func (m *Model) renderLyricsView(h int) []string {
@@ -870,6 +874,10 @@ func (m *Model) renderLyricsView(h int) []string {
 	rows, start := m.lyricWindow(h)
 	progress := lyricProgress(m.lyricLines, m.lyricIdx,
 		int(m.position/time.Millisecond), int(m.duration/time.Millisecond))
+	focusLine := m.lyricFocusLine()
+	// 左侧留 2 列 gutter：▶ 标记正在播放的行，焦点行用蓝底。
+	const gutterW = 2
+	textW := max(1, m.width-gutterW)
 	for i := 0; i < h; i++ {
 		idx := start + i
 		if idx < 0 || idx >= len(rows) {
@@ -877,18 +885,27 @@ func (m *Model) renderLyricsView(h int) []string {
 			continue
 		}
 		row := rows[idx]
-		text := truncate(row.text, m.width)
+		text := truncate(row.text, textW)
+		focused := row.lineIdx == focusLine && !row.translation
+		playing := row.lineIdx == m.lyricIdx && !row.translation
+		gutter := "  "
+		if playing {
+			gutter = "▶ "
+		}
 		switch {
-		case row.lineIdx == m.lyricIdx && !row.translation:
-			out = append(out, centerText(gradientText(text, progress, curPalette.text, curPalette.accent), m.width))
-		case row.lineIdx == m.lyricIdx && row.translation:
-			out = append(out, centerText(st.muted.Render(text), m.width))
+		case playing:
+			// 蓝色渐变 + ▶ 表示正在播放；焦点与播放行重合时保持渐变（不做灰底）。
+			out = append(out, gutter+centerText(gradientText(text, progress, curPalette.text, curPalette.accent), textW))
+		case focused:
+			// 浏览态：中央焦点行用灰底，蓝色只留给「正在播放」。
+			line := padRight(gutter+centerText(text, textW), m.width)
+			out = append(out, st.playing.Render(line))
 		case row.translation:
-			out = append(out, centerText(st.dim.Render(text), m.width))
+			out = append(out, gutter+centerText(st.dim.Render(text), textW))
 		case row.lineIdx < m.lyricIdx:
-			out = append(out, centerText(st.dim.Render(text), m.width))
+			out = append(out, gutter+centerText(st.dim.Render(text), textW))
 		default:
-			out = append(out, centerText(st.muted.Render(text), m.width))
+			out = append(out, gutter+centerText(st.muted.Render(text), textW))
 		}
 	}
 	return out

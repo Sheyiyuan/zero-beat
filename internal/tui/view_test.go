@@ -22,6 +22,7 @@ func fixtureModel() *Model {
 		{ID: "bilibili:BV2:1", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星", Artist: "不才", Duration: 287},
 	}
 	m := &Model{
+		lyricFocus:  -1,
 		width:       100,
 		height:      30,
 		view:        viewLibrary,

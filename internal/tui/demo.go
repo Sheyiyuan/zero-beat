@@ -28,6 +28,7 @@ func RenderDemo(name string, width, height int) string {
 	}
 
 	m := &Model{
+		lyricFocus: -1,
 		sources: source.NewRegistry(
 			demoSource{id: source.Bilibili, name: "Bilibili", mark: "B", lyric: "B 站字幕", login: "B 站 App"},
 			demoSource{id: source.NetEase, name: "网易云", mark: "云", lyric: "网易云歌词", login: "网易云音乐 App"},

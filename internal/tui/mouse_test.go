@@ -231,7 +231,7 @@ func TestMouseRightClickPlaylistOpensContextMenu(t *testing.T) {
 	}
 }
 
-func TestMouseClickLyricSeeks(t *testing.T) {
+func TestMouseClickLyricFocusesAndDoubleClickSeeks(t *testing.T) {
 	m := fixtureModel()
 	m.pc = player.New(newMouseFakeEngine(audio.StatePlaying), nil)
 	m.position = 0
@@ -240,41 +240,40 @@ func TestMouseClickLyricSeeks(t *testing.T) {
 	m.lyricLines = []lyrics.Line{
 		{StartMS: 0, Text: "第一句"},
 		{StartMS: 5000, Text: "第二句"},
+		{StartMS: 9000, Text: "第三句"},
 	}
 	m.lyricIdx = 0
-	zone := findZone(t, m, hitLyricRow)
-	for _, z := range m.hitZones() {
-		if z.target == hitLyricRow && z.index == 1 {
-			zone = z
-			break
+	m.followLyricLine()
+
+	findLine := func(mm *Model, line int) hitZone {
+		t.Helper()
+		for _, z := range mm.hitZones() {
+			if z.target == hitLyricRow && z.index == line {
+				return z
+			}
 		}
+		t.Fatalf("未找到第 %d 句的命中区", line)
+		return hitZone{}
 	}
+
+	zone := findLine(m, 1)
+	// 单击：焦点移到第二句，但不跳转。
 	updated, _ := m.Update(tea.MouseClickMsg{X: 50, Y: zone.y, Button: tea.MouseLeft})
 	mm := updated.(*Model)
-	if mm.position != 5*time.Second {
-		t.Fatalf("单击歌词应跳到 5s，实际 %v", mm.position)
+	if mm.position != 0 {
+		t.Fatalf("单击歌词不应跳转，实际 %v", mm.position)
 	}
-}
-
-func TestMouseDoubleClickSongPlays(t *testing.T) {
-	m := fixtureModel()
-	m.pc = player.New(newMouseFakeEngine(audio.StatePlaying), nil)
-	var zone hitZone
-	for _, z := range m.hitZones() {
-		if z.target == hitLibrarySong && z.index == 1 {
-			zone = z
-			break
-		}
+	if mm.lyricFocus != 1 || !mm.lyricBrowsing() {
+		t.Fatalf("单击应把焦点移到第二句并进入浏览态，实际 focus=%d", mm.lyricFocus)
 	}
-	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 2, Y: zone.y, Button: tea.MouseLeft})
-	mm := updated.(*Model)
-	if mm.current == nil || mm.current.ID != m.songs[0].ID {
-		t.Fatal("第一次点击只应选中歌曲")
-	}
-	updated, _ = mm.Update(tea.MouseClickMsg{X: zone.x + 2, Y: zone.y, Button: tea.MouseLeft})
+	// 双击（同一屏幕位置）：提交第一次点中的焦点行并恢复跟随。
+	updated, _ = mm.Update(tea.MouseClickMsg{X: 50, Y: zone.y, Button: tea.MouseLeft})
 	mm = updated.(*Model)
-	if mm.current == nil || mm.current.ID != m.songs[1].ID {
-		t.Fatalf("双击歌曲应开始播放，实际 %+v", mm.current)
+	if mm.position.Milliseconds() != 5000 {
+		t.Fatalf("双击应跳到第二句 5s，实际 %v", mm.position)
+	}
+	if !mm.lyricFollow {
+		t.Fatal("双击跳转后应恢复跟随")
 	}
 }
 

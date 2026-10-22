@@ -139,7 +139,7 @@ func (m *Model) openLyricsMenu(line int, x, y int) {
 		{label: "下一首", hint: m.firstKey(keymap.Next), act: actNext},
 	}
 	if line >= 0 && line < len(m.lyricLines) {
-		items = append(items, menuItem{label: "跳到这句", hint: "双击", act: actLyricSeek})
+		items = append(items, menuItem{label: "跳到这句", hint: "enter / 双击", act: actLyricSeek})
 	}
 	items = append(items,
 		menuItem{label: "下载当前歌曲", hint: m.firstKey(keymap.Download), act: actDownload},

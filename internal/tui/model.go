@@ -161,12 +161,12 @@ type Model struct {
 
 	lyricBase     []lyrics.Line
 	lyricLines    []lyrics.Line
-	lyricIdx      int
+	lyricIdx      int  // 正在播放的歌词行
+	lyricFocus    int  // 中央焦点行（浏览时由用户移动；-1 表示跟随播放行）
+	lyricFollow   bool // 焦点是否跟随播放行
 	lyricOffsetMS int
 	lyricSource   string
 	lyricLoaded   bool
-	lyricScroll   int
-	lyricScrollAt time.Time
 	lrclib        *lrclib.Client
 
 	searchEditing bool
@@ -260,19 +260,21 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 		}
 	}
 	m := &Model{
-		ctx:        context.Background(),
-		sources:    sources,
-		store:      st,
-		engine:     engine,
-		quality:    source.QualityAuto,
-		keys:       keys,
-		volume:     0.8,
-		mode:       modeSequence,
-		state:      audio.StateIdle,
-		searchPage: 1,
-		lrclib:     lrclib.New(),
-		users:      map[source.ID]source.User{},
-		qrCache:    map[source.ID]*qrCacheEntry{},
+		ctx:         context.Background(),
+		sources:     sources,
+		store:       st,
+		engine:      engine,
+		quality:     source.QualityAuto,
+		keys:        keys,
+		lyricFocus:  -1,
+		lyricFollow: true,
+		volume:      0.8,
+		mode:        modeSequence,
+		state:       audio.StateIdle,
+		searchPage:  1,
+		lrclib:      lrclib.New(),
+		users:       map[source.ID]source.User{},
+		qrCache:     map[source.ID]*qrCacheEntry{},
 	}
 	if sources != nil {
 		for _, src := range sources.All() {
@@ -363,7 +365,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
 		}
 		m.advanceMarquee()
-		m.maybeResetLyricScroll(time.Now())
+		if m.lyricFollow {
+			m.lyricFocus = m.lyricIdx
+		}
 		if m.note.text != "" && time.Since(m.note.at) > 4*time.Second {
 			m.note = notice{}
 		}
@@ -579,6 +583,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lyricSource = msg.source
 		m.lyricLoaded = true
 		m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
+		m.followLyricLine()
 		if msg.err != nil && len(msg.lines) == 0 {
 			m.setNotice("歌词获取失败："+msg.err.Error(), true)
 		}
@@ -605,7 +610,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lyricLoaded = false
 			m.lyricLines = nil
 			m.lyricIdx = -1
-			m.resetLyricScroll()
+			m.followLyricLine()
 			if m.position > 0 {
 				m.setNotice(fmt.Sprintf("已恢复上次进度 %s · space 继续", formatDuration(m.position)), false)
 			} else {
@@ -802,7 +807,7 @@ func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Cl
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
-	m.resetLyricScroll()
+	m.followLyricLine()
 	quality := stream.Quality
 	if quality == "" {
 		quality = "未知音质"
@@ -843,6 +848,11 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		m.shutdown()
 		return m, tea.Quit
 	case key.Code == tea.KeyEscape:
+		// 歌词页浏览中：esc 先回到正在播放的那句，再按才返回曲库。
+		if m.view == viewLyrics && m.lyricBrowsing() {
+			m.followLyricLine()
+			return m, nil
+		}
 		// esc 只做「取消 / 返回曲库」；关于入口在页头 zero 与命令面板。
 		if m.view == viewMix {
 			m.mix = nil
@@ -1811,7 +1821,7 @@ func (m *Model) playSong(song store.Song) tea.Cmd {
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
-	m.resetLyricScroll()
+	m.followLyricLine()
 	cmd := m.playSongCmdAt(song, 0, 0)
 	m.persistQueue()
 	return cmd
@@ -2135,7 +2145,7 @@ func (m *Model) removeQueueItem() tea.Cmd {
 			m.lyricIdx = -1
 			m.lyricSource = ""
 			m.lyricLoaded = false
-			m.resetLyricScroll()
+			m.followLyricLine()
 			m.queueCursor = 0
 			m.setPlayingPlaylist("")
 			m.persistQueue()
@@ -2368,6 +2378,9 @@ func (m *Model) shiftLyrics(deltaMS int) tea.Cmd {
 	m.lyricOffsetMS = offset
 	m.lyricLines = lyrics.Clone(m.lyricBase, offset)
 	m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
+	if m.lyricFollow {
+		m.lyricFocus = m.lyricIdx
+	}
 	if m.current != nil {
 		m.service().SaveLyricOffset(m.current.ID, offset)
 	}

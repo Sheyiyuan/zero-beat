@@ -21,7 +21,8 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	zone, hit := m.hitAt(mouse.X, mouse.Y)
-	if !hit || !isSongRow(zone.target) {
+	// 只有可双击的行（歌曲行、歌词行）保留上一次点击用于双击判定。
+	if !hit || (!isSongRow(zone.target) && zone.target != hitLyricRow) {
 		m.lastClickAt = time.Time{}
 	}
 
@@ -75,7 +76,14 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		m.view = viewLyrics
 		return m, m.onViewChanged()
 	case hitLyricRow:
-		return m, m.seekLyric(zone)
+		// 单击只把焦点移到该行（不跳转）；双击同一屏幕位置才提交跳转。
+		// 单击后视口会重新居中，所以双击只比对屏幕坐标与时间，不比对行号——
+		// 第二次点击命中的行已经变了，要提交的是第一次点中的焦点行。
+		if m.isDoubleClickPos(mouse) {
+			return m, m.commitLyricFocus()
+		}
+		m.focusLyricLine(zone.index)
+		return m, nil
 	case hitLibrarySong, hitQueueSong, hitSearchResult, hitDownloadRow:
 		cmd := m.selectHit(zone)
 		if m.isDoubleClick(mouse, zone) {
@@ -92,6 +100,20 @@ func isSongRow(target hitTarget) bool {
 		return true
 	}
 	return false
+}
+
+// isDoubleClickPos 只按屏幕位置 + 时间判定双击（用于会重新居中的歌词页）。
+func (m *Model) isDoubleClickPos(mouse tea.Mouse) bool {
+	now := time.Now()
+	matched := !m.lastClickAt.IsZero() &&
+		now.Sub(m.lastClickAt) <= doubleClickWindow &&
+		mouse.X == m.lastClickX && mouse.Y == m.lastClickY
+	m.lastClickAt = now
+	m.lastClickX = mouse.X
+	m.lastClickY = mouse.Y
+	m.lastClickTarget = hitLyricRow
+	m.lastClickIndex = 0
+	return matched
 }
 
 func (m *Model) isDoubleClick(mouse tea.Mouse, zone hitZone) bool {
@@ -126,13 +148,6 @@ func (m *Model) playZone(zone hitZone) tea.Cmd {
 	case hitDownloadRow:
 		m.downloadIdx = zone.index
 		return m.playDownloadIndex(zone.index)
-	}
-	return nil
-}
-
-func (m *Model) seekLyric(zone hitZone) tea.Cmd {
-	if zone.index >= 0 && zone.index < len(m.lyricLines) {
-		return m.seekTo(time.Duration(m.lyricLines[zone.index].StartMS) * time.Millisecond)
 	}
 	return nil
 }
@@ -173,7 +188,7 @@ func (m *Model) handleMouseWheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.view == viewLyrics && mouse.Y >= 2 && mouse.Y < 2+m.bodyHeight() {
-		m.scrollLyrics(dir * 3)
+		m.moveLyricFocus(dir * 3)
 		return m, nil
 	}
 	if m.frameFits() && mouse.Y == m.height-3 {
