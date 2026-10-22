@@ -188,10 +188,8 @@ func (c *Controller) Seek(ctx context.Context, delta time.Duration, clip store.C
 		return SeekResult{Action: ToggleBusy}
 	}
 	target := c.state.Position + delta
-	var engineActive bool
 	if c.engine != nil && c.engine.State() != audio.StateIdle && c.engine.CurrentStream().URL != "" {
 		target = c.engine.Position() + delta
-		engineActive = true
 	}
 	if target < 0 {
 		target = 0
@@ -217,7 +215,6 @@ func (c *Controller) Seek(ctx context.Context, delta time.Duration, clip store.C
 			clamped = true
 		}
 	}
-	_ = engineActive
 	c.state.Position = target
 
 	if c.engine == nil || c.engine.State() == audio.StateIdle || c.engine.CurrentStream().URL == "" {

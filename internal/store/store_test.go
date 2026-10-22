@@ -45,6 +45,44 @@ func TestUpsertSongIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestUpsertSongKeepsBVIDWhenMissing 验证缺少 BVID 的更新不会清空旧行的 bvid；
+// B 站条目以 bvid 为主键来源，清空后无法再解析播放地址。
+func TestUpsertSongKeepsBVIDWhenMissing(t *testing.T) {
+	st := openTestStore(t)
+
+	first, err := st.UpsertSong(Song{Source: "bilibili", BVID: "BV1xx411c7mD", Page: 1, Title: "夜航星", Artist: "不才"})
+	if err != nil {
+		t.Fatalf("写入失败: %v", err)
+	}
+	if first.BVID != "BV1xx411c7mD" {
+		t.Fatalf("旧行 BVID 未落库: %q", first.BVID)
+	}
+
+	// 同 ID、但本次只有 remote_id 没有 bvid 的更新。
+	updated, err := st.UpsertSong(Song{Source: "bilibili", RemoteID: first.RemoteID, Page: 1, Title: "夜航星（新版）", Artist: "不才"})
+	if err != nil {
+		t.Fatalf("无 BVID 的更新失败: %v", err)
+	}
+	if updated.ID != first.ID {
+		t.Fatalf("应更新同一行: %s vs %s", updated.ID, first.ID)
+	}
+	if updated.BVID != "BV1xx411c7mD" {
+		t.Fatalf("无 BVID 的更新不应清空旧 bvid，实际 %q", updated.BVID)
+	}
+	if updated.Title != "夜航星（新版）" {
+		t.Fatalf("其他字段仍应更新: %q", updated.Title)
+	}
+
+	// 新行带了 BVID 时仍应覆盖旧值。
+	replaced, err := st.UpsertSong(Song{Source: "bilibili", RemoteID: first.RemoteID, BVID: "BV1xx411c7mE", Page: 1, Title: "夜航星（补）"})
+	if err != nil {
+		t.Fatalf("带 BVID 的更新失败: %v", err)
+	}
+	if replaced.BVID != "BV1xx411c7mE" {
+		t.Fatalf("带 BVID 的更新应覆盖旧值，实际 %q", replaced.BVID)
+	}
+}
+
 func TestPlaylistLifecycle(t *testing.T) {
 	st := openTestStore(t)
 

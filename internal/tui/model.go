@@ -755,7 +755,7 @@ func (m *Model) handleStream(msg streamMsg) (tea.Model, tea.Cmd) {
 		m.setNotice("解析播放地址失败："+res.Err.Error(), true)
 		return m, nil
 	}
-	return m, m.finishStart(res.Song, res.Stream, clip, preview)
+	return m, m.finishStart(res.Song, res.Stream, clip)
 }
 
 // playbackClip 返回当前曲目应使用的片段；编辑器打开时用整首预览。
@@ -791,11 +791,10 @@ func (m *Model) startStream(song store.Song, stream source.Stream, startAt time.
 		m.setError(res.Err)
 		return nil
 	}
-	return m.finishStart(res.Song, res.Stream, clip, preview)
+	return m.finishStart(res.Song, res.Stream, clip)
 }
 
-func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Clip, preview bool) tea.Cmd {
-	_ = preview
+func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Clip) tea.Cmd {
 	m.setActiveClip(song.ID, clip)
 	m.lyricBase = nil
 	m.lyricLines = nil

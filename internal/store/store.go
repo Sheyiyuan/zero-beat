@@ -319,7 +319,7 @@ ON CONFLICT(source, remote_id, page) DO UPDATE SET
 	album = excluded.album,
 	duration = excluded.duration,
 	cover = excluded.cover,
-	bvid = excluded.bvid,
+	bvid = CASE WHEN excluded.bvid <> '' THEN excluded.bvid ELSE songs.bvid END,
 	cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
 		song.ID, song.Source, song.RemoteID, song.BVID, song.Page, song.CID, song.Title,
 		song.Artist, song.Album, song.Duration, song.Cover, song.AddedAt.Unix())
@@ -966,7 +966,8 @@ INSERT INTO songs (id, source, remote_id, bvid, page, cid, title, artist, album,
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(source, remote_id, page) DO UPDATE SET
 	title = excluded.title, artist = excluded.artist, album = excluded.album,
-	duration = excluded.duration, cover = excluded.cover, bvid = excluded.bvid,
+	duration = excluded.duration, cover = excluded.cover,
+	bvid = CASE WHEN excluded.bvid <> '' THEN excluded.bvid ELSE songs.bvid END,
 	cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
 			song.ID, song.Source, song.RemoteID, song.BVID, song.Page, song.CID, song.Title,
 			song.Artist, song.Album, song.Duration, song.Cover, added.Unix()); err != nil {
