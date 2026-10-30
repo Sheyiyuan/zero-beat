@@ -52,6 +52,11 @@ func (m *Model) startSelectedDownload() tea.Cmd {
 	if m.view == viewLibrary && m.libraryFocus == focusPlaylists {
 		return m.startPlaylistDownload()
 	}
+	if m.view == viewLibrary && m.libraryFocus == focusSongs {
+		if songs := m.selectedSongs(); len(songs) > 0 {
+			return m.startSongsDownload(songs)
+		}
+	}
 	song, ok := m.selectedDownloadSong()
 	if !ok {
 		m.setNotice("当前页面没有选中项；按 w 下载正在播放", true)
@@ -143,18 +148,10 @@ func (m *Model) enqueueDownloadJob(raw store.Song, verb string, job downloader.J
 	return waitDownloadEventCmd(mgr)
 }
 
-func (m *Model) startPlaylistDownload() tea.Cmd {
-	if m.songsBusy {
-		m.setNotice("歌单载入中，稍后再试", false)
-		return nil
-	}
-	if len(m.songs) == 0 {
-		m.setNotice("这个歌单还是空的", false)
-		return nil
-	}
-	mgr := m.downloadManager()
-	added, skipped, downloaded := 0, 0, 0
-	for _, raw := range m.songs {
+// queueSongsForDownload 把歌曲加入下载管理器（不启动），返回统计。
+func (m *Model) queueSongsForDownload(songs []store.Song) (mgr *downloader.Manager, added, skipped, downloaded int) {
+	mgr = m.downloadManager()
+	for _, raw := range songs {
 		song := store.NormalizeSong(raw)
 		title := strings.TrimSpace(song.Title)
 		if title == "" {
@@ -174,6 +171,34 @@ func (m *Model) startPlaylistDownload() tea.Cmd {
 			skipped++
 		}
 	}
+	return mgr, added, skipped, downloaded
+}
+
+// downloadSkipReasons 生成「跳过 N 首已下载、N 首已在队列」的说明。
+func downloadSkipReasons(downloaded, skipped int) string {
+	var reasons []string
+	if downloaded > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d 首已下载", downloaded))
+	}
+	if skipped > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d 首已在队列或缺少音源 ID", skipped))
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+	return "（跳过 " + strings.Join(reasons, "、") + "）"
+}
+
+func (m *Model) startPlaylistDownload() tea.Cmd {
+	if m.songsBusy {
+		m.setNotice("歌单载入中，稍后再试", false)
+		return nil
+	}
+	if len(m.songs) == 0 {
+		m.setNotice("这个歌单还是空的", false)
+		return nil
+	}
+	mgr, added, skipped, downloaded := m.queueSongsForDownload(m.songs)
 	if added == 0 {
 		if downloaded > 0 {
 			m.setNotice(fmt.Sprintf("这个歌单的 %d 首都已下载，无需重复下载", downloaded), false)
@@ -183,18 +208,27 @@ func (m *Model) startPlaylistDownload() tea.Cmd {
 		return nil
 	}
 	mgr.Start()
-	msg := fmt.Sprintf("已加入歌单下载：%d 首", added)
-	if downloaded > 0 || skipped > 0 {
-		var reasons []string
-		if downloaded > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d 首已下载", downloaded))
-		}
-		if skipped > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d 首已在队列或缺少音源 ID", skipped))
-		}
-		msg += "（跳过 " + strings.Join(reasons, "、") + "）"
+	m.setNotice(fmt.Sprintf("已加入歌单下载：%d 首", added)+downloadSkipReasons(downloaded, skipped), false)
+	return waitDownloadEventCmd(mgr)
+}
+
+// startSongsDownload 下载当前选中的一批歌曲。
+func (m *Model) startSongsDownload(songs []store.Song) tea.Cmd {
+	if len(songs) == 0 {
+		m.setNotice("没有选中的歌曲", true)
+		return nil
 	}
-	m.setNotice(msg, false)
+	mgr, added, skipped, downloaded := m.queueSongsForDownload(songs)
+	if added == 0 {
+		if downloaded > 0 {
+			m.setNotice(fmt.Sprintf("选中的 %d 首都已下载，无需重复下载", downloaded), false)
+		} else {
+			m.setNotice("没有可新增的下载任务（已在队列或缺少音源 ID）", false)
+		}
+		return nil
+	}
+	mgr.Start()
+	m.setNotice(fmt.Sprintf("已加入下载：%d 首", added)+downloadSkipReasons(downloaded, skipped), false)
 	return waitDownloadEventCmd(mgr)
 }
 

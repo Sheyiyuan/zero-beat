@@ -490,6 +490,9 @@ func (m *Model) renderLibrary(h int) []string {
 	if p, ok := m.currentPlaylist(); ok && strings.TrimSpace(p.Title) != "" {
 		header = fmt.Sprintf(" %s · %d 首", p.Title, len(m.songs))
 	}
+	if n := m.selectionCount(); n > 0 {
+		header += fmt.Sprintf(" · 已选 %d 首", n)
+	}
 	if m.songsBusy {
 		header = " 载入中…"
 	}
@@ -541,6 +544,7 @@ func (m *Model) songRow(i, width int) string {
 	return m.renderSongRow(songRowSpec{
 		Playing:  playing,
 		Selected: selected,
+		Marked:   m.isSongSelected(s),
 		Tag:      m.sourceMark(source.ID(s.Source)),
 		Index:    i + 1,
 		Title:    s.Title,

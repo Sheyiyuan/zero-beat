@@ -132,6 +132,15 @@ func RenderDemo(name string, width, height int) string {
 	case "menu":
 		// 页头「曲库」下方的页面菜单（与点击页头页面名一致，9 项）。
 		m.openPageMenu(6, 2)
+	case "selection":
+		// 批量选择示例：本地歌单里勾选三首，底部提示切换成批量操作。
+		m.view = viewLibrary
+		m.libraryFocus = focusSongs
+		m.playlistIdx = 3
+		m.songIdx = 3
+		m.selPlaylistID = "local-default"
+		m.selAnchor = 1
+		m.selectionIDs = map[string]bool{"d2": true, "d3": true, "d4": true}
 	case "about":
 		m.aboutPopup = true
 	default:

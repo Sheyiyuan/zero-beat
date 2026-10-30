@@ -31,11 +31,13 @@ const (
 	actDownload
 	actRemove
 	actPlaylistPlay
+	actPlaylistRefresh
 	actPlaylistDownload
 	actPlaylistRename
 	actPlaylistMix
 	actPlaylistUnlock
 	actPlaylistDelete
+	actOpenPalette
 	actPlayPause
 	actPrevious
 	actNext
@@ -43,6 +45,8 @@ const (
 	actClip
 	actOffsetReset
 	actFolderAdd
+	actSelectToggle
+	actClearSelection
 )
 
 type menuItem struct {
@@ -66,6 +70,7 @@ type menuState struct {
 	song        store.Song
 	songIdx     int
 	origin      view
+	batch       bool // 歌曲批量选择菜单
 	playlist    store.Playlist
 	playlistIdx int
 	lyricLine   int
@@ -223,6 +228,9 @@ func (m *Model) applyMenu() (tea.Model, tea.Cmd) {
 func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd) {
 	switch item.act {
 	case actPlay:
+		if menu.batch {
+			return m, m.playSelectedSongs()
+		}
 		switch menu.origin {
 		case viewQueue:
 			return m, m.playQueueIndex(menu.songIdx)
@@ -238,10 +246,19 @@ func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd
 			return m, m.playPlaylistIndex(menu.songIdx)
 		}
 	case actPlayNext:
+		if menu.batch {
+			return m, m.insertSelectedNext()
+		}
 		return m, m.insertNext(menu.song)
 	case actEnqueue:
+		if menu.batch {
+			return m, m.enqueueSelectedSongs()
+		}
 		return m, m.enqueueSong(menu.song)
 	case actAddPlaylist:
+		if menu.batch {
+			return m, m.openAddSongsPicker(m.selectedSongs())
+		}
 		if menu.kind == menuLyrics {
 			if m.current != nil {
 				return m, m.openAddSongPicker(*m.current)
@@ -250,11 +267,18 @@ func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd
 		}
 		return m, m.openAddSongPicker(menu.song)
 	case actDownload:
+		if menu.batch {
+			return m, m.startSongsDownload(m.selectedSongs())
+		}
 		if menu.kind == menuLyrics {
 			return m, m.startCurrentDownload()
 		}
 		return m, m.enqueueDownload(menu.song, "开始下载：")
 	case actRemove:
+		if menu.batch {
+			m.libraryFocus = focusSongs
+			return m, m.removeSelected()
+		}
 		switch menu.origin {
 		case viewQueue:
 			m.queueCursor = menu.songIdx
@@ -264,8 +288,25 @@ func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd
 			return m, m.removeSelected()
 		}
 		return m, nil
+	case actSelectToggle:
+		m.libraryFocus = focusSongs
+		m.songIdx = menu.songIdx
+		m.toggleSelectionAt(menu.songIdx)
+		return m, nil
+	case actClearSelection:
+		m.clearSelection()
+		m.setNotice("已取消选择", false)
+		return m, nil
 	case actPlaylistPlay:
 		return m, m.playPlaylistFromMenu(menu.playlistIdx)
+	case actPlaylistRefresh:
+		if menu.playlist.ID == "" {
+			return m, nil
+		}
+		m.libraryFocus = focusPlaylists
+		m.playlistIdx = menu.playlistIdx
+		m.songsBusy = true
+		return m, m.loadSongsCmdFor(menu.playlist, true)
 	case actPlaylistDownload:
 		m.libraryFocus = focusPlaylists
 		m.playlistIdx = menu.playlistIdx

@@ -52,6 +52,8 @@ const (
 	PageUp           Action = "page_up"
 	PageDown         Action = "page_down"
 	PlaySelected     Action = "play_selected"
+	Select           Action = "select"
+	SelectAll        Action = "select_all"
 	Download         Action = "download"
 	DownloadSelected Action = "download_selected"
 	AddPlaylist      Action = "add_playlist"
@@ -116,6 +118,8 @@ var Defaults = map[Action][]string{
 	PageUp:           {"ctrl+u", "pgup"},
 	PageDown:         {"ctrl+d", "pgdown"},
 	PlaySelected:     {"n"},
+	Select:           {"z", "ctrl+space"},
+	SelectAll:        {"ctrl+a"},
 	Download:         {"w"},
 	DownloadSelected: {"W"},
 	AddPlaylist:      {"a"},

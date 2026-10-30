@@ -257,3 +257,40 @@ func TestResolvePrefersLocalDownload(t *testing.T) {
 		t.Fatalf("删除后应为空: %+v", entries)
 	}
 }
+
+// TestCreatePlaylistWithSongsKeepsOrder 验证批量建单/加歌按传入顺序落库，
+// 这条路径由曲库多选「加入歌单」直接使用。
+func TestCreatePlaylistWithSongsKeepsOrder(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+	songs := []store.Song{
+		{Source: "bilibili", BVID: "BV1", Page: 1, Title: "A"},
+		{Source: "bilibili", BVID: "BV2", Page: 1, Title: "B"},
+		{Source: "bilibili", BVID: "BV3", Page: 1, Title: "C"},
+	}
+
+	p, err := svc.CreatePlaylistWithSongs("批量建单", songs)
+	if err != nil {
+		t.Fatalf("批量建单失败: %v", err)
+	}
+	got, err := st.PlaylistSongs(p.ID)
+	if err != nil {
+		t.Fatalf("读歌单失败: %v", err)
+	}
+	if len(got) != len(songs) {
+		t.Fatalf("应写入 %d 首，实际 %d", len(songs), len(got))
+	}
+	for i, want := range songs {
+		if got[i].BVID != want.BVID {
+			t.Fatalf("第 %d 首顺序不符: %+v", i, got)
+		}
+	}
+
+	added, err := svc.AddSongsToPlaylist(p.ID, songs[:2])
+	if err != nil || added != 2 {
+		t.Fatalf("批量加歌失败: added=%d err=%v", added, err)
+	}
+	if got, _ = st.PlaylistSongs(p.ID); len(got) != 3 {
+		t.Fatalf("重复歌曲不应增加条目: %+v", got)
+	}
+}

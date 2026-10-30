@@ -17,11 +17,16 @@ func (s *Service) CreatePlaylist(title string) (store.Playlist, error) {
 
 // CreatePlaylistWithSong 新建本地歌单并把一首歌放进去。
 func (s *Service) CreatePlaylistWithSong(title string, song store.Song) (store.Playlist, error) {
+	return s.CreatePlaylistWithSongs(title, []store.Song{song})
+}
+
+// CreatePlaylistWithSongs 新建本地歌单并批量放入歌曲，保持传入顺序。
+func (s *Service) CreatePlaylistWithSongs(title string, songs []store.Song) (store.Playlist, error) {
 	p, err := s.CreatePlaylist(title)
 	if err != nil {
 		return store.Playlist{}, err
 	}
-	if err := s.AddSongToPlaylist(p.ID, song); err != nil {
+	if _, err := s.AddSongsToPlaylist(p.ID, songs); err != nil {
 		return store.Playlist{}, err
 	}
 	return p, nil
@@ -57,6 +62,19 @@ func (s *Service) AddSongToPlaylist(id string, song store.Song) error {
 		return fmt.Errorf("没有可用的存储")
 	}
 	return s.store.AddSongToPlaylist(id, store.NormalizeSong(song))
+}
+
+// AddSongsToPlaylist 按顺序把多首歌写入本地/混合歌单，返回成功写入的数量。
+// 遇到错误立即停止，已写入的歌曲保留（与逐首手动加入的语义一致）。
+func (s *Service) AddSongsToPlaylist(id string, songs []store.Song) (int, error) {
+	added := 0
+	for _, song := range songs {
+		if err := s.AddSongToPlaylist(id, song); err != nil {
+			return added, err
+		}
+		added++
+	}
+	return added, nil
 }
 
 // RemoveSongFromPlaylist 从歌单移除歌曲；远端歌单只写 exclusion。

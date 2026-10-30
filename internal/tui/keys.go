@@ -176,13 +176,18 @@ func (m *Model) hintLine() string {
 	case viewDownloads:
 		return "enter 播放 · " + m.firstKey(keymap.DownloadSelected) + " 重下 · x 取消 · X 全部取消 · " + m.firstKey(keymap.Remove) + " 移除记录 · " + m.firstKey(keymap.Delete) + " 删文件 · " + m.firstKey(keymap.LoginImage) + " 目录 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 	case viewLibrary:
+		if n := m.selectionCount(); n > 0 && m.libraryFocus == focusSongs {
+			return fmt.Sprintf("已选 %d 首 · enter 播放 · %s 加入歌单 · %s 下载 · %s 下一首 · %s 队列 · %s 移除 · esc 取消",
+				n, m.firstKey(keymap.AddPlaylist), m.firstKey(keymap.DownloadSelected),
+				m.firstKey(keymap.PlayNext), m.firstKey(keymap.Enqueue), m.firstKey(keymap.Remove))
+		}
 		if m.resumeAt > 0 && m.state == audio.StatePaused {
 			return "space 继续 · enter 播放 · H 帮助"
 		}
 		if m.libraryFocus == focusPlaylists {
-			return "↑/↓ 选歌单 · → 切到歌曲 · enter 播放歌单 · " + m.firstKey(keymap.DownloadSelected) + " 下载歌单 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
+			return "↑/↓ 选歌单 · " + m.firstKey(keymap.New) + " 新建歌单 · → 切到歌曲 · enter 播放歌单 · " + m.firstKey(keymap.DownloadSelected) + " 下载歌单 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 		}
-		return "↑/↓ 选歌曲 · ← 切到歌单 · enter 播放 · " + m.firstKey(keymap.Download) + " 下载当前 · " + m.firstKey(keymap.DownloadSelected) + " 下载选中 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
+		return "↑/↓ 选歌曲 · " + m.firstKey(keymap.Select) + " 标记 · " + m.firstKey(keymap.SelectAll) + " 全选 · ← 切到歌单 · enter 播放 · " + m.firstKey(keymap.Download) + " 下载当前 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 	case viewLyrics:
 		source := ""
 		if m.lyricOffsetMS != 0 {

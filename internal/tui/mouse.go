@@ -66,6 +66,31 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// 歌曲行支持修饰键多选：Ctrl+左键切换勾选，Shift+左键从上一个标记处连选。
+	if zone.target == hitLibrarySong {
+		switch {
+		case mouse.Mod&tea.ModCtrl != 0:
+			m.libraryFocus = focusSongs
+			m.songIdx = zone.index
+			m.toggleSelectionAt(zone.index)
+			m.resetMarquee()
+			m.lastClickAt = time.Time{}
+			return m, nil
+		case mouse.Mod&tea.ModShift != 0:
+			m.libraryFocus = focusSongs
+			from := m.songIdx
+			if m.selectionValid() && m.selAnchor >= 0 {
+				from = m.selAnchor
+			}
+			m.selectSongRange(from, zone.index)
+			m.songIdx = zone.index
+			m.resetMarquee()
+			m.reportSelection()
+			m.lastClickAt = time.Time{}
+			return m, nil
+		}
+	}
+
 	switch zone.target {
 	case hitPlayPause:
 		return m, m.togglePlayback()

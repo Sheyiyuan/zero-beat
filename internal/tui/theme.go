@@ -24,6 +24,8 @@ type palette struct {
 	selFg  color.Color
 	playBg color.Color
 	playFg color.Color
+	markBg color.Color
+	markFg color.Color
 }
 
 // 配色承接 v1 的 #66ccff，暗色终端下对比度足够。
@@ -39,6 +41,8 @@ var darkPalette = palette{
 	selFg:  lipgloss.Color("#10131a"),
 	playBg: lipgloss.Color("#3a3f4a"),
 	playFg: lipgloss.Color("#e6e9ef"),
+	markBg: lipgloss.Color("#1f4059"),
+	markFg: lipgloss.Color("#b9ecff"),
 }
 
 // 浅色终端用的配套色板；正文/强调色在白底上至少 4.5:1。
@@ -54,6 +58,8 @@ var lightPalette = palette{
 	selFg:  lipgloss.Color("#ffffff"),
 	playBg: lipgloss.Color("#eaeef2"),
 	playFg: lipgloss.Color("#24292f"),
+	markBg: lipgloss.Color("#dbeafe"),
+	markFg: lipgloss.Color("#0b4a8f"),
 }
 
 var curPalette = darkPalette
@@ -67,6 +73,7 @@ type styles struct {
 	dim      lipgloss.Style
 	selected lipgloss.Style
 	playing  lipgloss.Style
+	marked   lipgloss.Style
 	ok       lipgloss.Style
 	err      lipgloss.Style
 	warn     lipgloss.Style
@@ -81,6 +88,7 @@ func newStyles(p palette) styles {
 		dim:      lipgloss.NewStyle().Foreground(p.dim),
 		selected: lipgloss.NewStyle().Background(p.selBg).Foreground(p.selFg).Bold(true),
 		playing:  lipgloss.NewStyle().Background(p.playBg).Foreground(p.playFg),
+		marked:   lipgloss.NewStyle().Background(p.markBg).Foreground(p.markFg),
 		ok:       lipgloss.NewStyle().Foreground(p.ok),
 		err:      lipgloss.NewStyle().Foreground(p.err),
 		warn:     lipgloss.NewStyle().Foreground(p.warn),

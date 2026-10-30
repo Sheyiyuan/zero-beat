@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/sheyiyuan/zero-beat/internal/app"
@@ -60,6 +62,9 @@ func (m *Model) openSongMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	if zone.target == hitLibrarySong && m.isSongSelected(song) {
+		return m.openSongBatchMenu(zone, song, x, y)
+	}
 	cmd := m.selectHit(zone)
 	items := []menuItem{
 		{label: "播放", hint: "enter", act: actPlay},
@@ -73,11 +78,35 @@ func (m *Model) openSongMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 		items = append(items, menuItem{label: "从队列移除", hint: m.firstKey(keymap.Remove), act: actRemove})
 	case hitLibrarySong:
 		items = append(items, menuItem{label: "从歌单移除", hint: m.firstKey(keymap.Remove), act: actRemove})
+		items = append(items, menuItem{label: "标记 / 取消标记", hint: m.firstKey(keymap.Select), act: actSelectToggle})
 	}
 	menu := newMenu(menuSong, "歌曲 · "+song.Title, items, x, y, m.width)
 	menu.song = song
 	menu.songIdx = zone.index
 	menu.origin = origin
+	m.menu = menu
+	return m, cmd
+}
+
+// openSongBatchMenu 在已勾选的行上右键时打开批量菜单。
+func (m *Model) openSongBatchMenu(zone hitZone, song store.Song, x, y int) (tea.Model, tea.Cmd) {
+	cmd := m.selectHit(zone)
+	songs := m.selectedSongs()
+	n := len(songs)
+	items := []menuItem{
+		{label: fmt.Sprintf("播放选中（%d 首）", n), hint: "enter", act: actPlay},
+		{label: "下一首播放", hint: m.firstKey(keymap.PlayNext), act: actPlayNext},
+		{label: "加入队列末尾", hint: m.firstKey(keymap.Enqueue), act: actEnqueue},
+		{label: "加入歌单", hint: m.firstKey(keymap.AddPlaylist), act: actAddPlaylist},
+		{label: fmt.Sprintf("下载 %d 首", n), hint: m.firstKey(keymap.DownloadSelected), act: actDownload},
+		{label: fmt.Sprintf("从歌单移除 %d 首", n), hint: m.firstKey(keymap.Remove), act: actRemove},
+		{label: "取消选择", hint: "esc", act: actClearSelection},
+	}
+	menu := newMenu(menuSong, fmt.Sprintf("已选 %d 首", n), items, x, y, m.width)
+	menu.song = song
+	menu.songIdx = zone.index
+	menu.origin = viewLibrary
+	menu.batch = true
 	m.menu = menu
 	return m, cmd
 }

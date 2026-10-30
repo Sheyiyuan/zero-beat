@@ -184,6 +184,13 @@ func TestSongRowNarrowWidths(t *testing.T) {
 		playing := spec
 		playing.Playing = true
 		assertRowWidth(t, "播放歌曲行", m.renderSongRow(playing, width), width)
+		marked := spec
+		marked.Marked = true
+		assertRowWidth(t, "批量勾选歌曲行", m.renderSongRow(marked, width), width)
+		markedPlaying := spec
+		markedPlaying.Marked = true
+		markedPlaying.Playing = true
+		assertRowWidth(t, "勾选且播放的歌曲行", m.renderSongRow(markedPlaying, width), width)
 	}
 }
 

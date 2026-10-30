@@ -37,6 +37,7 @@ const (
 type songRowSpec struct {
 	Playing  bool   // 正在播放
 	Selected bool   // 光标（优先于 Playing）
+	Marked   bool   // 批量选择已勾选
 	Tag      string // "B" / "云" / "?"，渲染成 "[X]" 再补到 rowTagW
 	Index    int    // 1-based；<=0 时不渲染序号列
 	Title    string
@@ -61,7 +62,13 @@ func (m *Model) renderSongRow(s songRowSpec, width int) string {
 	}
 
 	marker := "  "
-	if s.Playing {
+	switch {
+	case s.Marked && s.Playing:
+		// 两列标记同时容纳「已勾选」和「正在播放」。
+		marker = "✓▶"
+	case s.Marked:
+		marker = "✓ "
+	case s.Playing:
 		marker = "▶ "
 	}
 	tagPlain := ""
@@ -202,6 +209,8 @@ func (m *Model) renderSongRow(s songRowSpec, width int) string {
 	switch {
 	case s.Selected:
 		return st.selected.Render(line)
+	case s.Marked:
+		return st.marked.Render(line)
 	case s.Playing:
 		return st.playing.Render(line)
 	}

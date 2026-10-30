@@ -133,6 +133,11 @@ type Model struct {
 	libraryFocus      libraryFocus
 	playingPlaylistID string
 
+	// 歌曲列表的批量选择：按歌曲 ID 记录，并绑定所属歌单。
+	selectionIDs  map[string]bool
+	selPlaylistID string
+	selAnchor     int
+
 	queue          []store.Song
 	queueIdx       int
 	queueCursor    int
@@ -228,7 +233,7 @@ type Model struct {
 	// pendingPlayPlaylist 为 true 时，当前歌单曲目载入完成后自动从头播放
 	// （右键菜单「播放歌单」在异步载入期间点下时会置位）。
 	pendingPlayPlaylist bool
-	pendingAddSong      *store.Song
+	pendingAddSongs     []store.Song
 	pendingDownloadID   string
 	helpOffset          int
 
@@ -274,6 +279,7 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 		keys:        keys,
 		lyricFocus:  -1,
 		lyricFollow: true,
+		selAnchor:   -1,
 		volume:      0.8,
 		mode:        modeSequence,
 		state:       audio.StateIdle,
@@ -396,6 +402,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setError(msg.err)
 			return m, nil
 		}
+		oldPlaylistID := m.currentPlaylistID()
 		m.playlists = msg.items
 		if m.pendingPlaylistID != "" {
 			for i, p := range m.playlists {
@@ -414,6 +421,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.playlistIdx < 0 {
 			m.playlistIdx = 0
 		}
+		if m.currentPlaylistID() != oldPlaylistID {
+			m.clearSelection()
+		}
 		if msg.warn != nil {
 			m.setNotice(msg.warn.Error(), true)
 		}
@@ -423,6 +433,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.songIdx = 0
 			m.songs = nil
 			m.songsBusy = false
+			m.clearSelection()
 			return m, nil
 		}
 		return m, m.loadSongsCmd(false)
@@ -443,6 +454,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.songIdx >= len(m.songs) {
 			m.songIdx = max(0, len(m.songs)-1)
 		}
+		m.pruneSelection()
 		if m.pendingPlayPlaylist {
 			m.pendingPlayPlaylist = false
 			if len(m.songs) == 0 {
@@ -475,7 +487,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.picker == nil || m.picker.mode != targetPickerAddSong {
 			return m, nil
 		}
-		if m.picker.song.Source != string(msg.source) {
+		if m.picker.commonSource() != string(msg.source) {
 			return m, nil
 		}
 		m.picker.remoteBusy = false
@@ -508,9 +520,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case playlistAddMsg:
-		if msg.err != nil {
+		if msg.err != nil && msg.count == 0 {
 			m.setError(fmt.Errorf("加入云端歌单失败（%s · %s）：%w", m.sourceName(source.ID(msg.target.Source)), msg.target.Title, msg.err))
 			return m, nil
+		}
+		suffix := ""
+		if msg.count > 1 {
+			suffix = fmt.Sprintf("（%d 首）", msg.count)
 		}
 		imported := false
 		for _, p := range m.playlists {
@@ -520,15 +536,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			imported = true
 			if m.currentPlaylistID() == p.ID {
 				m.songsBusy = true
-				m.setNotice("已加入云端歌单："+msg.target.Title, false)
+				if msg.err != nil {
+					m.setNotice(fmt.Sprintf("云端歌单已加入 %d 首，后续失败：%v", msg.count, msg.err), true)
+				} else {
+					m.setNotice("已加入云端歌单："+msg.target.Title+suffix, false)
+				}
 				return m, m.loadSongsCmdFor(p, true)
 			}
 			break
 		}
+		if msg.err != nil {
+			m.setNotice(fmt.Sprintf("云端歌单已加入 %d 首，后续失败：%v", msg.count, msg.err), true)
+			return m, nil
+		}
 		if imported {
-			m.setNotice("已加入云端歌单："+msg.target.Title, false)
+			m.setNotice("已加入云端歌单："+msg.target.Title+suffix, false)
 		} else {
-			m.setNotice("已加入云端歌单：「"+msg.target.Title+"」（按 f 可导入曲库）", false)
+			m.setNotice("已加入云端歌单：「"+msg.target.Title+"」"+suffix+"（按 f 可导入曲库）", false)
 		}
 		return m, nil
 
@@ -867,6 +891,12 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 			m.followLyricLine()
 			return m, nil
 		}
+		// 曲库里有批量选择时，esc 先取消选择，不直接离开页面。
+		if m.view == viewLibrary && m.hasSelection() {
+			m.clearSelection()
+			m.setNotice("已取消选择", false)
+			return m, nil
+		}
 		// esc 只做「取消 / 返回曲库」；关于入口在页头 zero 与命令面板。
 		if m.view == viewMix {
 			m.mix = nil
@@ -892,6 +922,10 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 			step = -1
 		}
 		return m.openPage(m.cyclePage(step))
+	case m.match(keymap.Select, key):
+		return m, m.handleSelectKey()
+	case m.match(keymap.SelectAll, key):
+		return m, m.handleSelectAllKey()
 	case key.Code == tea.KeySpace || key.Text == " ":
 		if m.view == viewMix {
 			return m.handleMixKey(key)
@@ -960,6 +994,11 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 		}
 		return m, m.openClipEditor()
 	case m.match(keymap.AddPlaylist, key):
+		if m.view == viewLibrary && m.libraryFocus == focusSongs {
+			if songs := m.selectedSongs(); len(songs) > 0 {
+				return m, m.openAddSongsPicker(songs)
+			}
+		}
 		if song, ok := m.songForPlaylistAdd(); ok {
 			return m, m.openAddSongPicker(song)
 		}
@@ -1233,15 +1272,24 @@ func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
 		if len(m.songs) == 0 {
 			return m, nil
 		}
+		if m.selectionCount() > 0 {
+			return m, m.playSelectedSongs()
+		}
 		return m, m.playPlaylistIndex(m.songIdx)
 	case m.match(keymap.Enqueue, key):
 		if m.libraryFocus == focusPlaylists {
 			return m, m.needSongFocus()
 		}
+		if m.selectionCount() > 0 {
+			return m, m.enqueueSelectedSongs()
+		}
 		return m, m.enqueueCurrent()
 	case m.match(keymap.PlayNext, key):
 		if m.libraryFocus == focusPlaylists {
 			return m, m.needSongFocus()
+		}
+		if m.selectionCount() > 0 {
+			return m, m.insertSelectedNext()
 		}
 		if m.songIdx >= 0 && m.songIdx < len(m.songs) {
 			return m, m.insertNext(m.songs[m.songIdx])
@@ -2066,6 +2114,7 @@ func (m *Model) selectPlaylist(idx int) tea.Cmd {
 	if idx == m.playlistIdx {
 		return nil
 	}
+	m.clearSelection()
 	m.playlistIdx = idx
 	m.songIdx = 0
 	m.songs = nil
@@ -2159,25 +2208,54 @@ func (m *Model) playQueueItemNext() tea.Cmd {
 }
 
 func (m *Model) removeSelected() tea.Cmd {
-	if m.songIdx < 0 || m.songIdx >= len(m.songs) {
+	songs := m.batchSongs()
+	if len(songs) == 0 {
 		return nil
 	}
 	p, ok := m.currentPlaylist()
 	if !ok {
 		return nil
 	}
-	song := store.NormalizeSong(m.songs[m.songIdx])
-	if err := m.service().RemoveSongFromPlaylist(p.ID, song.ID); err != nil {
-		m.setError(err)
+	removed := 0
+	for _, raw := range songs {
+		song := store.NormalizeSong(raw)
+		if err := m.service().RemoveSongFromPlaylist(p.ID, song.ID); err != nil {
+			m.setError(err)
+			if removed == 0 {
+				return nil
+			}
+			break
+		}
+		removed++
+	}
+	if removed == 0 {
 		return nil
 	}
+	m.clearSelection()
+	if removed < len(songs) {
+		// 中途失败时保留错误提示，已移除的部分照常刷新出来。
+		return m.loadSongsCmd(false)
+	}
+	firstTitle := store.NormalizeSong(songs[0]).Title
 	switch p.Kind {
 	case "remote":
-		m.setNotice("已从本地缓存移除（刷新同步会恢复）："+song.Title, false)
+		if removed == 1 {
+			m.setNotice("已从本地缓存移除（刷新同步会恢复）："+firstTitle, false)
+		} else {
+			m.setNotice(fmt.Sprintf("已从本地缓存移除 %d 首（刷新同步会恢复）", removed), false)
+		}
 	case "mixin":
-		m.setNotice("已在本歌单隐藏（源歌单不变）："+song.Title, false)
+		if removed == 1 {
+			m.setNotice("已在本歌单隐藏（源歌单不变）："+firstTitle, false)
+		} else {
+			m.setNotice(fmt.Sprintf("已在本歌单隐藏 %d 首（源歌单不变）", removed), false)
+		}
 	default:
-		m.setNotice("已从歌单移除："+song.Title, false)
+		if removed == 1 {
+			m.setNotice("已从歌单移除："+firstTitle, false)
+		} else {
+			m.setNotice(fmt.Sprintf("已从歌单移除：%d 首", removed), false)
+		}
 	}
 	return m.loadSongsCmd(false)
 }
@@ -2308,7 +2386,7 @@ func (m *Model) handlePromptKey(key tea.Key) (tea.Model, tea.Cmd) {
 	case tea.KeyEscape:
 		m.prompt = promptNone
 		m.promptInput = ""
-		m.pendingAddSong = nil
+		m.pendingAddSongs = nil
 		m.pendingDownloadID = ""
 		return m, nil
 	case tea.KeyEnter:
@@ -2347,8 +2425,9 @@ func (m *Model) commitPrompt() tea.Cmd {
 		}
 		var p store.Playlist
 		var err error
-		if m.pendingAddSong != nil {
-			p, err = m.service().CreatePlaylistWithSong(input, *m.pendingAddSong)
+		pending := m.pendingAddSongs
+		if len(pending) > 0 {
+			p, err = m.service().CreatePlaylistWithSongs(input, pending)
 		} else {
 			p, err = m.service().CreatePlaylist(input)
 		}
@@ -2357,11 +2436,15 @@ func (m *Model) commitPrompt() tea.Cmd {
 			return nil
 		}
 		m.pendingPlaylistID = p.ID
-		if m.pendingAddSong != nil {
-			m.pendingAddSong = nil
-			m.setNotice("已新建歌单并加入："+p.Title, false)
+		if len(pending) > 0 {
+			m.pendingAddSongs = nil
+			if len(pending) == 1 {
+				m.setNotice("已新建本地歌单并加入："+p.Title, false)
+			} else {
+				m.setNotice(fmt.Sprintf("已新建本地歌单并加入：%s（%d 首）", p.Title, len(pending)), false)
+			}
 		} else {
-			m.setNotice("已新建歌单："+p.Title, false)
+			m.setNotice("已新建本地歌单："+p.Title, false)
 		}
 		return m.loadLocalPlaylistsCmd()
 	case promptRenamePlaylist:
