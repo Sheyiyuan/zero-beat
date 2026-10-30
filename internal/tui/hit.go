@@ -13,6 +13,7 @@ const (
 	hitQuality
 	hitLyricStrip
 	hitLibraryPlaylist
+	hitLibraryPlaylistPane
 	hitLibrarySong
 	hitQueueSong
 	hitSearchResult
@@ -135,6 +136,13 @@ func (m *Model) hitZones() []hitZone {
 		for i := start; i < end; i++ {
 			zones = append(zones, hitZone{
 				target: hitLibrarySong, x: x, y: top + 1 + (i - start), w: m.width - x, h: 1, index: i,
+			})
+		}
+		if sideW > 0 {
+			// 歌单栏的标题与空白区域放在行命中区之后，右键可新建/同步歌单；
+			// 点在具体歌单行上时仍优先命中该行。
+			zones = append(zones, hitZone{
+				target: hitLibraryPlaylistPane, x: 0, y: top, w: sideW, h: bodyH,
 			})
 		}
 	case viewSearch:

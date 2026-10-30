@@ -54,7 +54,7 @@ func (m *Model) paletteItems() []paletteItem {
 		localState = "关闭"
 	}
 	items := []paletteItem{
-		{palBlank, "新建空白歌单", "创建一个本地歌单"},
+		{palBlank, "新建本地歌单", "创建一个只存在于本机的歌单"},
 		{palMix, "新建混合歌单", "引用多个歌单，自己加歌不影响源歌单"},
 		{palAddCurrent, "将正在播放加入歌单", "选择本地、混合或同源云端歌单"},
 		{palLocalFirst, "本地优先：" + localState, "已下载歌曲优先播放本地文件"},
@@ -231,7 +231,7 @@ func (m *Model) commitPaletteName() tea.Cmd {
 		}
 		m.pendingPlaylistID = p.ID
 		m.view = viewLibrary
-		m.setNotice("已新建歌单："+p.Title, false)
+		m.setNotice("已新建本地歌单："+p.Title, false)
 		return m.loadLocalPlaylistsCmd()
 	case palNewMix:
 		if m.mix == nil {

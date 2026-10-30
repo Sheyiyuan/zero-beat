@@ -1298,6 +1298,8 @@ func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
 	case m.match(keymap.Folders, key):
 		return m, m.openFolders(m.defaultFolderSource())
 	case m.match(keymap.New, key):
+		// N 始终打开命令面板（新建本地/混合歌单、同步、解锁、关于），
+		// 不随焦点改变行为；歌单栏右键也走同一个面板。
 		m.openPalette()
 		return m, nil
 	case m.match(keymap.MixEdit, key):
@@ -1339,8 +1341,8 @@ func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
 			m.setNotice("没有选中的歌单", true)
 			return m, nil
 		}
-		if p.Kind != "local" && p.Kind != "mixin" {
-			m.setNotice("远端同步歌单不能在这里删除", true)
+		if app.IsDailyPlaylist(p) {
+			m.setNotice("每日推荐入口不能删除", true)
 			return m, nil
 		}
 		m.beginPrompt(promptDeletePlaylist)
@@ -2463,10 +2465,11 @@ func (m *Model) commitPrompt() tea.Cmd {
 		if !ok {
 			return nil
 		}
-		if err := m.service().DeletePlaylist(p.ID); err != nil {
+		if err := m.service().DeletePlaylistCompletely(p.ID); err != nil {
 			m.setError(err)
 			return nil
 		}
+		m.clearSelection()
 		m.pendingPlaylistID = ""
 		m.setNotice("已删除歌单："+p.Title, false)
 		return m.loadLocalPlaylistsCmd()
@@ -2652,11 +2655,14 @@ func (m *Model) qualityPrefLabel() string {
 func (m *Model) promptLine() string {
 	switch m.prompt {
 	case promptNewPlaylist:
-		return "新建歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
+		return "新建本地歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
 	case promptRenamePlaylist:
 		return "重命名歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
 	case promptDeletePlaylist:
 		if p, ok := m.currentPlaylist(); ok {
+			if p.Kind == "remote" {
+				return "删除歌单「" + p.Title + "」的本地副本？停止同步，平台上的歌单不受影响 · enter 确认 · esc 取消"
+			}
 			return "删除歌单「" + p.Title + "」及其条目？enter 确认 · esc 取消"
 		}
 		return "删除歌单？enter 确认 · esc 取消"

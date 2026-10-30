@@ -48,6 +48,35 @@ func (s *Service) DeletePlaylist(id string) error {
 	return s.store.DeletePlaylist(id)
 }
 
+// DeletePlaylistCompletely 删除歌单及其本地条目；同步歌单会先解除同步再删除本地副本，
+// 平台上的远端歌单不受影响。每日推荐入口由系统维护，不允许删除。
+func (s *Service) DeletePlaylistCompletely(id string) error {
+	if s.store == nil {
+		return fmt.Errorf("没有可用的存储")
+	}
+	p, err := s.store.Playlist(id)
+	if err != nil {
+		return err
+	}
+	if p.Kind == "remote" {
+		if IsDailyPlaylist(p) {
+			return fmt.Errorf("每日推荐入口不能删除")
+		}
+		// 先确认没有被混合歌单引用，避免解锁成功但删除失败留下半套状态。
+		referenced, err := s.store.IsReferenced(id)
+		if err != nil {
+			return err
+		}
+		if referenced {
+			return fmt.Errorf("歌单被其他混合歌单引用，先移除引用")
+		}
+		if _, err := s.store.UnlockPlaylist(id); err != nil {
+			return err
+		}
+	}
+	return s.store.DeletePlaylist(id)
+}
+
 // UnlockPlaylist 把同步歌单解锁为本地歌单，保留曲目并停止远端同步。
 func (s *Service) UnlockPlaylist(id string) (store.Playlist, error) {
 	if s.store == nil {

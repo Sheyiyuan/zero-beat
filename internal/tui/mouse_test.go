@@ -570,3 +570,297 @@ func TestQualityZoneHiddenWhenMetaTruncated(t *testing.T) {
 		t.Fatal("meta 被截断时不应有音质命中区")
 	}
 }
+
+// TestMouseWheelScrollsHelpPopup 回归：H 快捷键弹窗属于 hardModal，
+// 滚轮曾在硬模态判断处被直接吞掉，表现为帮助内容怎么滚都不动。
+func TestMouseWheelScrollsHelpPopup(t *testing.T) {
+	m := fixtureModel()
+	m.helpPopup = true
+
+	updated, _ := m.Update(tea.MouseWheelMsg{X: 10, Y: 5, Button: tea.MouseWheelDown})
+	mm := updated.(*Model)
+	if mm.helpPopupOffset != 3 {
+		t.Fatalf("弹窗内滚轮下滚应滚动三行，实际 %d", mm.helpPopupOffset)
+	}
+	updated, _ = mm.Update(tea.MouseWheelMsg{X: 10, Y: 5, Button: tea.MouseWheelUp})
+	mm = updated.(*Model)
+	if mm.helpPopupOffset != 0 {
+		t.Fatalf("弹窗内滚轮上滚应回到顶部，实际 %d", mm.helpPopupOffset)
+	}
+	if mm.view != viewLibrary {
+		t.Fatalf("弹窗内滚动不应切换页面，实际 %v", mm.view)
+	}
+}
+
+// TestMouseWheelScrollsHelpPage 验证整页帮助的滚轮仍然可用。
+func TestMouseWheelScrollsHelpPage(t *testing.T) {
+	m := fixtureModel()
+	m.view = viewHelp
+
+	updated, _ := m.Update(tea.MouseWheelMsg{X: 10, Y: 5, Button: tea.MouseWheelDown})
+	mm := updated.(*Model)
+	if mm.helpOffset != 3 {
+		t.Fatalf("帮助页滚轮下滚应滚动三行，实际 %d", mm.helpOffset)
+	}
+	updated, _ = mm.Update(tea.MouseWheelMsg{X: 10, Y: 5, Button: tea.MouseWheelUp})
+	mm = updated.(*Model)
+	if mm.helpOffset != 0 {
+		t.Fatalf("帮助页滚轮上滚应回到顶部，实际 %d", mm.helpOffset)
+	}
+}
+
+// TestHelpWheelSharesScrollWithKeys 验证滚轮与键盘滚动走同一份 offset 和边界：
+// 滚到底后按 ↑ 必须从同一边界回退，而不是从另一套状态起算。
+func TestHelpWheelSharesScrollWithKeys(t *testing.T) {
+	m := fixtureModel()
+	m.helpPopup = true
+	maxOffset := max(0, len(m.helpContentLines())-m.helpPopupContentHeight())
+	if maxOffset == 0 {
+		t.Fatal("测试窗口下帮助内容应超出一屏")
+	}
+
+	for i := 0; i < maxOffset; i++ {
+		updated, _ := m.Update(tea.MouseWheelMsg{X: 10, Y: 5, Button: tea.MouseWheelDown})
+		m = updated.(*Model)
+	}
+	if m.helpPopupOffset != maxOffset {
+		t.Fatalf("滚轮应停在弹窗底部 %d，实际 %d", maxOffset, m.helpPopupOffset)
+	}
+
+	updated, _ := m.Update(keyPress("", tea.KeyUp))
+	m = updated.(*Model)
+	if m.helpPopupOffset != maxOffset-1 {
+		t.Fatalf("到底后按 ↑ 应回退一行，实际 %d", m.helpPopupOffset)
+	}
+
+	updated, _ = m.Update(keyPress("", tea.KeyPgDown))
+	m = updated.(*Model)
+	if m.helpPopupOffset != maxOffset {
+		t.Fatalf("到底后按 PgDn 应停在同一底部 %d，实际 %d", maxOffset, m.helpPopupOffset)
+	}
+
+	// 整页帮助走同一个入口：键盘与滚轮共用边界。
+	m = fixtureModel()
+	m.view = viewHelp
+	pageMax := max(0, len(m.helpContentLines())-m.helpViewport())
+	m.helpOffset = pageMax
+	updated, _ = m.Update(keyPress("", tea.KeyUp))
+	mm := updated.(*Model)
+	if mm.helpOffset != pageMax-1 {
+		t.Fatalf("帮助页到底后按 ↑ 应回退一行到 %d，实际 %d", pageMax-1, mm.helpOffset)
+	}
+}
+
+// playlistZone 取歌单栏里第 index 个歌单的命中区。
+func playlistZone(t *testing.T, m *Model, index int) hitZone {
+	t.Helper()
+	for _, z := range m.hitZones() {
+		if z.target == hitLibraryPlaylist && z.index == index {
+			return z
+		}
+	}
+	t.Fatalf("未找到第 %d 个歌单的命中区", index)
+	return hitZone{}
+}
+
+// menuHasAct 判断右键菜单里是否有某个动作。
+func menuHasAct(menu *menuState, act menuAct) bool {
+	if menu == nil {
+		return false
+	}
+	for _, item := range menu.items {
+		if item.act == act {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPlaylistMenuHasDeleteForLocalAndSynced 验证右键歌单菜单始终有删除入口：
+// 本地/混合歌单直接删，同步歌单删除的是本地副本；每日推荐入口不可删。
+func TestPlaylistMenuHasDeleteForLocalAndSynced(t *testing.T) {
+	m := fixtureModel()
+	zone := playlistZone(t, m, 1) // 本地歌单
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseRight})
+	mm := updated.(*Model)
+	if !menuHasAct(mm.menu, actPlaylistDelete) {
+		t.Fatalf("本地歌单右键菜单缺少「删除歌单」: %+v", mm.menu)
+	}
+
+	m = fixtureModel()
+	zone = playlistZone(t, m, 0) // bili-fav-1，同步歌单
+	updated, _ = m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseRight})
+	mm = updated.(*Model)
+	if !menuHasAct(mm.menu, actPlaylistDelete) {
+		t.Fatalf("同步歌单右键菜单缺少「删除歌单」: %+v", mm.menu)
+	}
+
+	m = fixtureModel()
+	m.playlists = append(m.playlists, store.Playlist{
+		ID: "bilibili-daily", Source: "bilibili", Title: "每日推荐", Kind: "remote", RemoteID: "daily",
+	})
+	zone = playlistZone(t, m, len(m.playlists)-1)
+	updated, _ = m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseRight})
+	mm = updated.(*Model)
+	if menuHasAct(mm.menu, actPlaylistDelete) {
+		t.Fatalf("每日推荐入口不应提供删除项: %+v", mm.menu)
+	}
+}
+
+// TestPlaylistMenuHasSyncRefresh 验证歌单右键菜单有刷新入口：
+// 远端/混合是同步刷新，本地是刷新列表；执行后走 force 重新加载。
+func TestPlaylistMenuHasSyncRefresh(t *testing.T) {
+	cases := []struct {
+		name  string
+		index int
+		label string
+	}{
+		{"同步歌单", 0, "同步刷新"},
+		{"本地歌单", 1, "刷新"},
+	}
+	for _, c := range cases {
+		m := fixtureModel()
+		zone := playlistZone(t, m, c.index)
+		updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseRight})
+		mm := updated.(*Model)
+		itemIdx := -1
+		for i, item := range mm.menu.items {
+			if item.act == actPlaylistRefresh {
+				itemIdx = i
+			}
+		}
+		if itemIdx < 0 {
+			t.Fatalf("%s 右键菜单缺少刷新项: %+v", c.name, mm.menu)
+		}
+		if got := mm.menu.items[itemIdx].label; got != c.label {
+			t.Fatalf("%s 刷新项文案应为 %q，实际 %q", c.name, c.label, got)
+		}
+		if hint := mm.menu.items[itemIdx].hint; hint != mm.firstKey(keymap.Refresh) {
+			t.Fatalf("%s 刷新项应提示 %q，实际 %q", c.name, mm.firstKey(keymap.Refresh), hint)
+		}
+
+		mm.menu.idx = itemIdx
+		updated, cmd := mm.applyMenu()
+		mm = updated.(*Model)
+		if cmd == nil || !mm.songsBusy {
+			t.Fatalf("%s 执行同步刷新应重新载入曲目: busy=%v cmd=%v", c.name, mm.songsBusy, cmd)
+		}
+	}
+
+	// 混合歌单刷新的是引用的远端歌单。
+	m := fixtureModel()
+	m.playlists = append(m.playlists, store.Playlist{ID: "mix-1", Title: "混合", Kind: "mixin"})
+	zone := playlistZone(t, m, len(m.playlists)-1)
+	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseRight})
+	mm := updated.(*Model)
+	found := false
+	for _, item := range mm.menu.items {
+		if item.act == actPlaylistRefresh {
+			found = true
+			if item.label != "同步刷新引用" {
+				t.Fatalf("混合歌单刷新项文案应说明刷新引用，实际 %q", item.label)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("混合歌单右键菜单缺少刷新项: %+v", mm.menu)
+	}
+}
+
+// TestPlaylistPaneMenuHasCurrentRefresh 验证歌单栏空白处右键也能刷新当前歌单。
+func TestPlaylistPaneMenuHasCurrentRefresh(t *testing.T) {
+	m := fixtureModel()
+	m.libraryFocus = focusPlaylists
+	m.playlistIdx = 0 // 同步歌单
+	updated, _ := m.openPlaylistListMenu(4, 5)
+	mm := updated.(*Model)
+	itemIdx := -1
+	for i, item := range mm.menu.items {
+		if item.act == actPlaylistRefresh {
+			itemIdx = i
+		}
+	}
+	if itemIdx < 0 {
+		t.Fatalf("歌单列表菜单缺少刷新当前歌单: %+v", mm.menu)
+	}
+	if got := mm.menu.items[itemIdx].label; got != "同步刷新当前歌单" {
+		t.Fatalf("同步歌单的刷新项文案不符，实际 %q", got)
+	}
+	mm.menu.idx = itemIdx
+	updated, cmd := mm.applyMenu()
+	mm = updated.(*Model)
+	if cmd == nil || !mm.songsBusy {
+		t.Fatalf("刷新当前歌单应重新载入曲目: busy=%v cmd=%v", mm.songsBusy, cmd)
+	}
+}
+
+// TestPlaylistPaneRightClickOpensSamePaletteAsN 验证歌单栏右键的「新建 / 导入歌单…」
+// 与键盘 N 走同一个命令面板，不再另开一套直接建单流程。
+func TestPlaylistPaneRightClickOpensSamePaletteAsN(t *testing.T) {
+	m := fixtureModel()
+	pane := hitZone{}
+	found := false
+	for _, z := range m.hitZones() {
+		if z.target == hitLibraryPlaylistPane {
+			pane, found = z, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("歌单栏应注册空白区命中")
+	}
+
+	// 点空白处（歌单行下方）不应误选某个歌单。
+	before := m.playlistIdx
+	updated, _ := m.Update(tea.MouseClickMsg{X: pane.x + 1, Y: pane.y + pane.h - 1, Button: tea.MouseRight})
+	mm := updated.(*Model)
+	if mm.menu == nil || mm.menu.kind != menuPlaylist {
+		t.Fatalf("右键歌单栏空白处应打开列表菜单，实际 %+v", mm.menu)
+	}
+	if mm.libraryFocus != focusPlaylists {
+		t.Fatal("右键歌单栏应把焦点切到歌单列表")
+	}
+	if mm.playlistIdx != before {
+		t.Fatalf("点空白处不应改选歌单: %d -> %d", before, mm.playlistIdx)
+	}
+	if !menuHasAct(mm.menu, actOpenPalette) {
+		t.Fatalf("列表菜单的新建/导入应走命令面板: %+v", mm.menu)
+	}
+	itemIdx := -1
+	for i, item := range mm.menu.items {
+		if item.act == actOpenPalette {
+			itemIdx = i
+		}
+	}
+	if hint := mm.menu.items[itemIdx].hint; hint != mm.firstKey(keymap.New) {
+		t.Fatalf("新建/导入应提示 %q，实际 %q", mm.firstKey(keymap.New), hint)
+	}
+
+	mm.menu.idx = itemIdx
+	updated, _ = mm.applyMenu()
+	mm = updated.(*Model)
+	if mm.palette == nil {
+		t.Fatal("选择新建/导入后应打开命令面板")
+	}
+	if mm.prompt != promptNone {
+		t.Fatalf("不应直接进入新建输入态，实际 %v", mm.prompt)
+	}
+
+	// 和键盘 N 打开的面板完全一致。
+	m2 := fixtureModel()
+	updated, _ = m2.Update(keyPress("N", 'N'))
+	m2 = updated.(*Model)
+	if m2.palette == nil {
+		t.Fatal("N 应打开命令面板")
+	}
+	fromMenu := mm.paletteItems()
+	fromKey := m2.paletteItems()
+	if len(fromMenu) != len(fromKey) {
+		t.Fatalf("右键与 N 的面板项数不同: %d vs %d", len(fromMenu), len(fromKey))
+	}
+	for i := range fromMenu {
+		if fromMenu[i] != fromKey[i] {
+			t.Fatalf("右键与 N 的面板项不一致: %+v vs %+v", fromMenu[i], fromKey[i])
+		}
+	}
+}

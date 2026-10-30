@@ -310,6 +310,71 @@ func TestDeleteDefaultLocalPlaylistIsAllowed(t *testing.T) {
 	}
 }
 
+// TestDeleteSyncedPlaylistDeletesLocalCopy 验证同步歌单也能删除，
+// 但确认文案要讲清楚只删本地副本；每日推荐入口则明确拒绝。
+func TestDeleteSyncedPlaylistDeletesLocalCopy(t *testing.T) {
+	m := fixtureModel()
+	m.view = viewLibrary
+	m.libraryFocus = focusPlaylists
+	m.playlistIdx = 0 // bili-fav-1，同步歌单
+	updated, _ := m.Update(keyPress("D", 'D'))
+	mm := updated.(*Model)
+	if mm.prompt != promptDeletePlaylist {
+		t.Fatalf("同步歌单应进入删除确认，实际 prompt=%v note=%q", mm.prompt, mm.note.text)
+	}
+	if !strings.Contains(mm.promptLine(), "本地副本") || !strings.Contains(mm.promptLine(), "平台") {
+		t.Fatalf("同步歌单的确认文案应说明只删本地副本，实际 %q", mm.promptLine())
+	}
+
+	m = fixtureModel()
+	m.view = viewLibrary
+	m.libraryFocus = focusPlaylists
+	m.playlists = append(m.playlists, store.Playlist{
+		ID: "bilibili-daily", Source: "bilibili", Title: "每日推荐", Kind: "remote", RemoteID: "daily",
+	})
+	m.playlistIdx = len(m.playlists) - 1
+	updated, _ = m.Update(keyPress("D", 'D'))
+	mm = updated.(*Model)
+	if mm.prompt != promptNone {
+		t.Fatalf("每日推荐入口不应进入删除确认，实际 %v", mm.prompt)
+	}
+	if !strings.Contains(mm.note.text, "每日推荐") {
+		t.Fatalf("应提示每日推荐不能删除，实际 %q", mm.note.text)
+	}
+}
+
+// TestNewKeyOpensSamePaletteRegardlessOfFocus 验证 N 不随焦点改变行为：
+// 歌曲焦点和歌单列表焦点都打开同一个命令面板，新建歌单也从面板里选。
+func TestNewKeyOpensSamePaletteRegardlessOfFocus(t *testing.T) {
+	for _, focus := range []libraryFocus{focusSongs, focusPlaylists} {
+		m := fixtureModel()
+		m.view = viewLibrary
+		m.libraryFocus = focus
+		updated, _ := m.Update(keyPress("N", 'N'))
+		mm := updated.(*Model)
+		if mm.palette == nil {
+			t.Fatalf("focus=%v 时 N 应打开命令面板", focus)
+		}
+		if mm.prompt != promptNone {
+			t.Fatalf("focus=%v 时 N 不应擅自进入新建输入，实际 prompt=%v", focus, mm.prompt)
+		}
+		items := mm.paletteItems()
+		if len(items) == 0 || items[0].label != "新建本地歌单" {
+			t.Fatalf("命令面板第一项应为「新建本地歌单」，实际 %+v", items)
+		}
+		// 面板里同时提供混合歌单入口，和歌单栏右键菜单保持一致。
+		foundMix := false
+		for _, item := range items {
+			if item.label == "新建混合歌单" {
+				foundMix = true
+			}
+		}
+		if !foundMix {
+			t.Fatalf("命令面板应同时提供「新建混合歌单」: %+v", items)
+		}
+	}
+}
+
 func TestDefaultLocalPlaylistIsCreatedOnlyOnce(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "default-once.db"))
 	if err != nil {
@@ -391,7 +456,7 @@ func TestPromptAndMutedFrames(t *testing.T) {
 	if !strings.Contains(body, "静音") {
 		t.Fatal("播放条应显示静音")
 	}
-	if !strings.Contains(body, "新建歌单：通勤") {
+	if !strings.Contains(body, "新建本地歌单：通勤") {
 		t.Fatal("底部应显示新建歌单输入")
 	}
 }

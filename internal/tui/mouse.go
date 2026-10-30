@@ -187,6 +187,8 @@ func (m *Model) handleRightClick(mouse tea.Mouse, zone hitZone, hit bool) (tea.M
 	switch zone.target {
 	case hitLibraryPlaylist:
 		return m.openPlaylistMenu(zone, mouse.X, mouse.Y)
+	case hitLibraryPlaylistPane:
+		return m.openPlaylistListMenu(mouse.X, mouse.Y)
 	case hitFolderRow:
 		return m.openFolderMenu(zone, mouse.X, mouse.Y)
 	case hitLibrarySong, hitQueueSong, hitSearchResult, hitDownloadRow:

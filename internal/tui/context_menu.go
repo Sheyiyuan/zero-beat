@@ -15,6 +15,8 @@ func (m *Model) selectHit(zone hitZone) tea.Cmd {
 	case hitLibraryPlaylist:
 		m.libraryFocus = focusPlaylists
 		return m.selectPlaylist(zone.index)
+	case hitLibraryPlaylistPane:
+		m.libraryFocus = focusPlaylists
 	case hitLibrarySong:
 		m.libraryFocus = focusSongs
 		m.songIdx = zone.index
@@ -119,8 +121,16 @@ func (m *Model) openPlaylistMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 	cmd := m.selectHit(zone)
 	items := []menuItem{
 		{label: "播放歌单", hint: "enter", act: actPlaylistPlay},
-		{label: "下载整个歌单", hint: m.firstKey(keymap.DownloadSelected), act: actPlaylistDownload},
 	}
+	switch p.Kind {
+	case "remote":
+		items = append(items, menuItem{label: "同步刷新", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
+	case "mixin":
+		items = append(items, menuItem{label: "同步刷新引用", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
+	default:
+		items = append(items, menuItem{label: "刷新", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
+	}
+	items = append(items, menuItem{label: "下载整个歌单", hint: m.firstKey(keymap.DownloadSelected), act: actPlaylistDownload})
 	switch p.Kind {
 	case "mixin":
 		items = append(items,
@@ -135,7 +145,10 @@ func (m *Model) openPlaylistMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 		)
 	case "remote":
 		if !app.IsDailyPlaylist(p) {
-			items = append(items, menuItem{label: "解锁为本地歌单", hint: m.firstKey(keymap.Unlock), act: actPlaylistUnlock})
+			items = append(items,
+				menuItem{label: "解锁为本地歌单", hint: m.firstKey(keymap.Unlock), act: actPlaylistUnlock},
+				menuItem{label: "删除歌单", hint: m.firstKey(keymap.Delete), act: actPlaylistDelete},
+			)
 		}
 	}
 	menu := newMenu(menuPlaylist, "歌单 · "+p.Title, items, x, y, m.width)
@@ -143,6 +156,29 @@ func (m *Model) openPlaylistMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 	menu.playlistIdx = zone.index
 	m.menu = menu
 	return m, cmd
+}
+
+// openPlaylistListMenu 在歌单栏的标题或空白处右键时打开列表级菜单：
+// 可以刷新当前歌单；新建/导入统一走命令面板，和键盘 N 的行为保持一致。
+func (m *Model) openPlaylistListMenu(x, y int) (tea.Model, tea.Cmd) {
+	m.libraryFocus = focusPlaylists
+	current, hasCurrent := m.currentPlaylist()
+	items := make([]menuItem, 0, 2)
+	if hasCurrent {
+		label := "刷新当前歌单"
+		if current.Kind == "remote" || current.Kind == "mixin" {
+			label = "同步刷新当前歌单"
+		}
+		items = append(items, menuItem{label: label, hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
+	}
+	items = append(items, menuItem{label: "新建 / 导入歌单…", hint: m.firstKey(keymap.New), act: actOpenPalette})
+	menu := newMenu(menuPlaylist, "歌单列表", items, x, y, m.width)
+	if hasCurrent {
+		menu.playlist = current
+		menu.playlistIdx = m.playlistIdx
+	}
+	m.menu = menu
+	return m, nil
 }
 
 func (m *Model) openFolderMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {

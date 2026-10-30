@@ -197,6 +197,53 @@ func TestPlaylistOpsAndQueueSave(t *testing.T) {
 	}
 }
 
+// TestDeletePlaylistCompletely 验证同步歌单可以删除本地副本（先解锁再删），
+// 每日推荐入口与被混合歌单引用的歌单则拒绝删除，且不能留下半套状态。
+func TestDeletePlaylistCompletely(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+
+	remote, err := st.EnsurePlaylist(store.Playlist{
+		ID: "fake-fav-1", Source: "fake", Title: "收藏", Kind: "remote", RemoteID: "1",
+	})
+	if err != nil {
+		t.Fatalf("建同步歌单失败: %v", err)
+	}
+	if err := svc.DeletePlaylistCompletely(remote.ID); err != nil {
+		t.Fatalf("删除同步歌单失败: %v", err)
+	}
+	if _, err := st.Playlist(remote.ID); err == nil {
+		t.Fatal("同步歌单删除后不应还能读到")
+	}
+
+	daily, err := st.EnsurePlaylist(store.Playlist{
+		ID: DailyPlaylistID("fake"), Source: "fake", Title: "每日推荐", Kind: "remote", RemoteID: "daily",
+	})
+	if err != nil {
+		t.Fatalf("建每日推荐失败: %v", err)
+	}
+	if err := svc.DeletePlaylistCompletely(daily.ID); err == nil {
+		t.Fatal("每日推荐入口不应允许删除")
+	}
+
+	remote, err = st.EnsurePlaylist(store.Playlist{
+		ID: "fake-fav-2", Source: "fake", Title: "收藏 2", Kind: "remote", RemoteID: "2",
+	})
+	if err != nil {
+		t.Fatalf("建同步歌单失败: %v", err)
+	}
+	if _, err := st.CreateMixin("混合", []string{remote.ID}); err != nil {
+		t.Fatalf("建混合歌单失败: %v", err)
+	}
+	if err := svc.DeletePlaylistCompletely(remote.ID); err == nil {
+		t.Fatal("被混合歌单引用的歌单应拒绝删除")
+	}
+	p, err := st.Playlist(remote.ID)
+	if err != nil || p.Kind != "remote" {
+		t.Fatalf("删除失败后不应把歌单解锁成半套状态: %+v err=%v", p, err)
+	}
+}
+
 func TestResolvePrefersLocalDownload(t *testing.T) {
 	st := openTestStore(t)
 	remote := source.Stream{URL: "https://example.invalid/remote.flac", Quality: "无损"}

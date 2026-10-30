@@ -679,7 +679,7 @@ func TestPaletteOverlayAndCreateBlank(t *testing.T) {
 	m.openPalette()
 	frame := m.View().Content
 	body := ansi.Strip(frame)
-	for _, want := range []string{"新建空白歌单", "同步 Bilibili 歌单/收藏夹", "新建混合歌单", "╭"} {
+	for _, want := range []string{"新建本地歌单", "同步 Bilibili 歌单/收藏夹", "新建混合歌单", "╭"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("命令面板缺少 %q：\n%s", want, body)
 		}

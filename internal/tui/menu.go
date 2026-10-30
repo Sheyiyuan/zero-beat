@@ -334,11 +334,15 @@ func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd
 	case actPlaylistDelete:
 		m.libraryFocus = focusPlaylists
 		m.playlistIdx = menu.playlistIdx
-		if menu.playlist.Kind == "local" || menu.playlist.Kind == "mixin" {
-			m.beginPrompt(promptDeletePlaylist)
-		} else {
-			m.setNotice("远端同步歌单不能在这里删除", true)
+		if app.IsDailyPlaylist(menu.playlist) {
+			m.setNotice("每日推荐入口不能删除", true)
+			return m, nil
 		}
+		m.beginPrompt(promptDeletePlaylist)
+		return m, nil
+	case actOpenPalette:
+		// 右键里的新建/导入和键盘 N 走同一个入口，不另开一套直接建单流程。
+		m.openPalette()
 		return m, nil
 	case actPlayPause:
 		return m, m.togglePlayback()
