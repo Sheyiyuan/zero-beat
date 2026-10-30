@@ -3,7 +3,7 @@
 #
 # 用法:
 #   sh install.sh
-#   sh install.sh --version v0.4.1
+#   sh install.sh --version v0.5.1
 #   sh install.sh --prefix /usr/local
 #   sh install.sh --bin-dir "$HOME/bin"
 #   sh install.sh --no-path          # 不自动修改 shell 配置
