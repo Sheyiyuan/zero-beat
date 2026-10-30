@@ -198,13 +198,11 @@ func (m *Model) handleRightClick(mouse tea.Mouse, zone hitZone, hit bool) (tea.M
 	return m, nil
 }
 
-// handleMouseWheel 在播放状态行上滚动调节音量；其他位置不拦截滚轮。
+// handleMouseWheel 把滚轮换算成滚动方向后交给各视图；帮助滚动与键盘共用同一入口。
+// 底部播放状态行保留滚轮调音量。
 func (m *Model) handleMouseWheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	if m.menu != nil {
 		return m.handleMenuClick(mouse)
-	}
-	if m.hardModal() || m.searchEditing {
-		return m, nil
 	}
 	dir := 0
 	switch mouse.Button {
@@ -213,6 +211,15 @@ func (m *Model) handleMouseWheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	case tea.MouseWheelDown:
 		dir = 1
 	default:
+		return m, nil
+	}
+	// 帮助弹窗在最上层；它属于 hardModal，必须在这里先接管，
+	// 否则滚轮会被下面的「弹层不响应鼠标」直接吞掉。
+	if m.helpPopup {
+		m.scrollHelp(dir * 3)
+		return m, nil
+	}
+	if m.hardModal() || m.searchEditing {
 		return m, nil
 	}
 	if m.view == viewLyrics && mouse.Y >= 2 && mouse.Y < 2+m.bodyHeight() {
@@ -249,7 +256,7 @@ func (m *Model) handleMouseWheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	case viewFolders:
 		m.folderIdx = clampInt(m.folderIdx+step, 0, max(0, len(m.folderItems)-1))
 	case viewHelp:
-		m.helpOffset = clampInt(m.helpOffset+step, 0, max(0, len(m.helpLines())-m.helpViewport()))
+		m.scrollHelp(step)
 	}
 	return m, nil
 }

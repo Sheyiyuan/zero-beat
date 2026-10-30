@@ -1162,7 +1162,7 @@ func (m *Model) pageMove(delta int) tea.Cmd {
 	case viewDownloads:
 		m.downloadIdx = clampInt(m.downloadIdx+delta*page, 0, max(0, len(m.downloadItems)-1))
 	case viewHelp:
-		m.helpOffset = clampInt(m.helpOffset+delta*page, 0, max(0, len(m.helpLines())-m.helpViewport()))
+		m.scrollHelp(delta * page)
 	}
 	return nil
 }
@@ -1180,7 +1180,7 @@ func (m *Model) moveTop() {
 	case viewDownloads:
 		m.downloadIdx = 0
 	case viewHelp:
-		m.helpOffset = 0
+		m.scrollHelpToTop()
 	}
 }
 
@@ -1197,7 +1197,7 @@ func (m *Model) moveBottom() {
 	case viewDownloads:
 		m.downloadIdx = max(0, len(m.downloadItems)-1)
 	case viewHelp:
-		m.helpOffset = max(0, len(m.helpLines())-m.helpViewport())
+		m.scrollHelpToBottom()
 	}
 }
 
@@ -1781,40 +1781,35 @@ func (m *Model) addSelectedFolder() tea.Cmd {
 	return m.loadLocalPlaylistsCmd()
 }
 
-// handleHelpKey 处理帮助页滚动。
+// handleHelpKey 处理帮助页滚动；直接复用弹窗的滚动入口，保证两种帮助一致。
 func (m *Model) handleHelpKey(key tea.Key) (tea.Model, tea.Cmd) {
-	maxOffset := len(m.helpLines()) - m.helpViewport()
-	if maxOffset < 0 {
-		maxOffset = 0
-	}
 	switch {
 	case m.match(keymap.Up, key):
-		if m.helpOffset > 0 {
-			m.helpOffset--
-		}
+		m.scrollHelp(-1)
 		return m, nil
 	case m.match(keymap.Down, key):
-		if m.helpOffset < maxOffset {
-			m.helpOffset++
-		}
+		m.scrollHelp(1)
+		return m, nil
+	case m.match(keymap.PageUp, key):
+		m.scrollHelp(-m.helpViewport())
+		return m, nil
+	case m.match(keymap.PageDown, key):
+		m.scrollHelp(m.helpViewport())
 		return m, nil
 	case m.match(keymap.Top, key):
-		m.helpOffset = 0
+		m.scrollHelpToTop()
 		return m, nil
 	case m.match(keymap.Bottom, key):
-		m.helpOffset = maxOffset
+		m.scrollHelpToBottom()
 		return m, nil
 	}
 	return m.handleCommonPlaybackKey(key)
 }
 
 // helpViewport 返回帮助页可见行数，与 render() 的正文高度保持一致。
+// 直接复用 bodyHeight，底部出现歌词条/下载进度行时也能正确计算边界。
 func (m *Model) helpViewport() int {
-	h := m.height - 6
-	if h < 3 {
-		h = 3
-	}
-	return h
+	return m.bodyHeight()
 }
 
 // ---- 动作 ----

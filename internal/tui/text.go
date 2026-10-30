@@ -34,8 +34,15 @@ func padRight(s string, w int) string {
 	return s + strings.Repeat(" ", gap)
 }
 
-// wrapText 按显示宽度把纯文本拆成多行；优先在空格或「·」处断行，
-// 避免把中文/按键提示从中间硬切开。
+// 换行避头尾用到的字符集：收尾标点不落在行首，起始括号不落在行尾。
+const (
+	wrapClosers    = "）】》」』，。；、：！？"
+	wrapOpeners    = "（【《「『"
+	wrapBreakAfter = "，。；、：！？/"
+)
+
+// wrapText 按显示宽度把纯文本拆成多行；优先在空格、「·」或中文标点处断行，
+// 并做最基本的避头尾：行首不留收尾标点，行尾不留起始括号。
 func wrapText(s string, width int) []string {
 	if s == "" {
 		return nil
@@ -60,12 +67,46 @@ func wrapText(s string, width int) []string {
 			cut = 1
 		}
 		if cut < len(rest) {
-			for i := cut - 1; i > 0; i-- {
-				if rest[i] == ' ' || rest[i] == '·' {
-					cut = i + 1
-					break
+			// 断点按类型区分门槛：空格/「·」离行尾太远宁可硬切，
+			// 免得中文说明被一个早出现的分隔符挤成只剩几个字的短行；
+			// 标点和括号本身就是语义断点，可以更早一些。
+			minFill := width * 2 / 3
+			minPunctFill := width / 2
+			minOpenFill := width / 3
+			best := 0
+			fill := 0
+			for i := 0; i < cut; i++ {
+				fill += visWidth(string(rest[i]))
+				switch {
+				case rest[i] == ' ' || rest[i] == '·':
+					if fill >= minFill {
+						best = i + 1
+					}
+				case strings.ContainsRune(wrapBreakAfter, rest[i]):
+					if fill >= minPunctFill {
+						best = i + 1
+					}
+				case strings.ContainsRune(wrapOpeners, rest[i]):
+					// 起始括号留在下一行开头，不挂在行尾。
+					if fill >= minOpenFill {
+						best = i
+					}
 				}
 			}
+			if best > 0 {
+				cut = best
+			}
+		}
+		// 避头尾：能塞下就把行首的收尾标点拉回本行，否则连前一个字一起下移。
+		if cut > 1 && cut < len(rest) && strings.ContainsRune(wrapClosers, rest[cut]) {
+			if visWidth(string(rest[:cut+1])) <= width {
+				cut++
+			} else {
+				cut--
+			}
+		}
+		if cut > 1 && strings.ContainsRune(wrapOpeners, rest[cut-1]) {
+			cut--
 		}
 		if line := strings.TrimRight(string(rest[:cut]), " "); line != "" {
 			out = append(out, line)

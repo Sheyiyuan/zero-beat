@@ -822,11 +822,62 @@ func TestMixinAndUnlockKeys(t *testing.T) {
 func TestHelpLinesKeepLongKeyCombo(t *testing.T) {
 	m := fixtureModel()
 	m.view = viewHelp
-	body := ansi.Strip(strings.Join(m.helpLines(), "\n"))
+	body := ansi.Strip(strings.Join(m.helpLines(m.width), "\n"))
 	if !strings.Contains(body, "ctrl+u / PgUp / ctrl+d") {
 		t.Fatalf("帮助页应完整显示翻页按键组合，实际：\n%s", body)
 	}
 	assertFrame(t, m.View().Content, 100, 30)
+}
+
+// TestHelpLinesWrapInsteadOfTruncating 验证帮助正文按可用宽度自动换行：
+// 每行都不超过宽度、不再出现省略号，长说明的结尾也完整保留（含窄终端竖排）。
+func TestHelpLinesWrapInsteadOfTruncating(t *testing.T) {
+	for _, width := range []int{100, 72, 48, 40} {
+		m := fixtureModel()
+		m.width = width
+		m.view = viewHelp
+		lines := m.helpLines(width)
+		for i, line := range lines {
+			if w := visWidth(line); w > width {
+				t.Fatalf("width=%d 第 %d 行超宽（%d）：%q", width, i, w, ansi.Strip(line))
+			}
+		}
+		body := ansi.Strip(strings.Join(lines, "\n"))
+		if strings.Contains(body, "…") {
+			t.Fatalf("width=%d 帮助正文不应靠省略号截断：\n%s", width, body)
+		}
+		compact := strings.NewReplacer("\n", "", " ", "").Replace(body)
+		if !strings.Contains(compact, "查看缺失文件") {
+			t.Fatalf("width=%d 长说明被截断，缺少结尾：\n%s", width, body)
+		}
+		assertFrame(t, m.View().Content, width, 30)
+	}
+}
+
+// TestHelpPopupWrapsInsideBox 验证窄窗口下快捷键弹窗正文换行后仍贴合边框，
+// 不再把弹窗撑成整屏宽度。
+func TestHelpPopupWrapsInsideBox(t *testing.T) {
+	m := fixtureModel()
+	m.width, m.height = 72, 30
+	m.helpPopup = true
+	boxW := m.helpPopupBoxWidth()
+
+	check := func(label string) {
+		t.Helper()
+		for i, line := range m.helpPopupLines() {
+			if w := visWidth(line); w != boxW {
+				t.Fatalf("%s：弹窗第 %d 行宽度应为 %d，实际 %d：%q", label, i, boxW, w, ansi.Strip(line))
+			}
+		}
+		assertFrame(t, m.View().Content, m.width, m.height)
+	}
+	check("顶部")
+
+	m.helpPopupOffset = 1 << 20
+	check("底部")
+	if !strings.Contains(ansi.Strip(m.View().Content), "配置文件") {
+		t.Fatal("弹窗滚到底部应能看到结尾说明")
+	}
 }
 
 func TestHelpPopupAndAccountHint(t *testing.T) {

@@ -69,11 +69,13 @@ type helpRow struct {
 	desc    string
 }
 
-// helpLines 返回帮助页的完整内容；由 renderHelp 按窗口裁剪。
+// helpLines 按给定正文宽度返回帮助内容，超宽说明自动换行；
+// 由 renderHelp（整页）与 helpPopupLines（弹窗）按各自的宽度调用。
 //
-// 先收集再渲染：按键列宽按最长组合自适应（下限 12、上限 26），
-// 避免「ctrl+u / PgUp / ctrl+d / PgDn」这类组合被固定列宽截断。
-func (m *Model) helpLines() []string {
+// 按键列宽按最长组合自适应（下限 12、上限 26），说明列至少保留 16 列；
+// 窄终端放不下两列时改成「按键一行、说明缩进换行」的竖排，
+// 保证任何宽度下都不会把文字截成省略号。
+func (m *Model) helpLines(width int) []string {
 	var rows []helpRow
 	add := func(keys, desc string) {
 		rows = append(rows, helpRow{keys: keys, desc: desc})
@@ -104,22 +106,23 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.Left), m.helpKeys(keymap.Right)), "切换歌单 / 歌曲操作焦点（曲库）")
 	add(m.helpKeys(keymap.QueueView), "打开播放列表")
 	add(m.helpKeys(keymap.LyricsView), "打开歌词")
-	add(m.helpKeys(keymap.New), "打开命令面板（新建歌单 / 关于等）")
+	add(m.helpKeys(keymap.New), "打开命令面板（新建本地/混合歌单、同步、解锁、关于）")
 	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
 	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/取消/删除/查看缺失文件）")
 	add(joinKeys(m.helpKeys(keymap.MixEdit), m.helpKeys(keymap.Unlock)), "编辑混合歌单引用 / 解锁同步歌单（歌单焦点）")
 	add(m.helpKeys(keymap.MergePlaylist), "把当前歌单以引用混入混合歌单（曲库）")
-	add(joinKeys(m.helpKeys(keymap.PlayNext), m.helpKeys(keymap.Enqueue)), "插到下一首播放 / 追加到队列末尾（歌曲焦点）")
-	add(joinKeys(m.helpKeys(keymap.AddPlaylist), m.helpKeys(keymap.Remove)), "加入指定歌单（本地/混合/同源云端）/ 移除")
-	add(joinKeys(m.helpKeys(keymap.Download), m.helpKeys(keymap.DownloadSelected)), "下载正在播放 / 下载选中（歌曲或整个歌单）")
+	add(joinKeys(m.helpKeys(keymap.PlayNext), m.helpKeys(keymap.Enqueue)), "插到下一首播放 / 追加到队列末尾（歌曲焦点，多选时批量）")
+	add(joinKeys(m.helpKeys(keymap.Select), m.helpKeys(keymap.SelectAll)), "标记/取消标记当前歌曲 · 全选/取消全选（歌曲焦点）；esc 取消选择")
+	add(joinKeys(m.helpKeys(keymap.AddPlaylist), m.helpKeys(keymap.Remove)), "加入指定歌单（本地/混合/同源云端）/ 移除；多选时批量")
+	add(joinKeys(m.helpKeys(keymap.Download), m.helpKeys(keymap.DownloadSelected)), "下载正在播放 / 下载选中（多选时批量；歌单焦点下载整个歌单）")
 	add(joinKeys(m.helpKeys(keymap.QueueUp), m.helpKeys(keymap.QueueDown)), "队列内上移 / 下移")
-	add(m.helpKeys(keymap.Delete), "清空队列；歌单焦点删除当前歌单")
-	add(joinKeys(m.helpKeys(keymap.Rename), m.helpKeys(keymap.Refresh)), "重命名歌单（歌单焦点）/ 刷新当前列表")
+	add(m.helpKeys(keymap.Delete), "清空队列；歌单焦点删除当前歌单（同步歌单只删本地副本）")
+	add(joinKeys(m.helpKeys(keymap.Rename), m.helpKeys(keymap.Refresh)), "重命名歌单（歌单焦点）/ 刷新当前歌单（远端歌单会重新同步）")
 
 	section("鼠标")
-	add("左键", "点击按钮、页头或列表项；点底部音质档位切换音质（等同 y）；双击歌曲播放；单击歌词移动焦点、双击跳转")
-	add("右键", "歌曲 / 歌单 / 歌词上下文菜单（菜单项旁标注快捷键）")
-	add("滚轮", "歌词页滚动；在底部播放状态行上调节音量")
+	add("左键", "点击按钮、页头或列表项；点底部音质档位切换音质（等同 y）；双击歌曲播放；Ctrl+左键勾选、Shift+左键连选；单击歌词移动焦点、双击跳转")
+	add("右键", "歌曲 / 歌单 / 歌词上下文菜单（菜单项旁标注快捷键）；勾选多首后右键选中行打开批量菜单；歌单右键可同步刷新，歌单栏标题或空白处右键打开命令面板（新建/导入歌单，与 N 同一入口）")
+	add("滚轮", "列表 / 歌词 / 帮助页滚动；在底部播放状态行上调节音量")
 	add("歌词页", "↑/↓/滚轮移动焦点（居中）；enter 跳到该句，esc 回到正在播放的行")
 
 	section("其它")
@@ -132,6 +135,7 @@ func (m *Model) helpLines() []string {
 	add(joinKeys(m.helpKeys(keymap.Back), "esc"), "返回曲库 / 取消输入")
 	add(joinKeys(m.helpKeys(keymap.Quit), "ctrl+c"), "退出")
 
+	width = max(1, width)
 	keyW := 12
 	for _, row := range rows {
 		if w := visWidth(row.keys); w > keyW {
@@ -142,17 +146,58 @@ func (m *Model) helpLines() []string {
 		keyW = 26
 	}
 
-	out := []string{st.muted.Render(" 快捷键 · " + m.firstKey(keymap.Down) + " / " + m.firstKey(keymap.Up) + " 滚动 · 配置 ~/.config/zero-beat/keymap.toml")}
+	// 说明列至少留 16 列；再窄就竖排，避免说明被挤成一两个字的窄条。
+	const minDescW = 16
+	stacked := width < 2+keyW+minDescW
+	descW := width - 2 - keyW
+	if stacked {
+		descW = width - 2
+	}
+	if descW < 1 {
+		descW = 1
+	}
+
+	var out []string
+	header := " 快捷键 · " + m.firstKey(keymap.Down) + " / " + m.firstKey(keymap.Up) + " 滚动 · 配置 ~/.config/zero-beat/keymap.toml"
+	for _, line := range wrapText(header, width) {
+		out = append(out, st.muted.Render(line))
+	}
 	for _, row := range rows {
 		if row.section != "" {
-			out = append(out, "", st.accent.Render(" "+row.section))
+			out = append(out, "")
+			for _, line := range wrapText(" "+row.section, width) {
+				out = append(out, st.accent.Render(line))
+			}
 			continue
 		}
-		out = append(out, "  "+st.text.Render(padRight(row.keys, keyW))+st.muted.Render(row.desc))
+		desc := wrapText(row.desc, descW)
+		if stacked {
+			for _, line := range wrapText("  "+row.keys, width) {
+				out = append(out, st.text.Render(line))
+			}
+			for _, line := range desc {
+				out = append(out, st.muted.Render("  "+line))
+			}
+			continue
+		}
+		keys := wrapText(row.keys, keyW)
+		total := max(len(keys), len(desc))
+		for i := 0; i < total; i++ {
+			var k, d string
+			if i < len(keys) {
+				k = keys[i]
+			}
+			if i < len(desc) {
+				d = desc[i]
+			}
+			out = append(out, "  "+st.text.Render(padRight(k, keyW))+st.muted.Render(d))
+		}
 	}
 
 	out = append(out, "")
-	out = append(out, st.dim.Render(" 配置文件与数据库在 ~/.config/zero-beat/"))
+	for _, line := range wrapText(" 配置文件与数据库在 ~/.config/zero-beat/", width) {
+		out = append(out, st.dim.Render(line))
+	}
 	return out
 }
 

@@ -925,7 +925,7 @@ func (m *Model) renderLyricsView(h int) []string {
 // ---- 帮助 ----
 
 func (m *Model) renderHelp(h int) []string {
-	lines := m.helpLines()
+	lines := m.helpLines(m.width)
 	if h <= 0 {
 		return nil
 	}

@@ -83,6 +83,26 @@ func TestWrapText(t *testing.T) {
 	if wrapText("", 10) != nil {
 		t.Fatal("空字符串不应产生行")
 	}
+
+	// 早出现的分隔符不能把首行挤成几个字，断行应尽量填满宽度。
+	early := "短 / 这是一段没有更多分隔符的很长的中文说明文字"
+	lines = wrapText(early, 20)
+	if len(lines) == 0 || visWidth(lines[0]) < 13 {
+		t.Fatalf("首行不应被过早的分隔符挤短: %+v", lines)
+	}
+	for _, line := range lines {
+		if visWidth(line) > 20 {
+			t.Fatalf("断行后超宽: %q (%d)", line, visWidth(line))
+		}
+	}
+
+	// 避头尾：收尾标点不单独落在行首。
+	lines = wrapText("一二三四五六七八九）", 18)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "）") {
+			t.Fatalf("收尾标点不应落在行首: %+v", lines)
+		}
+	}
 }
 
 func TestBlendColor(t *testing.T) {

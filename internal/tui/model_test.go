@@ -739,7 +739,7 @@ func TestCustomKeymapAffectsHandlingAndHelp(t *testing.T) {
 	if mm.queueIdx != 0 {
 		t.Fatalf("覆盖后旧键 ] 不应再切歌: %d", mm.queueIdx)
 	}
-	if got := mm.helpLines(); len(got) == 0 {
+	if got := mm.helpLines(mm.width); len(got) == 0 {
 		t.Fatal("帮助页为空")
 	}
 }
