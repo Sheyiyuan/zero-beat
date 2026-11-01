@@ -21,3 +21,4 @@
 
 # sandbox Go module cache (not for commit)
 /.gomodcache/
+/.cache/
