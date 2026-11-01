@@ -57,6 +57,20 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - 用途：加载 `~/.config/zero-beat/keymap.toml`。
 - 项目：https://github.com/BurntSushi/toml
 
+## godbus/dbus
+
+- 版本：v5.1.0
+- 许可：BSD-2-Clause
+- 用途：Linux 会话 D-Bus，MPRIS 系统媒体面板与媒体键。
+- 项目：https://github.com/godbus/dbus
+
+## golang.org/x/crypto、golang.org/x/term
+
+- 版本：x/crypto v0.53.0、x/term v0.44.0
+- 许可：BSD-3-Clause（Go Authors）
+- 用途：同步口令的 Argon2id / HKDF / XChaCha20-Poly1305，以及 CLI 无回显读取口令。
+- 项目：https://pkg.go.dev/golang.org/x/crypto 、https://pkg.go.dev/golang.org/x/term
+
 ## 其他
 
 其余 Go 依赖及版本见 [go.mod](go.mod)；许可信息随各模块分发。

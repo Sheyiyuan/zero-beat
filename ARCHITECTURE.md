@@ -4,10 +4,15 @@
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ cmd/zero            CLI：tui / play / download / login / demo │
+│ cmd/zero   CLI：tui / play / download / login / sync / demo  │
 ├────────────────────────────────────────────────────────────┤
 │ internal/tui        Bubble Tea v2：模型、渲染、按键、命令    │
-├──────────────────────────────┬─────────────────────────────┤
+├──────────────────────────────┼─────────────────────────────┤
+│ internal/sync 跨设备同步     │                             │
+│  ├─ 快照/确定性导出          │                             │
+│  ├─ git 封装/合并/冲突       │                             │
+│  └─ Argon2id + XChaCha20     │                             │
+├──────────────────────────────┼─────────────────────────────┤
 │ internal/app 业务服务         │ internal/player 播放控制器   │
 │  ├─ 搜索 / 取流 / 歌词        │  ├─ 队列/播放状态/模式        │
 │  ├─ 歌单同步 / 登录 / 队列恢复│  ├─ 引擎控制/重试/预解析      │
@@ -20,6 +25,8 @@
 │  ├─ source/bilibili 适配器    │                             │
 │  └─ internal/netease 客户端   │                             │
 ├──────────────────────────────┴─────────────────────────────┤
+│ internal/sysmedia  MPRIS：系统媒体面板/媒体键桥接            │
+│ internal/cover     封面下载与缓存（只服务系统媒体面板）      │
 │ internal/bili   B 站 API 客户端（被适配器包装）              │
 │ internal/lyrics LRC 解析、译文合并与时间轴                    │
 │ internal/lrclib 外部歌词兜底（标题清洗 + 时长匹配）           │
@@ -32,7 +39,10 @@
 `app` 依赖 `source` / `store` / `lyrics` / `lrclib`，但不 import Bubble Tea；
 `source/bilibili` 依赖 `bili`；`netease` 独立实现接口；`internal/player` 持有
 播放状态机并通过 `Engine` / `QueueSaver` 接口调用引擎与存储；`internal/downloader`
-持有下载任务队列；两者都不依赖 Bubble Tea。`audio` / `store` / `lyrics` /
+持有下载任务队列；`internal/sync` 负责快照、git、合并与登录态加密；`internal/sysmedia` 把播放状态
+投喂给系统媒体面板并把面板/媒体键命令转回播放器，`internal/cover` 只为它下载封面；
+这些包都不依赖 Bubble Tea。`sync` 只依赖 `store` / `config` / `keymap`，不 import `app` 或 `tui`；
+`app.LibraryRevision()` 以回调形式注入，用于导入前判断用户是否刚改过库。`audio` / `store` / `lyrics` /
 `download` 互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 还维护
 任务队列、进度行和下载管理页。
 
@@ -120,6 +130,38 @@ a → 目标选择器（本地/混合/同源云端）
 - 播放位置：`engine.Position()` 用「已交给声卡的 PCM 字节数 ÷ 字节率 + seek 基准」换算，250ms 的 `tickMsg` 拉一次。
 - 播放事件：`engine.Events()` → `waitEngineCmd` 转成 `engineEventMsg`；`EventEnded` 按模式自动下一首，`EventFailed` 先重试一次再提示错误。
 
+**系统媒体（Linux）**
+
+```
+tickMsg / 播放状态变化
+  → publishNowPlaying()（内存快照，不阻塞）
+  → sysmedia.Service.Publish → MPRIS 属性与 Seeked 信号
+  → 系统面板/媒体键的命令走 Commands() channel
+  → waitSysmediaCmd → sysCommandMsg → applySysCommand()（toggle/next/prev/seek/volume）
+
+当前曲目变化
+  → syncArtwork()（tea.Cmd）→ app.Service.CoverPath → cover.Fetch（带 Referer，磁盘缓存）
+  → coverMsg 回填 artwork 路径 → 下一次 Publish 带上本地文件
+```
+
+**一次同步**
+
+```
+Manager（single-flight + debounce + 退避）
+  → Client.Sync（进程内互斥 + 进程间 flock）
+       ├─ git fetch / Recover（清理残留合并与脏文件）
+       ├─ 校验 meta.json 与本地 sync-key（版本/盐/keycheck）
+       ├─ 登录态 LWW：远端较新先回填本地库
+       ├─ 导出快照：playlists/ 清空重写、keymap、annotations、accounts
+       ├─ commit → git merge FETCH_HEAD
+       │    ├─ 干净：导入最终树
+       │    ├─ accounts 冲突：按密文内 updated_at 自动 LWW
+       │    └─ 其他冲突：快照 ours/theirs/base → abort → 冲突页
+       ├─ 导入（revision 检查；单实体事务，失败跳过并记录）
+       └─ push（非快进则整轮重试，绝不 force push）
+  → syncEventMsg → TUI 重载歌单、回填 session、必要时重载 keymap
+```
+
 ## 关键契约
 
 跨包的核心契约有两个：`source.Source`（TUI → 音源）与 `audio.Stream`（音源 → 引擎）；
@@ -171,7 +213,9 @@ TUI 下载页强制首轮本地播放，引擎失败重试时跳过本地、改�
 云端歌单写入是可选能力 `source.PlaylistWriter`，由 `CapPlaylistWrite` 标记；
 UI 只按能力显示云端目标，不按平台名分支。
 
-不做封面：不抓取、不显示、不嵌入封面图，也不接 kitty/sixel；`songs.cover` 仅保留平台元数据，不参与 UI 或下载。
+封面只服务系统媒体面板：按需下载到 `~/.config/zero-beat/cache/covers`，不参与终端渲染，
+不接 kitty/sixel；`songs.cover` 仍是平台元数据。系统媒体集成只在 Linux 可用，
+macOS/Windows 是空实现（`sysmedia.New` 返回 nil）。
 
 ## 数据模型
 
@@ -188,6 +232,21 @@ accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
 downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载文件索引
 ```
 
+同步是可选的外挂数据，不写进 SQLite；封面缓存同样只在文件系统：
+
+```
+~/.config/zero-beat/
+├── sync.toml / sync-key / sync-token        # 连接配置、派生密钥、可选 token
+├── sync/{repo,state.json,lock,conflicts,archive}
+└── cache/covers/                            # 系统媒体面板封面缓存（64 MiB 上限）
+仓库布局：meta.json + playlists/<id>.json + annotations/<song>.json
+        + keymap.toml + accounts/<source>.age + .gitattributes
+```
+
+歌单与注释是明文 JSON（一实体一文件，`merge=binary`）；登录态是 XChaCha20-Poly1305
+密文，密钥由口令 + `meta.json` 的全局盐经 Argon2id 派生。冲突与归档只在本地
+`sync/` 下，不进入仓库。
+
 ## 事件循环约束（改 UI 前必读）
 
 1. **Update 里不许有网络或磁盘长任务**。网络、解析、歌词都放到 `tea.Cmd`；只有队列保存、设置项、本地歌单增删改这类 SQLite 短事务留在 Update（WAL，毫秒级）；网络与解析仍然全在 Cmd。
@@ -195,6 +254,12 @@ downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载�
 3. **每处理一次引擎事件都要重新挂 `waitEngineCmd`**，否则事件流会断。
 4. **渲染必须精确到行**：每行可见宽度等于终端宽度，总行数等于终端高度；`internal/tui/view_test.go` 会校验。帮助页内容比一屏长，由 `helpOffset` 做窗口裁剪，禁止直接把全部行塞给渲染器。
 5. 所有宽度计算走 `ansi.StringWidth` / `ansi.Truncate`，不要用 `len()`，否则中文会错位。
+6. **同步事件也要重新挂 `waitSyncCmd`**。`sync.Manager` 的网络/磁盘工作在后台
+   goroutine，事件通过 channel 转成 `syncEventMsg`；`Update` 只更新状态、发起
+   `tea.Cmd`，不直接跑同步。
+7. **系统媒体命令也走事件**。MPRIS 命令从 `sysmedia.Service.Commands()` 经
+   `waitSysmediaCmd` 变成 `sysCommandMsg`，`Update` 只做状态映射；封面下载在
+   `tea.Cmd` 里完成，失败只影响封面，不影响播放。
 
 ## 依赖
 
@@ -207,7 +272,10 @@ downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载�
 | 二维码 | `github.com/skip2/go-qrcode` | 半块字符 + PNG 兜底；与 musicfox 相同的白块/黑空映射 |
 | 网易云 | `go-musicfox/netease-music` | weapi/cloudsearch + 二维码 chainId；UNM 关闭 |
 | 歌词兜底 | LRCLIB HTTP API | 无额外依赖，8–20 秒超时 |
-| 快捷键配置 | `github.com/BurntSushi/toml` | 动作 ID 覆盖与冲突校验 |
+| 快捷键配置 | `github.com/BurntSushi/toml` | 动作 ID 覆盖与冲突校验；同步配置也用它 |
+| 同步加密 | `golang.org/x/crypto` | Argon2id、HKDF、XChaCha20-Poly1305 |
+| 同步口令输入 | `golang.org/x/term` | CLI 无回显读取口令 |
+| 系统媒体 | `github.com/godbus/dbus/v5` | Linux 会话总线 / MPRIS；非 Linux 编译为空实现 |
 | 宽度计算 | `github.com/charmbracelet/x/ansi` | 中文/emoji 宽度 |
 
 ## 已知简化（与最初设计的差异）
