@@ -1,6 +1,8 @@
 package sysmedia
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,6 +18,8 @@ func TestMPRISExportsStateAndCommands(t *testing.T) {
 	if _, err := dbus.SessionBus(); err != nil {
 		t.Skip("没有可用的会话总线")
 	}
+	// 测试用独立名称，避免和本机正在运行的 zero 抢标准 MPRIS 名。
+	t.Setenv("ZERO_MPRIS_NAME", fmt.Sprintf("org.mpris.MediaPlayer2.zero.test%d", os.Getpid()))
 	svc, err := New()
 	if err != nil {
 		t.Skipf("MPRIS 不可用: %v", err)
@@ -108,6 +112,21 @@ func TestMPRISExportsStateAndCommands(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("没有收到 SetPosition 命令")
+	}
+}
+
+func TestMPRISNameConflictIsExplicit(t *testing.T) {
+	if _, err := dbus.SessionBus(); err != nil {
+		t.Skip("没有可用的会话总线")
+	}
+	t.Setenv("ZERO_MPRIS_NAME", fmt.Sprintf("org.mpris.MediaPlayer2.zero.conflict%d", os.Getpid()))
+	first, err := New()
+	if err != nil {
+		t.Skipf("MPRIS 不可用: %v", err)
+	}
+	defer first.Close()
+	if _, err := New(); err == nil {
+		t.Fatal("第二个实例应明确报名称冲突，而不是退到 .instance")
 	}
 }
 

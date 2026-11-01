@@ -28,6 +28,15 @@ const (
 	noTrack = dbus.ObjectPath("/org/mpris/MediaPlayer2/TrackList/NoTrack")
 )
 
+// mprisName 默认是标准名称；测试可用 ZERO_MPRIS_NAME 隔离，避免和本机
+// 正在运行的 zero 抢名字。
+func mprisName() string {
+	if name := strings.TrimSpace(os.Getenv("ZERO_MPRIS_NAME")); name != "" {
+		return name
+	}
+	return "org.mpris.MediaPlayer2.zero"
+}
+
 var playerPropertyNames = []string{
 	"PlaybackStatus", "LoopStatus", "Rate", "Shuffle", "Metadata", "Volume",
 	"Position", "MinimumRate", "MaximumRate", "CanGoNext", "CanGoPrevious",
@@ -86,20 +95,15 @@ func (s *linuxService) export() error {
 		return fmt.Errorf("sysmedia: 导出内省信息: %w", err)
 	}
 
-	name := "org.mpris.MediaPlayer2.zero"
+	name := mprisName()
 	reply, err := s.conn.RequestName(name, dbus.NameFlagDoNotQueue)
 	if err != nil {
 		return fmt.Errorf("sysmedia: 申请 MPRIS 名称: %w", err)
 	}
 	if reply != dbus.RequestNameReplyPrimaryOwner {
-		name = fmt.Sprintf("org.mpris.MediaPlayer2.zero.instance%d", os.Getpid())
-		reply, err = s.conn.RequestName(name, dbus.NameFlagDoNotQueue)
-		if err != nil {
-			return fmt.Errorf("sysmedia: 申请 MPRIS 实例名: %w", err)
-		}
-	}
-	if reply != dbus.RequestNameReplyPrimaryOwner {
-		return fmt.Errorf("sysmedia: MPRIS 名称已被其他实例占用")
+		// 不再退到 .instance<pid>：那会让系统面板同时看到两个「zero-beat」，
+		// 控制其中一个、界面上却是另一个。宁可明确告知用户关掉旧实例。
+		return fmt.Errorf("系统媒体名称 %s 已被另一个 zero-beat 实例占用；请先退出旧实例再启动", name)
 	}
 	s.busName = name
 	return nil
