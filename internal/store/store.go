@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -77,14 +78,16 @@ type DownloadEntry struct {
 	Song     Song
 }
 
-// Playlist 是一个歌单，Kind 为「remote」（某音源的远端歌单/收藏夹镜像）或「local」。
+// Playlist 是一个歌单，Kind 为「remote」（某音源的远端歌单/收藏夹镜像）、
+// 「local」或「mixin」（引用其他歌单并叠加自己的曲目）。
 type Playlist struct {
-	ID       string
-	Source   string
-	Title    string
-	Kind     string
-	RemoteID string
-	Count    int
+	ID        string
+	Source    string
+	Title     string
+	Kind      string
+	RemoteID  string
+	Count     int
+	CreatedAt int64
 }
 
 // Store 是 SQLite 封装。
@@ -710,7 +713,7 @@ func (s *Store) validateMixinRefs(refIDs []string) ([]Playlist, error) {
 // MixinRefs 按顺序返回混合歌单引用的歌单。
 func (s *Store) MixinRefs(playlistID string) ([]Playlist, error) {
 	rows, err := s.db.Query(`
-SELECT p.id, p.source, p.title, p.kind, p.remote_id,
+SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.created_at,
        (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
 FROM playlist_refs r JOIN playlists p ON p.id = r.ref_id
 WHERE r.playlist_id = ? ORDER BY r.position`, playlistID)
@@ -721,7 +724,7 @@ WHERE r.playlist_id = ? ORDER BY r.position`, playlistID)
 	var out []Playlist
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Count); err != nil {
+		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt, &p.Count); err != nil {
 			return nil, err
 		}
 		if p.Kind == "mixin" {
@@ -735,11 +738,11 @@ WHERE r.playlist_id = ? ORDER BY r.position`, playlistID)
 // Playlist 按 ID 取歌单（带曲目数；混合歌单为展开后的去重数量）。
 func (s *Store) Playlist(id string) (Playlist, error) {
 	row := s.db.QueryRow(`
-SELECT p.id, p.source, p.title, p.kind, p.remote_id,
+SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.created_at,
        (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
 FROM playlists p WHERE p.id = ?`, id)
 	var p Playlist
-	err := row.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Count)
+	err := row.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt, &p.Count)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Playlist{}, ErrNotFound
 	}
@@ -759,7 +762,7 @@ FROM playlists p WHERE p.id = ?`, id)
 // ListPlaylists 列出全部歌单，远端在前、混合次之、本地最后。
 func (s *Store) ListPlaylists() ([]Playlist, error) {
 	rows, err := s.db.Query(`
-SELECT p.id, p.source, p.title, p.kind, p.remote_id,
+SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.created_at,
        (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
 FROM playlists p
 ORDER BY CASE p.kind WHEN 'remote' THEN 0 WHEN 'mixin' THEN 1 ELSE 2 END, p.created_at`)
@@ -769,7 +772,7 @@ ORDER BY CASE p.kind WHEN 'remote' THEN 0 WHEN 'mixin' THEN 1 ELSE 2 END, p.crea
 	var out []Playlist
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Count); err != nil {
+		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt, &p.Count); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1250,4 +1253,490 @@ func (s *Store) DeleteRemotePlaylistsBySource(source string) error {
 		return fmt.Errorf("store: 删除远端歌单: %w", err)
 	}
 	return tx.Commit()
+}
+
+// AccountInfo 是音源登录态的元信息，不含 payload。
+type AccountInfo struct {
+	Source    string
+	UpdatedAt int64
+}
+
+// ListAccounts 列出本地保存了登录态的音源。
+func (s *Store) ListAccounts() ([]AccountInfo, error) {
+	rows, err := s.db.Query(`SELECT source, updated_at FROM accounts ORDER BY source`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出登录态: %w", err)
+	}
+	defer rows.Close()
+	var out []AccountInfo
+	for rows.Next() {
+		var a AccountInfo
+		if err := rows.Scan(&a.Source, &a.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// AccountUpdatedAt 返回音源登录态的最后修改时间；没有记录时返回 ErrNotFound。
+func (s *Store) AccountUpdatedAt(source string) (int64, error) {
+	var updated int64
+	err := s.db.QueryRow(`SELECT updated_at FROM accounts WHERE source = ?`, source).Scan(&updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: 读取登录态时间: %w", err)
+	}
+	return updated, nil
+}
+
+// LoadAccountAt 读取登录态及其最后修改时间。
+func (s *Store) LoadAccountAt(source string) ([]byte, int64, error) {
+	var (
+		payload string
+		updated int64
+	)
+	err := s.db.QueryRow(`SELECT payload, updated_at FROM accounts WHERE source = ?`, source).Scan(&payload, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, ErrNotFound
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: 读取登录态: %w", err)
+	}
+	return []byte(payload), updated, nil
+}
+
+// SaveAccountAt 保存登录态并保留给定的修改时间；updatedAt 为 0 时使用当前时间。
+// 同步导入用它保留远端时间戳，让 LWW 比较有稳定基准。
+func (s *Store) SaveAccountAt(source string, payload []byte, updatedAt int64) error {
+	if updatedAt <= 0 {
+		updatedAt = time.Now().Unix()
+	}
+	_, err := s.db.Exec(`INSERT INTO accounts (source, payload, updated_at) VALUES (?, ?, ?)
+ON CONFLICT(source) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+		source, string(payload), updatedAt)
+	if err != nil {
+		return fmt.Errorf("store: 保存登录态: %w", err)
+	}
+	return nil
+}
+
+// PlaylistSnapshot 是歌单的完整可导出形态：歌单行、自己加入的曲目、混合歌单的
+// 引用与被隐藏的继承曲目。与 PlaylistSongs 不同，它不展开混合歌单。
+type PlaylistSnapshot struct {
+	Playlist
+	Songs    []Song     // 仅 playlist_items，按 position；AddedAt 取 playlist_items.added_at
+	Refs     []Playlist // mixin 引用，按 position
+	Excludes []string   // 被隐藏的继承曲目 ID，已排序
+}
+
+// playlistRow 只读歌单行本身，不计算曲目数、不展开混合歌单；同步导出用。
+func (s *Store) playlistRow(id string) (Playlist, error) {
+	row := s.db.QueryRow(`SELECT id, source, title, kind, remote_id, created_at FROM playlists WHERE id = ?`, id)
+	var p Playlist
+	err := row.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Playlist{}, ErrNotFound
+	}
+	if err != nil {
+		return Playlist{}, fmt.Errorf("store: 读歌单行: %w", err)
+	}
+	return p, nil
+}
+
+// PlaylistSnapshot 读取一个歌单的完整快照（不展开混合歌单）。
+func (s *Store) PlaylistSnapshot(id string) (PlaylistSnapshot, error) {
+	p, err := s.playlistRow(id)
+	if err != nil {
+		return PlaylistSnapshot{}, err
+	}
+	return s.playlistSnapshotRow(p)
+}
+
+func (s *Store) playlistSnapshotRow(p Playlist) (PlaylistSnapshot, error) {
+	snap := PlaylistSnapshot{Playlist: p}
+	rows, err := s.db.Query(`
+SELECT s.id, s.source, s.remote_id, s.bvid, s.page, s.cid, s.title, s.artist, s.album,
+       s.duration, s.cover, i.added_at
+FROM playlist_items i JOIN songs s ON s.id = i.song_id
+WHERE i.playlist_id = ? ORDER BY i.position`, p.ID)
+	if err != nil {
+		return PlaylistSnapshot{}, fmt.Errorf("store: 读取歌单快照: %w", err)
+	}
+	for rows.Next() {
+		song, err := scanSong(rows)
+		if err != nil {
+			rows.Close()
+			return PlaylistSnapshot{}, err
+		}
+		snap.Songs = append(snap.Songs, song)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return PlaylistSnapshot{}, err
+	}
+	rows.Close()
+
+	if p.Kind == "mixin" {
+		refs, err := s.MixinRefs(p.ID)
+		if err != nil {
+			return PlaylistSnapshot{}, err
+		}
+		snap.Refs = refs
+		excludes, err := s.playlistExcludes(p.ID)
+		if err != nil {
+			return PlaylistSnapshot{}, err
+		}
+		snap.Excludes = excludes
+	}
+	return snap, nil
+}
+
+// ListPlaylistSnapshots 按导出顺序列出歌单快照；kinds 为空时返回全部。
+// 它不计算曲目数、不展开混合歌单，避免大曲库导出时重复展开引用。
+func (s *Store) ListPlaylistSnapshots(kinds ...string) ([]PlaylistSnapshot, error) {
+	rows, err := s.db.Query(`
+SELECT id, source, title, kind, remote_id, created_at FROM playlists
+ORDER BY CASE kind WHEN 'remote' THEN 0 WHEN 'mixin' THEN 1 ELSE 2 END, created_at, id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出歌单快照: %w", err)
+	}
+	want := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		want[k] = true
+	}
+	var playlists []Playlist
+	for rows.Next() {
+		var p Playlist
+		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if len(want) > 0 && !want[p.Kind] {
+			continue
+		}
+		playlists = append(playlists, p)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	out := make([]PlaylistSnapshot, 0, len(playlists))
+	for _, p := range playlists {
+		snap, err := s.playlistSnapshotRow(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, snap)
+	}
+	return out, nil
+}
+
+func (s *Store) playlistExcludes(playlistID string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT song_id FROM playlist_excludes WHERE playlist_id = ?`, playlistID)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取歌单隐藏项: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, rows.Err()
+}
+
+// ImportPlaylistSnapshot 在单事务内写入快照：歌单行、歌曲、条目、引用与隐藏项。
+// created_at / added_at 按快照保留。引用歌单缺失时先建占位（远端歌单不导出）。
+func (s *Store) ImportPlaylistSnapshot(snap PlaylistSnapshot) error {
+	if err := ValidatePlaylistSnapshot(snap); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: 开启事务: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, ref := range snap.Refs {
+		if err := importPlaylistRefPlaceholder(tx, ref); err != nil {
+			return err
+		}
+	}
+
+	createdAt := snap.CreatedAt
+	if createdAt <= 0 {
+		createdAt = time.Now().Unix()
+	}
+	if _, err := tx.Exec(`
+INSERT INTO playlists (id, source, title, kind, remote_id, created_at) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET title = excluded.title, kind = excluded.kind,
+	source = excluded.source, remote_id = excluded.remote_id`,
+		snap.ID, snap.Source, snap.Title, snap.Kind, snap.RemoteID, createdAt); err != nil {
+		return fmt.Errorf("store: 写入歌单: %w", err)
+	}
+	for _, q := range []string{
+		`DELETE FROM playlist_items WHERE playlist_id = ?`,
+		`DELETE FROM playlist_refs WHERE playlist_id = ?`,
+		`DELETE FROM playlist_excludes WHERE playlist_id = ?`,
+	} {
+		if _, err := tx.Exec(q, snap.ID); err != nil {
+			return fmt.Errorf("store: 覆盖歌单: %w", err)
+		}
+	}
+	for i, song := range snap.Songs {
+		song = NormalizeSong(song)
+		if song.Source == "" || song.ExternalID() == "" {
+			return fmt.Errorf("store: 歌曲缺少来源或外部 ID")
+		}
+		added := song.AddedAt
+		if added.IsZero() {
+			added = time.Now()
+		}
+		if _, err := tx.Exec(`
+INSERT INTO songs (id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(source, remote_id, page) DO UPDATE SET
+	title = excluded.title, artist = excluded.artist, album = excluded.album,
+	duration = excluded.duration, cover = excluded.cover,
+	bvid = CASE WHEN excluded.bvid <> '' THEN excluded.bvid ELSE songs.bvid END,
+	cid = CASE WHEN excluded.cid > 0 THEN excluded.cid ELSE songs.cid END`,
+			song.ID, song.Source, song.RemoteID, song.BVID, song.Page, song.CID, song.Title,
+			song.Artist, song.Album, song.Duration, song.Cover, added.Unix()); err != nil {
+			return fmt.Errorf("store: 写入歌曲: %w", err)
+		}
+		if _, err := tx.Exec(`INSERT INTO playlist_items (playlist_id, song_id, position, added_at) VALUES (?, ?, ?, ?)`,
+			snap.ID, song.ID, i+1, added.Unix()); err != nil {
+			return fmt.Errorf("store: 写入歌单项: %w", err)
+		}
+	}
+	for i, ref := range snap.Refs {
+		if _, err := tx.Exec(`INSERT INTO playlist_refs (playlist_id, ref_id, position) VALUES (?, ?, ?)`,
+			snap.ID, ref.ID, i); err != nil {
+			return fmt.Errorf("store: 写入歌单引用: %w", err)
+		}
+	}
+	for _, songID := range snap.Excludes {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO playlist_excludes (playlist_id, song_id) VALUES (?, ?)`,
+			snap.ID, songID); err != nil {
+			return fmt.Errorf("store: 写入歌单隐藏项: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func importPlaylistRefPlaceholder(tx *sql.Tx, ref Playlist) error {
+	if err := validatePlaylistID(ref.Kind, ref.ID); err != nil {
+		return err
+	}
+	title := strings.TrimSpace(ref.Title)
+	if title == "" {
+		title = ref.ID
+	}
+	created := ref.CreatedAt
+	if created <= 0 {
+		created = time.Now().Unix()
+	}
+	_, err := tx.Exec(`
+INSERT INTO playlists (id, source, title, kind, remote_id, created_at) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO NOTHING`,
+		ref.ID, ref.Source, title, ref.Kind, ref.RemoteID, created)
+	if err != nil {
+		return fmt.Errorf("store: 写入引用歌单占位: %w", err)
+	}
+	return nil
+}
+
+// DeletePlaylistForSync 删除本地/混合歌单及其条目，并清掉其他混合歌单对它的引用。
+// 与 DeletePlaylist 不同，它不阻止被引用的歌单被删除：同步导入以远端为准。
+func (s *Store) DeletePlaylistForSync(id string) error {
+	p, err := s.Playlist(id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if p.Kind != "local" && p.Kind != "mixin" {
+		return fmt.Errorf("store: 远端歌单不能由同步删除")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: 开启事务: %w", err)
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM playlist_items WHERE playlist_id = ?`,
+		`DELETE FROM playlist_refs WHERE playlist_id = ?`,
+		`DELETE FROM playlist_excludes WHERE playlist_id = ?`,
+		`DELETE FROM playlists WHERE id = ?`,
+	} {
+		if _, err := tx.Exec(q, id); err != nil {
+			return fmt.Errorf("store: 删除歌单: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM playlist_refs WHERE ref_id = ?`, id); err != nil {
+		return fmt.Errorf("store: 清理歌单引用: %w", err)
+	}
+	return tx.Commit()
+}
+
+// ValidatePlaylistSnapshot 校验同步导入的歌单字段，拒绝路径字符与非法 kind。
+func ValidatePlaylistSnapshot(snap PlaylistSnapshot) error {
+	if err := validatePlaylistID(snap.Kind, snap.ID); err != nil {
+		return err
+	}
+	title := strings.TrimSpace(snap.Title)
+	if title == "" {
+		return fmt.Errorf("store: 歌单标题不能为空")
+	}
+	if len([]rune(title)) > 200 {
+		return fmt.Errorf("store: 歌单标题过长")
+	}
+	for _, ref := range snap.Refs {
+		if ref.Kind == "mixin" {
+			return fmt.Errorf("store: 混合歌单不能再引用混合歌单")
+		}
+		if err := validatePlaylistID(ref.Kind, ref.ID); err != nil {
+			return err
+		}
+		if ref.ID == snap.ID {
+			return fmt.Errorf("store: 歌单不能引用自己")
+		}
+	}
+	if len(snap.Songs) > maxSnapshotSongs {
+		return fmt.Errorf("store: 歌单曲目过多")
+	}
+	return nil
+}
+
+const maxSnapshotSongs = 20000
+
+func validatePlaylistID(kind, id string) error {
+	if id == "" || len(id) > 200 {
+		return fmt.Errorf("store: 歌单 ID 长度无效")
+	}
+	switch kind {
+	case "local":
+		if !strings.HasPrefix(id, "local-") || len(id) == len("local-") {
+			return fmt.Errorf("store: 本地歌单 ID 必须以 local- 开头")
+		}
+	case "mixin":
+		if !strings.HasPrefix(id, "mix-") || len(id) == len("mix-") {
+			return fmt.Errorf("store: 混合歌单 ID 必须以 mix- 开头")
+		}
+	case "remote":
+		// 远端镜像 ID 由适配器生成（bili-fav-* / netease-*），只要求安全字符。
+	default:
+		return fmt.Errorf("store: 未知歌单类型 %q", kind)
+	}
+	for _, r := range id {
+		if r == '/' || r == '\\' || r == 0 || r < 0x20 || r == 0x7f {
+			return fmt.Errorf("store: 歌单 ID 含非法字符")
+		}
+	}
+	if strings.Contains(id, "..") {
+		return fmt.Errorf("store: 歌单 ID 含非法路径片段")
+	}
+	return nil
+}
+
+// SongAnnotation 是单曲的同步附属信息：歌词偏移与播放片段。
+type SongAnnotation struct {
+	SongID        string `json:"song_id"`
+	LyricOffsetMS int    `json:"lyric_offset_ms,omitempty"`
+	ClipStartMS   int64  `json:"clip_start_ms,omitempty"`
+	ClipEndMS     int64  `json:"clip_end_ms,omitempty"`
+}
+
+// Active 判断注释里是否有需要同步的内容。
+func (a SongAnnotation) Active() bool {
+	return a.LyricOffsetMS != 0 || a.ClipStartMS > 0 || a.ClipEndMS > 0
+}
+
+// ListAnnotations 列出全部单曲注释（歌词偏移与片段都存于 settings）。
+func (s *Store) ListAnnotations() ([]SongAnnotation, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM settings WHERE key LIKE 'clip:%' OR key LIKE 'lyric_offset:%'`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取单曲注释: %w", err)
+	}
+	defer rows.Close()
+	byID := map[string]*SongAnnotation{}
+	get := func(id string) *SongAnnotation {
+		a := byID[id]
+		if a == nil {
+			a = &SongAnnotation{SongID: id}
+			byID[id] = a
+		}
+		return a
+	}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		switch {
+		case strings.HasPrefix(key, "clip:"):
+			var c Clip
+			if err := json.Unmarshal([]byte(value), &c); err != nil {
+				continue
+			}
+			a := get(strings.TrimPrefix(key, "clip:"))
+			a.ClipStartMS, a.ClipEndMS = c.StartMS, c.EndMS
+		case strings.HasPrefix(key, "lyric_offset:"):
+			offset, err := strconv.Atoi(strings.TrimSpace(value))
+			if err != nil {
+				continue
+			}
+			get(strings.TrimPrefix(key, "lyric_offset:")).LyricOffsetMS = offset
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]SongAnnotation, 0, len(byID))
+	for _, a := range byID {
+		if a.Active() {
+			out = append(out, *a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SongID < out[j].SongID })
+	return out, nil
+}
+
+// SaveAnnotation 写入单曲注释；零值字段对应的设置会被删除。
+func (s *Store) SaveAnnotation(a SongAnnotation) error {
+	a.SongID = strings.TrimSpace(a.SongID)
+	if a.SongID == "" {
+		return fmt.Errorf("store: 注释缺少歌曲 ID")
+	}
+	if !a.Active() {
+		return s.DeleteAnnotation(a.SongID)
+	}
+	if a.LyricOffsetMS != 0 {
+		if err := s.SetSetting("lyric_offset:"+a.SongID, strconv.Itoa(a.LyricOffsetMS)); err != nil {
+			return err
+		}
+	} else {
+		if _, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, "lyric_offset:"+a.SongID); err != nil {
+			return fmt.Errorf("store: 清除歌词偏移: %w", err)
+		}
+	}
+	return s.SetClip(a.SongID, Clip{StartMS: a.ClipStartMS, EndMS: a.ClipEndMS})
+}
+
+// DeleteAnnotation 清除一首歌的歌词偏移与片段。
+func (s *Store) DeleteAnnotation(songID string) error {
+	if _, err := s.db.Exec(`DELETE FROM settings WHERE key = ? OR key = ?`,
+		"clip:"+songID, "lyric_offset:"+songID); err != nil {
+		return fmt.Errorf("store: 清除单曲注释: %w", err)
+	}
+	return nil
 }

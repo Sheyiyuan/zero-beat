@@ -36,6 +36,7 @@ func EnsureDefaultPlaylist(st *store.Store) error {
 	if _, err := st.EnsurePlaylist(store.Playlist{ID: "local-default", Title: "本地歌单", Kind: "local"}); err != nil {
 		return err
 	}
+	bumpLibraryRevision()
 	return st.SetSetting(defaultPlaylistMarker, "1")
 }
 

@@ -12,6 +12,7 @@ func (s *Service) CreatePlaylist(title string) (store.Playlist, error) {
 	if s.store == nil {
 		return store.Playlist{}, fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.CreatePlaylist(title)
 }
 
@@ -37,6 +38,7 @@ func (s *Service) RenamePlaylist(id, title string) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.RenamePlaylist(id, title)
 }
 
@@ -45,6 +47,7 @@ func (s *Service) DeletePlaylist(id string) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.DeletePlaylist(id)
 }
 
@@ -54,6 +57,7 @@ func (s *Service) DeletePlaylistCompletely(id string) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	p, err := s.store.Playlist(id)
 	if err != nil {
 		return err
@@ -82,6 +86,7 @@ func (s *Service) UnlockPlaylist(id string) (store.Playlist, error) {
 	if s.store == nil {
 		return store.Playlist{}, fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.UnlockPlaylist(id)
 }
 
@@ -90,6 +95,7 @@ func (s *Service) AddSongToPlaylist(id string, song store.Song) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.AddSongToPlaylist(id, store.NormalizeSong(song))
 }
 
@@ -111,6 +117,7 @@ func (s *Service) RemoveSongFromPlaylist(id, songID string) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.RemoveSongFromPlaylist(id, songID)
 }
 
@@ -119,6 +126,7 @@ func (s *Service) ImportRemotePlaylist(p source.Playlist) (store.Playlist, error
 	if s.store == nil {
 		return store.Playlist{}, fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.EnsurePlaylist(store.Playlist{
 		ID:       p.ID,
 		Source:   string(p.Source),
@@ -141,6 +149,7 @@ func (s *Service) SetMixinRefs(id string, refIDs []string) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.SetMixinRefs(id, refIDs)
 }
 
@@ -149,5 +158,6 @@ func (s *Service) AddMixinRef(id, refID string) (bool, error) {
 	if s.store == nil {
 		return false, fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.AddMixinRef(id, refID)
 }

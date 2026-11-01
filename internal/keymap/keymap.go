@@ -79,6 +79,7 @@ const (
 	LoginImage       Action = "login_image"
 	Logout           Action = "logout"
 	Back             Action = "back"
+	Sync             Action = "sync"
 )
 
 // Defaults 是内置键位；配置文件按动作覆盖，不写出的动作继续使用这里。
@@ -145,6 +146,7 @@ var Defaults = map[Action][]string{
 	LoginImage:       {"o"},
 	Logout:           {"ctrl+w"},
 	Back:             {"b"},
+	Sync:             {"ctrl+s"},
 }
 
 var actionSet = func() map[Action]bool {

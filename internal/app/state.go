@@ -13,6 +13,7 @@ func (s *Service) CreateMixin(title string, refIDs []string) (store.Playlist, er
 	if s.store == nil {
 		return store.Playlist{}, fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.CreateMixin(title, refIDs)
 }
 
@@ -44,11 +45,13 @@ func (s *Service) SaveClip(songID string, clip store.Clip) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	return s.store.SetClip(songID, clip)
 }
 
 // SaveLyricOffset 保存单曲歌词偏移。
 func (s *Service) SaveLyricOffset(songID string, offsetMS int) {
+	defer bumpLibraryRevision()
 	if s.store != nil {
 		_ = s.store.SetSetting("lyric_offset:"+songID, fmt.Sprint(offsetMS))
 	}
@@ -94,6 +97,7 @@ func (s *Service) SaveAccount(id source.ID, session map[string]string) error {
 	if s.store == nil {
 		return fmt.Errorf("没有可用的存储")
 	}
+	defer bumpLibraryRevision()
 	payload, err := json.Marshal(session)
 	if err != nil {
 		return err
@@ -106,6 +110,7 @@ func (s *Service) DeleteAccount(id source.ID) {
 	if s.store == nil {
 		return
 	}
+	defer bumpLibraryRevision()
 	_ = s.store.DeleteAccount(string(id))
 	_ = s.store.DeleteRemotePlaylistsBySource(string(id))
 }
