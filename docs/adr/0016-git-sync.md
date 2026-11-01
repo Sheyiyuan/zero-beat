@@ -147,7 +147,8 @@ token 优先使用系统 credential helper；允许把 token 存成 0600 文件�
   `app.Service`，字段级计数器无法跨命令比较。
 - CLI 的 `sync resolve` 可以逐实体选择，选择先写进冲突目录的 `choices.json`，全部选完
   才应用；TUI 的选择只存在内存里。
-- 单实例锁仍未实现；同步文件锁只保护同步本身，多进程同时写库仍可能覆盖。
+- TUI 由 `internal/instance` 保证同一数据目录单实例；同步另有 `sync/lock`。
+  CLI 子命令不占 TUI 锁，多进程同时写库仍由同步锁与 revision 检查兜底。
 
 ## 替代方案
 

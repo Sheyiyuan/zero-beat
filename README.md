@@ -10,7 +10,7 @@
 
 > 本项目是 [Half Beat Player](https://github.com/Sheyiyuan/Half-Beat-Player) 的续作（至少是精神续作），延续「在电脑上听 B 站视频」的出发点；TUI 形态与播放器交互受到 [go-musicfox](https://github.com/go-musicfox/go-musicfox) 的启发。项目以个人使用为主，不承诺功能路线图、平台兼容性或问题响应速度，欢迎 issue 和 PR。
 
-> **状态：v0.6.0 已发布**（[下载](https://github.com/Sheyiyuan/zero-beat/releases)）。双源已打通：B 站 + 网易云扫码登录、单源/合并搜索、收藏夹与歌单、混源队列、本地混源歌单、播放、歌词、断点恢复、下一首预解析；v0.4 加入播放片段、同源云端歌单写入与歌单引用混入；v0.5 补齐下载管理与本地优先播放；v0.5.1 加入曲库批量选择；v0.6.0 加入**跨设备同步**（git 仓库、明文歌单快照、加密登录态、冲突选择）与 **Linux 系统媒体面板**（MPRIS + 封面缓存）。升级前请先看 [v0.6.0 发布说明](docs/release-notes-v0.6.0.md) 与 [Release](https://github.com/Sheyiyuan/zero-beat/releases)。
+> **状态：v0.6.0 待发布**（本地已就绪，打 tag 后发布）。双源已打通：B 站 + 网易云扫码登录、单源/合并搜索、收藏夹与歌单、混源队列、本地混源歌单、播放、歌词、断点恢复、下一首预解析；v0.4 加入播放片段、同源云端歌单写入与歌单引用混入；v0.5 补齐下载管理与本地优先播放；v0.5.1 加入曲库批量选择；v0.6.0 加入**跨设备同步**（git 仓库、明文歌单快照、加密登录态、冲突选择）与 **Linux 系统媒体面板**（MPRIS + 封面缓存）。升级前请先看 [v0.6.0 发布说明](docs/release-notes-v0.6.0.md) 与 [Release](https://github.com/Sheyiyuan/zero-beat/releases)。
 > 跨源自动匹配与更多能力见 [ROADMAP.md](ROADMAP.md)。
 
 ---
@@ -41,6 +41,7 @@
 | 睡眠定时      | `t` 循环 15 / 30 / 60 / 120 分钟，到点自动暂停                                                                                                              |
 | 跨设备同步    | 歌单、混合歌单、`keymap.toml`、单曲注释与加密登录态同步到任意 git 仓库；`ctrl+s` 打开同步页，SSH/HTTPS 一键切换，冲突按实体选择；自动同步默认开启 |
 | 系统媒体      | Linux 经 MPRIS 把播放状态与封面投喂给系统媒体面板，响应播放/暂停/上下首/进度/音量；`ZERO_SYSMEDIA=0` 关闭 |
+| 单实例        | 同一数据目录只允许一个 TUI；重复启动提示旧实例 PID，避免两个 MPRIS 播放器抢控制 |
 | 封面缓存      | 为系统媒体面板按需下载封面并缓存到 `~/.config/zero-beat/cache/covers`（64 MiB 上限）；终端界面不渲染封面 |
 
 ## 界面
@@ -193,6 +194,8 @@ Linux 下启动后会自动向会话 D-Bus 注册 MPRIS 播放器（`org.mpris.M
 - 封面按需从平台 CDN 下载，缓存到 `~/.config/zero-beat/cache/covers`，上限 64 MiB；
   只给系统媒体面板读取，终端界面不显示封面，也不接 kitty/sixel 图形协议。
 - 不希望被接管时用 `ZERO_SYSMEDIA=0 zero` 启动；macOS/Windows 暂无系统媒体集成。
+- 同一数据目录只允许一个 TUI 实例；重复启动会提示旧实例 PID。MPRIS 名称被占用时会
+  明确报错，而不是注册成第二个播放器。`zero download` / `zero sync` 等 CLI 不占实例锁。
 - MPRIS 只写本机会话总线，不额外上传任何数据。
 
 ### 批量选择与批量操作
@@ -376,7 +379,7 @@ sync              = ["ctrl+s"]
 - **混合歌单不支持嵌套**；引用源被删除前需先在混合歌单里移除引用。解锁同步歌单不可逆。
 - **同步是最终一致，不是实时协作**：依赖 git 的延迟与冲突模型；同一歌单两端都改时需要人工选择。
 - **歌单同步是明文托管**：私有仓库只提供访问控制，自建 git 的运维能读到内容；git 历史不可撤销，轮换口令也不等于撤销旧密文。
-- **同步需要系统 `git`**；Windows 未适配。单实例锁仍未实现，多进程同时写库仍有覆盖风险。
+- **同步需要系统 `git`**；Windows 未适配。同一数据目录只允许一个 TUI；CLI 子命令不占实例锁，多进程同时写库仍由同步锁与 revision 检查兜底。
 - **同步登录态可能触发平台风控**：失效时回落到扫码登录。
 - 登录页二维码用 musicfox 同款半块字符；普通 24 行终端可完整显示。二维码过长/终端过矮时按 `o` 用系统图片查看器打开 PNG 扫码。
 
@@ -391,6 +394,7 @@ internal/downloader      下载任务队列、并发、取消与进度事件
 internal/sync            跨设备同步：快照、git、合并、冲突、凭据加密
 internal/sysmedia        Linux MPRIS：系统媒体面板/媒体键与播放器之间的桥
 internal/cover           封面下载与磁盘缓存（只服务系统媒体面板）
+internal/instance        TUI 单实例锁（flock / 独占文件），锁文件记录 PID
 internal/source          多音源契约、能力位、注册表、平台元数据
 internal/source/bilibili B 站适配器：搜索、多 P、收藏夹、字幕、播放
 internal/netease         网易云客户端：基于 go-musicfox/netease-music 的 Source 适配

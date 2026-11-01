@@ -27,6 +27,7 @@
 ├──────────────────────────────┴─────────────────────────────┤
 │ internal/sysmedia  MPRIS：系统媒体面板/媒体键桥接            │
 │ internal/cover     封面下载与缓存（只服务系统媒体面板）      │
+│ internal/instance  TUI 单实例锁（flock/独占文件，记录 PID）  │
 │ internal/bili   B 站 API 客户端（被适配器包装）              │
 │ internal/lyrics LRC 解析、译文合并与时间轴                    │
 │ internal/lrclib 外部歌词兜底（标题清洗 + 时长匹配）           │
@@ -44,7 +45,8 @@
 这些包都不依赖 Bubble Tea。`sync` 只依赖 `store` / `config` / `keymap`，不 import `app` 或 `tui`；
 `app.LibraryRevision()` 以回调形式注入，用于导入前判断用户是否刚改过库。`audio` / `store` / `lyrics` /
 `download` 互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 还维护
-任务队列、进度行和下载管理页。
+任务队列、进度行和下载管理页。`cmd/zero` 启动 TUI 前先通过 `internal/instance`
+在数据目录拿进程级锁；CLI 子命令（play/download/sync 等）不占这把锁。
 
 平台展示信息（短标记、命令行别名、链接解析、歌词名、登录 App 名）属于适配器：
 `Source.Mark` 是必选方法，其余是 `Aliased` / `TargetParser` / `LyricNamer` /
@@ -232,10 +234,11 @@ accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
 downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载文件索引
 ```
 
-同步是可选的外挂数据，不写进 SQLite；封面缓存同样只在文件系统：
+同步是可选的外挂数据，不写进 SQLite；封面缓存与实例锁同样只在文件系统：
 
 ```
 ~/.config/zero-beat/
+├── instance.lock                            # TUI 单实例锁（0600，内容为 PID）
 ├── sync.toml / sync-key / sync-token        # 连接配置、派生密钥、可选 token
 ├── sync/{repo,state.json,lock,conflicts,archive}
 └── cache/covers/                            # 系统媒体面板封面缓存（64 MiB 上限）

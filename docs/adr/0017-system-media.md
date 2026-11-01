@@ -36,9 +36,12 @@
 
 ## 后果
 
-- Linux 上多一个 `org.mpris.MediaPlayer2.zero` 名称（冲突时退到 `.instance<pid>`）。
+- Linux 上注册 `org.mpris.MediaPlayer2.zero`；名称被占用时明确报错并提示先退出旧实例，
+  不再退到 `.instance<pid>`（通常由单实例锁提前阻止）。
 - 封面缓存占用磁盘；超过上限按最近访问时间淘汰，删除缓存后下一首会重新下载。
-- 没有桌面通知；单实例锁仍未实现，多开时会有多个 MPRIS 实例名。
+- 没有桌面通知；同一数据目录的单实例由 `internal/instance` 保证，不同数据目录仍可能
+  抢同一个 MPRIS 名称，此时 MPRIS 初始化会明确报错，TUI 继续运行但禁用系统媒体。
+  测试可用 `ZERO_MPRIS_NAME` 隔离。
 - 播放状态每 250ms 更新一次，系统面板上的进度是插值显示，不是逐帧同步。
 - macOS/Windows 用户没有系统面板/媒体键；以后接入需要各自的平台实现。
 
