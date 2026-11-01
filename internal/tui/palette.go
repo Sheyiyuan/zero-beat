@@ -29,6 +29,7 @@ const (
 	palAddCurrent paletteAction = "add-current"
 	palLocalFirst paletteAction = "local-first"
 	palAbout      paletteAction = "about"
+	palSync       paletteAction = "sync"
 )
 
 type paletteItem struct {
@@ -59,6 +60,7 @@ func (m *Model) paletteItems() []paletteItem {
 		{palAddCurrent, "将正在播放加入歌单", "选择本地、混合或同源云端歌单"},
 		{palLocalFirst, "本地优先：" + localState, "已下载歌曲优先播放本地文件"},
 		{palAbout, "关于 zero-beat", "版本、许可证与项目地址"},
+		{palSync, "跨设备同步", "git 仓库、加密登录态与冲突处理"},
 	}
 	if m.sources != nil {
 		for _, src := range m.sources.All() {
@@ -206,6 +208,8 @@ func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 	case palAbout:
 		m.aboutPopup = true
 		return nil
+	case palSync:
+		return m.openSyncPage()
 	}
 	return nil
 }

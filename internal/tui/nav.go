@@ -22,6 +22,7 @@ var navPages = []navPage{
 	{name: "登录", view: viewLogin},
 	{name: "导入歌单", view: viewFolders},
 	{name: "下载", view: viewDownloads},
+	{name: "同步", view: viewSync},
 }
 
 // currentPage 返回当前页面在 navPages 中的下标；混合歌单编辑器返回 -1。
@@ -47,6 +48,12 @@ func (m *Model) openPage(idx int) (tea.Model, tea.Cmd) {
 	}
 	m.menu = nil
 	p := navPages[idx]
+	if m.view == viewSync && p.view != viewSync {
+		// 离开同步页时清掉口令缓冲与输入态。
+		m.syncEdit = ""
+		m.syncInput = ""
+		m.syncPass = ""
+	}
 	if p.view == viewSearch {
 		if p.mode == searchSource {
 			m.openSourceSearch()

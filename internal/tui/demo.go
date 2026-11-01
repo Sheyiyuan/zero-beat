@@ -9,6 +9,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
+	syncpkg "github.com/sheyiyuan/zero-beat/internal/sync"
 )
 
 // RenderDemo 用示例数据渲染一帧界面，供 `zero demo` 与文档截图使用。
@@ -141,6 +142,41 @@ func RenderDemo(name string, width, height int) string {
 		m.selPlaylistID = "local-default"
 		m.selAnchor = 1
 		m.selectionIDs = map[string]bool{"d2": true, "d3": true, "d4": true}
+	case "sync":
+		m.view = viewSync
+		m.syncAck = true
+		m.syncStatus = syncpkg.Status{
+			Configured:     true,
+			Remote:         "git@github.com:sheyiyuan/zero-beat-sync.git",
+			Branch:         "main",
+			Auth:           "SSH",
+			Auto:           true,
+			KeyCached:      true,
+			KeyMatchesRepo: true,
+			KeyVersion:     1,
+			LastSyncAt:     time.Now().Add(-4 * time.Minute),
+			LastResult:     "ok",
+			Warnings:       []string{"远端登录态时间戳相同但内容不同（netease），已保留本地"},
+		}
+	case "conflicts":
+		m.view = viewConflicts
+		m.syncConflicts = syncpkg.ConflictIndex{
+			TxID: "20261101-183000-a1b2c3d4",
+			Entities: []syncpkg.ConflictEntity{
+				{Index: 0, Entity: "playlist:local-1761980000000000000", Kind: syncpkg.KindPlaylist,
+					ID: "local-1761980000000000000", Path: "playlists/local-1761980000000000000.json",
+					Local: true, Remote: true, Title: "通勤", LocalTitle: "通勤", RemoteTitle: "通勤",
+					LocalCount: 12, RemoteCount: 15, LocalUpdated: 1761980000, RemoteUpdated: 1761983600},
+				{Index: 1, Entity: "keymap", Kind: syncpkg.KindKeymap, Path: "keymap.toml",
+					Local: true, Remote: true, LocalCount: 4, RemoteCount: 5},
+				{Index: 2, Entity: "annotation:bilibili:BV1xx411c7mD:1", Kind: syncpkg.KindAnnotation,
+					ID: "bilibili:BV1xx411c7mD:1", Path: "annotations/bilibili%3ABV1xx411c7mD%3A1.json",
+					Local: true, Remote: false, DeletedRemote: true, Title: "bilibili:BV1xx411c7mD:1"},
+			},
+		}
+		m.syncChoices = map[string]syncpkg.Choice{
+			"playlist:local-1761980000000000000": syncpkg.KeepBoth,
+		}
 	case "about":
 		m.aboutPopup = true
 	default:

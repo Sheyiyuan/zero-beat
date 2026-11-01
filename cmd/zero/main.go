@@ -16,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/skip2/go-qrcode"
 
+	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/bili"
 	"github.com/sheyiyuan/zero-beat/internal/config"
@@ -24,6 +25,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	bilibilisource "github.com/sheyiyuan/zero-beat/internal/source/bilibili"
 	"github.com/sheyiyuan/zero-beat/internal/store"
+	syncpkg "github.com/sheyiyuan/zero-beat/internal/sync"
 	"github.com/sheyiyuan/zero-beat/internal/tui"
 )
 
@@ -80,6 +82,8 @@ func run(args []string) error {
 		return runKeymap(fs.Args()[1:])
 	case "theme":
 		return runTheme(fs.Args()[1:])
+	case "sync":
+		return runSync(fs.Args()[1:])
 	default:
 		usage(fs)
 		return fmt.Errorf("未知子命令 %q", cmd)
@@ -93,12 +97,13 @@ func usage(fs *flag.FlagSet) {
   zero                  启动终端界面
   zero play <链接或 ID>  直接播放（headless，便于验证音频链路）
   zero login [音源]     在终端里扫码登录并保存 cookie（默认第一个音源）
-  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker/menu/about/downloads/selection）
+  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker/menu/about/downloads/selection/sync/conflicts）
   zero download <目标...>  下载单曲（支持 -j 并发、Range 续传）
   zero clean-playlists  清空已导入的远端歌单，保留本地歌单
   zero theme [auto|dark|light]  查看/设置主题（auto 读 COLORFGBG）
   zero keymap --check   校验 ~/.config/zero-beat/keymap.toml
   zero keymap --init    生成默认快捷键配置
+  zero sync <子命令>    歌单/键位/加密登录态的 git 同步（zero sync 查看用法）
   zero --version        打印版本
 
 数据目录: ~/.config/zero-beat/（数据库与登录态）
@@ -152,7 +157,11 @@ func runTUI() error {
 	}
 	defer engine.Close()
 
-	model := tui.New(newSources(st), st, engine)
+	var manager *syncpkg.Manager
+	if opts, err := syncpkg.DefaultOptions(st, app.LibraryRevision); err == nil {
+		manager = syncpkg.NewManager(syncpkg.NewClient(opts), syncpkg.ManagerOptions{})
+	}
+	model := tui.New(newSources(st), st, engine, manager)
 	p := tea.NewProgram(model)
 	_, err = p.Run()
 	return err

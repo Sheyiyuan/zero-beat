@@ -99,14 +99,14 @@ func (m *Model) helpLines(width int) []string {
 
 	section("浏览")
 	add("Tab / Shift+Tab", "正向 / 反向轮转全部视图（也可点页头页面名打开菜单）")
-	add("1-9", "直达曲库、本地搜索、音源搜索、队列、歌词、帮助、登录、导入歌单、下载")
+	add("1-9", "直达曲库、本地搜索、音源搜索、队列、歌词、帮助、登录、导入歌单、下载；同步页用 Tab 或 ctrl+s")
 	add(joinKeys(m.helpKeys(keymap.Down), m.helpKeys(keymap.Up)), "上下移动")
 	add(joinKeys(m.helpKeys(keymap.Top), m.helpKeys(keymap.Bottom)), "跳到列表顶部 / 底部")
 	add(joinKeys(m.helpKeys(keymap.PageUp), m.helpKeys(keymap.PageDown)), "向上 / 向下翻页")
 	add(joinKeys(m.helpKeys(keymap.Left), m.helpKeys(keymap.Right)), "切换歌单 / 歌曲操作焦点（曲库）")
 	add(m.helpKeys(keymap.QueueView), "打开播放列表")
 	add(m.helpKeys(keymap.LyricsView), "打开歌词")
-	add(m.helpKeys(keymap.New), "打开命令面板（新建本地/混合歌单、同步、解锁、关于）")
+	add(m.helpKeys(keymap.New), "打开命令面板（新建本地/混合歌单、跨设备同步、解锁、关于）")
 	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
 	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/取消/删除/查看缺失文件）")
 	add(joinKeys(m.helpKeys(keymap.MixEdit), m.helpKeys(keymap.Unlock)), "编辑混合歌单引用 / 解锁同步歌单（歌单焦点）")
@@ -118,6 +118,15 @@ func (m *Model) helpLines(width int) []string {
 	add(joinKeys(m.helpKeys(keymap.QueueUp), m.helpKeys(keymap.QueueDown)), "队列内上移 / 下移")
 	add(m.helpKeys(keymap.Delete), "清空队列；歌单焦点删除当前歌单（同步歌单只删本地副本）")
 	add(joinKeys(m.helpKeys(keymap.Rename), m.helpKeys(keymap.Refresh)), "重命名歌单（歌单焦点）/ 刷新当前歌单（远端歌单会重新同步）")
+
+	section("同步")
+	add(m.helpKeys(keymap.Sync), "打开同步页；右下角同步状态也可点击")
+	add("↑/↓ + enter", "选择操作；在地址/分支/口令/令牌行直接打字即可编辑")
+	add("space", "勾选「歌单会以明文托管」；初始化前必须确认")
+	add("同步口令", "至少 12 个字符；输入不回显，确认后显示「已输入」")
+	add("连接方式", "在 SSH 与 HTTPS 之间切换，本机密钥与登录态不失效")
+	add("冲突页 l/r/b", "逐项保留本地/远程/两者；L/R 全部；enter 应用；esc 返回")
+	add("粘贴", "编辑地址/口令/令牌时可用终端粘贴（ctrl+shift+v / cmd+v / 中键）")
 
 	section("鼠标")
 	add("左键", "点击按钮、页头或列表项；点底部音质档位切换音质（等同 y）；双击歌曲播放；Ctrl+左键勾选、Shift+左键连选；单击歌词移动焦点、双击跳转")
@@ -132,6 +141,7 @@ func (m *Model) helpLines(width int) []string {
 	add(joinKeys(m.helpKeys(keymap.Login), m.helpKeys(keymap.Logout)), "登录管理 / 退出登录（登录页，W 仍兼容）")
 	add(m.helpKeys(keymap.LoginImage), "打开二维码图片（登录页）")
 	add(m.helpKeys(keymap.HelpPopup), "打开/关闭快捷键弹窗")
+	add("媒体键", "Linux 下经 MPRIS 控制播放/暂停/上下首/进度/音量；ZERO_SYSMEDIA=0 关闭")
 	add(joinKeys(m.helpKeys(keymap.Back), "esc"), "返回曲库 / 取消输入")
 	add(joinKeys(m.helpKeys(keymap.Quit), "ctrl+c"), "退出")
 
@@ -241,6 +251,10 @@ func (m *Model) hintLine() string {
 		return "↑/↓ 选句 · enter 跳转 · esc 回播放 · " + m.firstKey(keymap.Download) + " 下载 · " + m.firstKey(keymap.PlayPause) + " 暂停 · " + m.firstKey(keymap.HelpPopup) + " 帮助" + source
 	case viewHelp:
 		return m.firstKey(keymap.HelpPopup) + " 弹窗 · esc 返回"
+	case viewSync:
+		return "↑/↓ 选择 · enter 执行 · esc 返回"
+	case viewConflicts:
+		return "l 本地 · r 远程 · b 两者 · L/R 全部 · enter 应用 · esc 返回"
 	case viewLogin:
 		if _, ok := m.userFor(m.loginSource); ok {
 			return "↑/↓ 切源 · " + m.firstKey(keymap.Refresh) + " 刷新账号 · W/" + m.firstKey(keymap.Logout) + " 退出 · esc 返回"

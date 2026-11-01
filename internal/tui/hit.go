@@ -20,6 +20,7 @@ const (
 	hitDownloadRow
 	hitFolderRow
 	hitLyricRow
+	hitSyncStatus
 )
 
 type hitZone struct {
@@ -198,6 +199,13 @@ func (m *Model) hitZones() []hitZone {
 	// 底部常驻区。
 	if _, _, ok := m.lyricStripText(); ok && m.height >= 4 {
 		zones = append(zones, hitZone{target: hitLyricStrip, x: 0, y: m.height - 4, w: m.width, h: 1})
+	}
+	if m.syncStatusLineVisible() {
+		text := m.syncStatusText()
+		w := visWidth(text)
+		if w > 0 && w < m.width {
+			zones = append(zones, hitZone{target: hitSyncStatus, x: m.width - w, y: m.height - 1, w: w, h: 1})
+		}
 	}
 	if m.height >= 3 {
 		zones = append(zones, hitZone{

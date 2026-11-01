@@ -20,11 +20,20 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/player"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
+	"github.com/sheyiyuan/zero-beat/internal/sysmedia"
 )
 
 type tickMsg struct{}
 
 type engineEventMsg struct{ ev audio.Event }
+
+type sysCommandMsg struct{ cmd sysmedia.Command }
+
+type coverMsg struct {
+	songID string
+	path   string
+	err    error
+}
 
 type usersMsg struct {
 	users map[source.ID]source.User
@@ -123,6 +132,20 @@ func waitEngineCmd(events <-chan audio.Event) tea.Cmd {
 			return nil
 		}
 		return engineEventMsg{ev: ev}
+	}
+}
+
+// waitSysmediaCmd 把系统媒体面板发来的操作桥接成 tea.Msg。
+func waitSysmediaCmd(s sysmedia.Service) tea.Cmd {
+	if s == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		cmd, ok := <-s.Commands()
+		if !ok {
+			return nil
+		}
+		return sysCommandMsg{cmd: cmd}
 	}
 }
 
@@ -373,7 +396,7 @@ func openLocalFile(path string) error {
 		cmd = exec.Command("xdg-open", path)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("打开二维码图片失败：%w", err)
+		return fmt.Errorf("打开失败：%w", err)
 	}
 	go func() { _ = cmd.Wait() }()
 	return nil

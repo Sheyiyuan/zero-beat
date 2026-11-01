@@ -23,7 +23,28 @@ func (m *Model) handlePaste(content string) {
 		m.promptInput = appendInput(m.promptInput, text)
 	case m.view == viewSearch && m.searchEditing:
 		m.searchInput = appendInput(m.searchInput, text)
+	case m.view == viewSync && m.syncEdit != "":
+		if m.syncEdit == "pass" || m.syncEdit == "token" {
+			// 口令/令牌原样保留空格，只去掉换行与控制字符。
+			m.syncInput = appendInput(m.syncInput, sanitizePastedSecret(content))
+		} else {
+			m.syncInput = appendInput(m.syncInput, text)
+		}
 	}
+}
+
+// sanitizePastedSecret 用于口令与 token：保留空格（不合并、不裁剪），
+// 只移除换行与其他控制字符，避免密码管理器粘贴的内容被静默改写。
+func sanitizePastedSecret(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '\n' || r == '\r' || unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // sanitizePastedText 把多行粘贴压成单行，并剔掉控制字符（包括 ESC），

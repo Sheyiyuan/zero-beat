@@ -414,6 +414,8 @@ func (m *Model) renderHintLine() string {
 		right = st.muted.Render("载入中…")
 	case m.searchBusy:
 		right = st.muted.Render("搜索中…")
+	case m.syncStatusText() != "":
+		right = st.muted.Render(m.syncStatusText())
 	}
 	if right == "" {
 		return left
@@ -445,6 +447,10 @@ func (m *Model) renderBody(h int) []string {
 		return m.renderMix(h)
 	case viewDownloads:
 		return m.renderDownloads(h)
+	case viewSync:
+		return m.renderSync(h)
+	case viewConflicts:
+		return m.renderConflicts(h)
 	}
 	return nil
 }

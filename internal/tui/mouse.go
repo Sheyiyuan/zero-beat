@@ -103,6 +103,8 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	case hitLyricStrip:
 		m.view = viewLyrics
 		return m, m.onViewChanged()
+	case hitSyncStatus:
+		return m, m.openSyncPage()
 	case hitLyricRow:
 		// 单击只把焦点移到该行（不跳转）；双击同一屏幕位置才提交跳转。
 		// 单击后视口会重新居中，所以双击只比对屏幕坐标与时间，不比对行号——

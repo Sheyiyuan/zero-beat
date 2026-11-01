@@ -204,7 +204,7 @@ func TestTabCyclesPages(t *testing.T) {
 	m := fixtureModel()
 	want := []view{
 		viewSearch, viewSearch, viewQueue, viewLyrics, viewHelp, viewLogin,
-		viewFolders, viewDownloads, viewLibrary,
+		viewFolders, viewDownloads, viewSync, viewLibrary,
 	}
 	for i, w := range want {
 		updated, _ := m.Update(keyPress("", tea.KeyTab))
@@ -266,7 +266,7 @@ func TestVimDirectionKeysAndLyricsShortcut(t *testing.T) {
 func TestShiftTabCyclesPagesBackwards(t *testing.T) {
 	m := fixtureModel()
 	want := []view{
-		viewDownloads, viewFolders, viewLogin, viewHelp, viewLyrics,
+		viewSync, viewDownloads, viewFolders, viewLogin, viewHelp, viewLyrics,
 		viewQueue, viewSearch, viewSearch, viewLibrary,
 	}
 	for i, w := range want {

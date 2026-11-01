@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,6 +21,8 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/player"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
+	syncpkg "github.com/sheyiyuan/zero-beat/internal/sync"
+	"github.com/sheyiyuan/zero-beat/internal/sysmedia"
 )
 
 type view int
@@ -34,9 +37,11 @@ const (
 	viewFolders
 	viewMix
 	viewDownloads
+	viewSync
+	viewConflicts
 )
 
-var viewNames = []string{"曲库", "搜索", "队列", "歌词", "帮助", "登录", "导入歌单", "混合歌单", "下载"}
+var viewNames = []string{"曲库", "搜索", "队列", "歌词", "帮助", "登录", "导入歌单", "混合歌单", "下载", "同步", "冲突"}
 
 var defaultKeys = keymap.Default()
 
@@ -154,6 +159,27 @@ type Model struct {
 	mode     playMode
 	muted    bool
 
+	// 同步：页面状态、输入缓冲与冲突选择。口令只在本机内存里短暂停留。
+	syncMgr         *syncpkg.Manager
+	syncStatus      syncpkg.Status
+	syncBusy        bool
+	syncRev         uint64
+	syncEdit        string
+	syncInput       string
+	syncPass        string
+	syncCursor      int
+	syncAck         bool
+	syncConflicts   syncpkg.ConflictIndex
+	syncChoices     map[string]syncpkg.Choice
+	syncConflictIdx int
+
+	// sysmedia 把播放状态投喂给系统媒体面板；关闭时保持 nil。
+	sys             sysmedia.Service
+	artwork         string
+	artworkSongID   string
+	coverLoadingID  string
+	coverAttemptURL string
+
 	// resumeAt > 0 表示当前只是恢复出来的会话，尚未真正起播；space 从这里继续。
 	resumeAt       time.Duration
 	retryCount     int
@@ -254,7 +280,7 @@ type Model struct {
 }
 
 // New 构造界面模型，并恢复上次的音量、模式与队列。
-func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model {
+func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMgr *syncpkg.Manager) *Model {
 	var cleaned bool
 	if st != nil {
 		cleaned, _ = st.CleanRemotePlaylistsOnce(remotePlaylistsCleanupMarker)
@@ -287,6 +313,9 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine) *Model
 		lrclib:      lrclib.New(),
 		users:       map[source.ID]source.User{},
 		qrCache:     map[source.ID]*qrCacheEntry{},
+		syncMgr:     syncMgr,
+		syncChoices: map[string]syncpkg.Choice{},
+		syncRev:     app.LibraryRevision(),
 	}
 	if sources != nil {
 		for _, src := range sources.All() {
@@ -336,13 +365,40 @@ func (m *Model) keyLabel(a keymap.Action) string {
 
 // Init 启动定时器、事件监听与首批数据加载。
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tickCmd(),
 		waitEngineCmd(m.engine.Events()),
 		m.loadUsersCmd(),
 		m.loadPlaylistsCmd(),
 		m.restoreQueueCmd(),
-	)
+	}
+	if m.startSysmedia() {
+		cmds = append(cmds, waitSysmediaCmd(m.sys))
+		m.publishNowPlaying()
+	}
+	if m.syncMgr != nil {
+		m.syncMgr.Start()
+		m.syncStatus = m.syncMgr.Status()
+		cmds = append(cmds, waitSyncCmd(m.syncMgr))
+	}
+	return tea.Batch(cmds...)
+}
+
+// startSysmedia 启动系统媒体集成；失败或显式关闭时保持 nil，不影响播放。
+func (m *Model) startSysmedia() bool {
+	if os.Getenv("ZERO_SYSMEDIA") == "0" {
+		return false
+	}
+	svc, err := sysmedia.New()
+	if err != nil {
+		m.setWarn("系统媒体控制不可用：" + err.Error())
+		return false
+	}
+	if svc == nil {
+		return false
+	}
+	m.sys = svc
+	return true
 }
 
 // Update 处理消息。
@@ -386,10 +442,71 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if tick.SleepPaused {
 			m.setNotice("睡眠定时结束，已暂停", false)
 		}
-		return m, tickCmd()
+		m.notifySyncIfChanged()
+		cmds := []tea.Cmd{tickCmd()}
+		if cmd := m.syncArtwork(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		m.publishNowPlaying()
+		return m, tea.Batch(cmds...)
 
 	case engineEventMsg:
 		return m.handleEngineEvent(msg.ev)
+
+	case sysCommandMsg:
+		cmd := m.applySysCommand(msg.cmd)
+		m.publishNowPlaying()
+		cmds := []tea.Cmd{waitSysmediaCmd(m.sys)}
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case syncEventMsg:
+		return m.handleSyncEvent(msg.ev)
+
+	case syncStatusMsg:
+		m.syncStatus = msg.status
+		return m, nil
+
+	case syncConflictsMsg:
+		if msg.err != nil {
+			if errors.Is(msg.err, os.ErrNotExist) {
+				m.setNotice("没有待处理的冲突", false)
+				return m, m.syncStatusCmd()
+			}
+			m.setError(msg.err)
+			return m, nil
+		}
+		m.syncConflicts = msg.index
+		m.syncChoices = map[string]syncpkg.Choice{}
+		m.syncConflictIdx = 0
+		m.view = viewConflicts
+		return m, nil
+
+	case syncResultMsg:
+		return m.handleSyncResult(msg)
+
+	case sessionsAppliedMsg:
+		if len(msg.sources) > 0 && m.sources != nil {
+			for _, id := range msg.sources {
+				if src := m.sources.Get(id); src != nil {
+					if u := src.User(); u.LoggedIn {
+						m.users[id] = u
+					}
+				}
+			}
+		}
+		return m, nil
+
+	case coverMsg:
+		m.coverLoadingID = ""
+		if m.current != nil && msg.songID == m.current.ID && msg.err == nil {
+			m.artwork = msg.path
+			m.artworkSongID = msg.songID
+		}
+		m.publishNowPlaying()
+		return m, nil
 
 	case usersMsg:
 		if msg.users != nil {
@@ -880,6 +997,12 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 	if m.view == viewSearch && m.searchEditing {
 		return m.handleSearchInput(key)
 	}
+	if m.view == viewSync {
+		return m.handleSyncKey(key)
+	}
+	if m.view == viewConflicts {
+		return m.handleConflictKey(key)
+	}
 
 	switch {
 	case isCtrl(key, 'c'):
@@ -934,6 +1057,8 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 	case m.match(keymap.Quit, key):
 		m.shutdown()
 		return m, tea.Quit
+	case m.match(keymap.Sync, key):
+		return m, m.openSyncPage()
 	case m.match(keymap.QueueView, key):
 		m.view = viewQueue
 		return m, m.onViewChanged()
@@ -1227,6 +1352,9 @@ func (m *Model) onViewChanged() tea.Cmd {
 	if m.view == viewDownloads && !m.downloadsBusy {
 		m.downloadsBusy = true
 		return m.loadDownloadsCmd()
+	}
+	if m.view == viewSync && m.syncMgr != nil {
+		return m.syncStatusCmd()
 	}
 	return nil
 }
@@ -2015,6 +2143,114 @@ func (m *Model) togglePlayback() tea.Cmd {
 		return m.playSongCmdAt(res.Song, res.StartAt, 0)
 	}
 	return nil
+}
+
+// applySysCommand 把系统媒体面板的操作映射到现有播放动作。
+func (m *Model) applySysCommand(cmd sysmedia.Command) tea.Cmd {
+	switch cmd.Kind {
+	case sysmedia.CommandToggle:
+		return m.togglePlayback()
+	case sysmedia.CommandPlay:
+		if m.state == audio.StatePaused || m.state == audio.StateEnded || m.state == audio.StateIdle {
+			return m.togglePlayback()
+		}
+	case sysmedia.CommandPause:
+		if m.state == audio.StatePlaying {
+			return m.togglePlayback()
+		}
+	case sysmedia.CommandNext:
+		return m.advance()
+	case sysmedia.CommandPrevious:
+		return m.rewind()
+	case sysmedia.CommandStop:
+		m.withController(func(c *player.Controller) { c.Stop() })
+		m.persistQueue()
+	case sysmedia.CommandSeekTo:
+		if m.current != nil && (cmd.TrackID == "" || cmd.TrackID == m.current.ID) {
+			return m.seekTo(cmd.Position)
+		}
+	case sysmedia.CommandSeekBy:
+		if m.current != nil {
+			return m.seekBy(cmd.Offset)
+		}
+	case sysmedia.CommandSetVolume:
+		v := clamp01(cmd.Volume)
+		m.withController(func(c *player.Controller) { c.SetVolume(v) })
+		m.service().SaveVolume(m.volume)
+	}
+	return nil
+}
+
+// publishNowPlaying 把当前镜像推给系统媒体面板；未启用时是空操作。
+func (m *Model) publishNowPlaying() {
+	if m.sys == nil {
+		return
+	}
+	snap := sysmedia.Snapshot{
+		State:    m.state,
+		Position: m.position,
+		Duration: m.duration,
+		Volume:   m.volume,
+		Muted:    m.muted,
+		Shuffle:  m.mode == modeShuffle,
+		CanNext:  len(m.queue) > 1,
+		CanPrev:  len(m.queue) > 1,
+	}
+	if m.current != nil {
+		snap.TrackID = m.current.ID
+		snap.Title = m.current.Title
+		snap.Artist = m.current.Artist
+		snap.Album = m.current.Album
+		if snap.Duration <= 0 && m.current.Duration > 0 {
+			snap.Duration = time.Duration(m.current.Duration) * time.Second
+		}
+		if m.artworkSongID == m.current.ID {
+			snap.Artwork = m.artwork
+		}
+	} else {
+		snap.Position = 0
+	}
+	m.sys.Publish(snap)
+}
+
+// syncArtwork 让封面缓存跟上当前曲目；只在启用系统集成时下载。
+func (m *Model) syncArtwork() tea.Cmd {
+	if m.sys == nil {
+		return nil
+	}
+	cur := m.current
+	if cur == nil {
+		m.artwork = ""
+		m.artworkSongID = ""
+		m.coverLoadingID = ""
+		m.coverAttemptURL = ""
+		return nil
+	}
+	if cur.Cover == "" {
+		m.artwork = ""
+		m.artworkSongID = cur.ID
+		m.coverLoadingID = ""
+		m.coverAttemptURL = ""
+		return nil
+	}
+	if m.artworkSongID == cur.ID && (m.artwork != "" || m.coverAttemptURL == cur.Cover) {
+		return nil
+	}
+	if m.coverLoadingID == cur.ID {
+		return nil
+	}
+	m.artwork = ""
+	m.artworkSongID = cur.ID
+	m.coverLoadingID = cur.ID
+	m.coverAttemptURL = cur.Cover
+	svc := m.service()
+	song := *cur
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		path, err := svc.CoverPath(ctx, song)
+		return coverMsg{songID: song.ID, path: path, err: err}
+	}
 }
 
 // seekTo 跳到绝对位置；沿用 seekBy 的片段限制与过期续签逻辑。
@@ -2923,6 +3159,13 @@ func (m *Model) loginAppName(id source.ID) string {
 func (m *Model) shutdown() {
 	m.cancelDownloads()
 	m.persistQueue()
+	if m.syncMgr != nil {
+		m.syncMgr.Close()
+	}
+	if m.sys != nil {
+		m.sys.Close()
+		m.sys = nil
+	}
 	if m.engine != nil {
 		_ = m.engine.Close()
 	}
