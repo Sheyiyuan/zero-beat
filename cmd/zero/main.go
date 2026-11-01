@@ -20,6 +20,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/bili"
 	"github.com/sheyiyuan/zero-beat/internal/config"
+	"github.com/sheyiyuan/zero-beat/internal/instance"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/netease"
 	"github.com/sheyiyuan/zero-beat/internal/source"
@@ -145,6 +146,16 @@ func newSources(st *store.Store) *source.Registry {
 }
 
 func runTUI() error {
+	dir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+	lock, err := instance.Acquire(dir)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	st, err := openStore()
 	if err != nil {
 		return err
