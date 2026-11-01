@@ -133,6 +133,11 @@ type PlaylistWriter interface {
 	AddToPlaylist(ctx context.Context, remoteID string, ref Ref) error
 }
 
+// CoverHeadersProvider 是可选能力：封面图片请求需要额外请求头（如防盗链 Referer）。
+type CoverHeadersProvider interface {
+	CoverHeaders() map[string]string
+}
+
 // Aliased 是可选能力：音源声明命令行里可接受的别名（ID 与 Name 自动包含）。
 type Aliased interface {
 	Aliases() []string

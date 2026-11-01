@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sheyiyuan/zero-beat/internal/cover"
 	"github.com/sheyiyuan/zero-beat/internal/lrclib"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/source"
@@ -169,6 +170,22 @@ func (s *Service) Stream(ctx context.Context, song store.Song, quality source.Qu
 		return source.Track{}, source.Stream{}, err
 	}
 	return resolved.Track, resolved.Stream, nil
+}
+
+// CoverPath 下载并缓存歌曲封面，返回本地文件路径；封面只服务系统媒体面板。
+func (s *Service) CoverPath(ctx context.Context, song store.Song) (string, error) {
+	if song.Cover == "" {
+		return "", fmt.Errorf("没有封面")
+	}
+	var headers map[string]string
+	if s.sources != nil {
+		if src := s.sources.GetString(song.Source); src != nil {
+			if h, ok := src.(source.CoverHeadersProvider); ok {
+				headers = h.CoverHeaders()
+			}
+		}
+	}
+	return cover.Fetch(ctx, song.Cover, headers)
 }
 
 // DownloadedPath 返回已下载且文件仍然有效（存在且非空）的本地路径。

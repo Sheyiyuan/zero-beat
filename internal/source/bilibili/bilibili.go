@@ -14,7 +14,10 @@ import (
 )
 
 // Source 是 B 站音源。
-var _ source.PlaylistWriter = (*Source)(nil)
+var (
+	_ source.PlaylistWriter       = (*Source)(nil)
+	_ source.CoverHeadersProvider = (*Source)(nil)
+)
 
 type Source struct {
 	client *bili.Client
@@ -42,6 +45,11 @@ func (s *Source) LyricName() string { return "B 站字幕" }
 
 // LoginAppName 实现 source.LoginNamer。
 func (s *Source) LoginAppName() string { return "B 站 App" }
+
+// CoverHeaders 实现 source.CoverHeadersProvider：B 站图床需要 Referer。
+func (s *Source) CoverHeaders() map[string]string {
+	return map[string]string{"Referer": "https://www.bilibili.com/"}
+}
 
 // ParseTarget 实现 source.TargetParser：BV 号、av 号与 B 站视频链接。
 func (s *Source) ParseTarget(input string, pageOverride int) (source.Ref, bool, error) {
