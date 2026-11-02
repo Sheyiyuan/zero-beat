@@ -572,6 +572,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.setNotice(msg.err.Error(), true)
 		}
+		// r 刷新远端歌单、d 移除歌曲都会改变曲目数。侧栏计数必须跟着这次
+		// 加载结果走，否则会一直留着旧数字，直到下一次全量加载歌单。
+		m.syncPlaylistCount(msg.playlistID, len(msg.items))
 		if msg.playlistID != m.currentPlaylistID() {
 			return m, nil
 		}
@@ -3095,6 +3098,20 @@ func (m *Model) currentPlaylistID() string {
 		return p.ID
 	}
 	return ""
+}
+
+// syncPlaylistCount 用一次曲目加载的结果更新侧栏里对应歌单的曲目数。
+// 歌单可能已经不在列表里（例如同步删除），此时静默跳过。
+func (m *Model) syncPlaylistCount(id string, count int) {
+	if id == "" || count < 0 {
+		return
+	}
+	for i := range m.playlists {
+		if m.playlists[i].ID == id {
+			m.playlists[i].Count = count
+			return
+		}
+	}
 }
 
 func (m *Model) setPlayingPlaylist(id string) {
