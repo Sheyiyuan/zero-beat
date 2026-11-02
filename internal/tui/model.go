@@ -14,6 +14,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/app"
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/config"
+	"github.com/sheyiyuan/zero-beat/internal/control"
 	"github.com/sheyiyuan/zero-beat/internal/downloader"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/lrclib"
@@ -410,6 +411,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(tea.Key(msg))
+
+	case control.Request:
+		return m.handleControlRequest(msg)
 
 	case tea.PasteMsg:
 		m.handlePaste(msg.Content)

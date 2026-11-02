@@ -20,6 +20,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/bili"
 	"github.com/sheyiyuan/zero-beat/internal/config"
+	"github.com/sheyiyuan/zero-beat/internal/control"
 	"github.com/sheyiyuan/zero-beat/internal/instance"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/netease"
@@ -83,9 +84,16 @@ func run(args []string) error {
 		return runKeymap(fs.Args()[1:])
 	case "theme":
 		return runTheme(fs.Args()[1:])
+	case "desktop":
+		return runDesktop(fs.Args()[1:])
 	case "sync":
 		return runSync(fs.Args()[1:])
+	case "frame":
+		return runFrame(fs.Args()[1:])
 	default:
+		if strings.HasPrefix(cmd, "+") {
+			return runControl(fs.Args())
+		}
 		usage(fs)
 		return fmt.Errorf("未知子命令 %q", cmd)
 	}
@@ -174,6 +182,11 @@ func runTUI() error {
 	}
 	model := tui.New(newSources(st), st, engine, manager)
 	p := tea.NewProgram(model)
+	// 控制通道是开发期辅助能力，起不来不影响播放。
+	if srv, err := control.Listen(dir, p.Send); err == nil {
+		defer srv.Close()
+		go srv.Serve()
+	}
 	_, err = p.Run()
 	return err
 }

@@ -348,6 +348,25 @@ func (b binding) match(key tea.Key) bool {
 	return key.Text == b.text
 }
 
+// ParseKey 把 keymap.toml 里的按键写法（space / enter / ctrl+a / 单字符）
+// 解析成注入用的 tea.Key，保证控制通道和真人按键使用同一套键名。
+func ParseKey(raw string) (tea.Key, error) {
+	b, err := parseBinding(raw)
+	if err != nil {
+		return tea.Key{}, err
+	}
+	key := tea.Key{Code: b.code, Text: b.text, Mod: b.mods}
+	// 真实终端的空格键带 Text " "，命名写法里没有；补上才能落进输入态。
+	if key.Code == tea.KeySpace && key.Text == "" {
+		key.Text = " "
+	}
+	// ctrl/super 组合在终端里不产生可打印文本，清掉 Text 才和真人按键一致。
+	if key.Mod&(tea.ModCtrl|tea.ModSuper) != 0 {
+		key.Text = ""
+	}
+	return key, nil
+}
+
 func parseBinding(raw string) (binding, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

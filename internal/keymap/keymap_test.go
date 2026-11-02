@@ -13,6 +13,36 @@ func key(text string, code rune) tea.Key {
 	return tea.Key{Text: text, Code: code}
 }
 
+func TestParseKey(t *testing.T) {
+	cases := []struct {
+		raw  string
+		text string
+		code rune
+		mod  tea.KeyMod
+	}{
+		{"space", " ", tea.KeySpace, 0},
+		{"enter", "", tea.KeyEnter, 0},
+		{"down", "", tea.KeyDown, 0},
+		{"pgdown", "", tea.KeyPgDown, 0},
+		{"ctrl+a", "", 'a', tea.ModCtrl},
+		{"ctrl+space", "", tea.KeySpace, tea.ModCtrl},
+		{"+", "+", '+', 0},
+		{"D", "D", 'D', 0},
+	}
+	for _, c := range cases {
+		got, err := ParseKey(c.raw)
+		if err != nil {
+			t.Fatalf("%q 应能解析: %v", c.raw, err)
+		}
+		if got.Text != c.text || got.Code != c.code || got.Mod != c.mod {
+			t.Fatalf("%q 解析结果不符: %+v", c.raw, got)
+		}
+	}
+	if _, err := ParseKey("ctrl+"); err == nil {
+		t.Fatal("缺少基础按键时应报错")
+	}
+}
+
 func TestDefaultBindings(t *testing.T) {
 	km := Default()
 	if !km.Match(Next, key("]", ']')) || km.Match(Next, key("n", 'n')) {
