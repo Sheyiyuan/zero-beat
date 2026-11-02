@@ -109,10 +109,16 @@ func usage(fs *flag.FlagSet) {
   zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker/menu/about/downloads/selection/sync/conflicts）
   zero download <目标...>  下载单曲（支持 -j 并发、Range 续传）
   zero clean-playlists  清空已导入的远端歌单，保留本地歌单
-  zero theme [auto|dark|light]  查看/设置主题（auto 读 COLORFGBG）
+  zero theme [auto|dark|light]  查看/设置深色/浅色模式
+  zero theme palette zero-red|hanpai-blue  选择配色（佐洛红 / 半拍蓝）
+  zero theme --init|--check     生成/校验自定义颜色 theme.toml
+  zero desktop install  注册 Linux 应用菜单入口（含图标，卸载用 uninstall）
   zero keymap --check   校验 ~/.config/zero-beat/keymap.toml
   zero keymap --init    生成默认快捷键配置
   zero sync <子命令>    歌单/键位/加密登录态的 git 同步（zero sync 查看用法）
+  zero frame [选项]     读取运行中实例的当前帧（--ansi / --json / --delay / --stable）
+  zero +<按键>          向运行中实例注入按键，例如 zero +space、zero +ctrl+a
+  zero +type <文本>     向当前输入态灌入文本
   zero --version        打印版本
 
 数据目录: ~/.config/zero-beat/（数据库与登录态）

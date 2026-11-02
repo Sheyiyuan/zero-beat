@@ -53,6 +53,39 @@
 `LoginNamer` 可选接口。`source` 核心包不再穷举平台名，`Registry` 负责别名查找、
 目标解析与展示兜底。
 
+### 模块清单
+
+```
+cmd/zero                 CLI 入口：tui / play / download / login / frame / +key / desktop 等
+internal/tui             Bubble Tea v2 界面：模型、渲染、按键、命令
+internal/control         本机控制通道：Unix socket，读取当前帧与注入按键
+internal/app             业务服务：搜索、取流、歌词、歌单同步、登录、队列恢复
+internal/player          播放控制器：队列、播放状态、引擎、模式、预解析
+internal/downloader      下载任务队列、并发、取消与进度事件
+internal/sync            跨设备同步：快照、git、合并、冲突、凭据加密
+internal/sysmedia        Linux MPRIS：系统媒体面板/媒体键与播放器之间的桥
+internal/cover           封面下载与磁盘缓存（只服务系统媒体面板）
+internal/instance        TUI 单实例锁（flock / 独占文件），锁文件记录 PID
+internal/desktop         Linux 应用菜单入口（.desktop + hicolor 图标）安装与卸载
+internal/source          多音源契约、能力位、注册表、平台元数据
+internal/source/bilibili B 站适配器：搜索、多 P、收藏夹、字幕、播放
+internal/netease         网易云客户端：基于 go-musicfox/netease-music 的 Source 适配
+internal/bili            B 站 API 客户端
+internal/audio           播放引擎：ffmpeg 解码 → 增益链 → oto 输出，事件通道
+internal/lyrics          LRC 解析与时间轴定位
+internal/lrclib          LRCLIB 歌词查询与标题清洗
+internal/download        音频落盘：Range 续传、ffmpeg 封装、标签
+internal/store           SQLite：歌曲、歌单、队列、设置、登录态
+internal/keymap          动作 ID 与 TOML 覆盖加载
+internal/config          数据目录
+```
+
+关键契约包括：`source.Source`（TUI 只知道接口，不按平台名分支）、
+`app.Service`（外部业务不依赖 Bubble Tea）、`player.Controller`（播放状态机与
+引擎控制）、`downloader.Manager`（下载任务队列）、`sync.Manager` / `sync.Client`
+（跨设备同步）和 `sysmedia.Service`（系统媒体面板桥接）；`audio.Stream` 仍是
+音源到引擎的最终输入。
+
 ## 数据流
 
 **一次播放的完整路径**
