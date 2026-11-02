@@ -153,6 +153,24 @@ configure_path() {
 	echo "或重新打开终端。"
 }
 
+# 图形会话里把应用菜单入口与图标一起装好，菜单里才会显示产品图标。
+register_desktop() {
+	[ "${OS:-}" = linux ] || return 0
+	# sudo 下 HOME 指向 root，入口会写进 root 的家目录，用户菜单看不到。
+	if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+		warn "以 sudo 安装时跳过应用菜单注册；请用普通用户执行 zero desktop install"
+		return 0
+	fi
+	# 服务器 / 容器没有图形会话，不需要菜单入口。
+	[ -n "${XDG_CURRENT_DESKTOP:-}${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] || return 0
+	[ -x "$BINDIR/zero" ] || return 0
+	if "$BINDIR/zero" desktop install >/dev/null 2>&1; then
+		echo "已注册 Linux 应用菜单入口（含图标）"
+	else
+		warn "应用菜单入口注册失败；可稍后运行 zero desktop install"
+	fi
+}
+
 # 不依赖 api.github.com：先看 releases/latest 的跳转地址，失败再退回 GitHub API。
 latest_version() {
 	final=$(curl -fsSL --connect-timeout 10 --max-time 30 \
@@ -225,6 +243,13 @@ if [ "$BINDIR" != "/" ]; then
 fi
 
 if [ "$UNINSTALL" -eq 1 ]; then
+	if [ -x "$BINDIR/zero" ]; then
+		"$BINDIR/zero" desktop uninstall >/dev/null 2>&1 || true
+	fi
+	# 旧版本没有 desktop 子命令时，按 XDG 约定兜底清理入口与图标。
+	_share="${XDG_DATA_HOME:-$HOME/.local/share}"
+	rm -f "$_share/applications/zero-beat.desktop" \
+		"$_share/icons/hicolor/256x256/apps/zero-beat.png"
 	if [ -e "$BINDIR/zero" ]; then
 		rm -f "$BINDIR/zero"
 		echo "已删除 $BINDIR/zero"
@@ -320,6 +345,7 @@ fi
 
 echo
 configure_path
+register_desktop
 
 echo
 echo "完成。运行 $BINDIR/zero --version 验证安装。"
