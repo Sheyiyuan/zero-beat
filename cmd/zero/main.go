@@ -249,24 +249,124 @@ func runTheme(args []string) error {
 	}
 	defer st.Close()
 
-	if len(args) == 0 {
-		fmt.Printf("当前主题设置：%s\n", st.Setting("theme", "auto"))
-		fmt.Println("可用值：auto / dark / light；auto 读取 COLORFGBG，识别不了时用 dark。")
-		fmt.Println("临时覆盖：ZERO_THEME=light|dark|auto zero")
+	path, err := config.ThemePath()
+	if err != nil {
+		return err
+	}
+
+	initFile, force, check := false, false, false
+	var pos []string
+	for _, a := range args {
+		switch a {
+		case "--init", "init":
+			initFile = true
+		case "--check", "check":
+			check = true
+		case "--force", "-f":
+			force = true
+		default:
+			if strings.HasPrefix(a, "-") {
+				return fmt.Errorf("未知 theme 参数 %q", a)
+			}
+			pos = append(pos, a)
+		}
+	}
+	if initFile && check {
+		return errors.New("--init 与 --check 不能同时使用")
+	}
+
+	switch {
+	case initFile:
+		if _, err := os.Stat(path); err == nil && !force {
+			return fmt.Errorf("%s 已存在；加 --force 覆盖", path)
+		}
+		if err := os.WriteFile(path, []byte(tui.ExampleThemeTOML()), 0o600); err != nil {
+			return fmt.Errorf("写入主题配置: %w", err)
+		}
+		fmt.Println("已生成主题配置：" + path)
+		fmt.Println("取消注释想覆盖的颜色，重启终端界面生效。")
+		return nil
+	case check:
+		n, err := tui.CheckThemeFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Println("没有 theme.toml，使用内置配色。")
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("theme.toml 有效，覆盖 %d 项颜色。\n", n)
+		return nil
+	case len(pos) == 0:
+		printThemeSummary(st, path)
 		return nil
 	}
 
-	v := strings.ToLower(strings.TrimSpace(args[0]))
-	switch v {
-	case "auto", "dark", "light":
-	default:
-		return errors.New("用法: zero theme [auto|dark|light]")
+	if pos[0] == "palette" {
+		if len(pos) == 1 {
+			name := st.Setting(tui.ThemePaletteKey, tui.PaletteZeroRed)
+			fmt.Printf("当前配色：%s（%s）\n", name, tui.PaletteLabel(name))
+			fmt.Println("可选：")
+			fmt.Printf("  %-12s %s（默认）\n", tui.PaletteZeroRed, tui.PaletteLabel(tui.PaletteZeroRed))
+			fmt.Printf("  %-12s %s\n", tui.PaletteHanpaiBlue, tui.PaletteLabel(tui.PaletteHanpaiBlue))
+			return nil
+		}
+		if len(pos) > 2 {
+			return errors.New("用法: zero theme palette zero-red|hanpai-blue")
+		}
+		if !tui.ValidPalette(pos[1]) {
+			return fmt.Errorf("未知配色 %q；可选 zero-red（佐洛红）/ hanpai-blue（半拍蓝）", pos[1])
+		}
+		name := tui.CanonicalPalette(pos[1])
+		if err := st.SetSetting(tui.ThemePaletteKey, name); err != nil {
+			return err
+		}
+		fmt.Printf("配色已设为 %s（%s），重启终端界面生效。\n", name, tui.PaletteLabel(name))
+		return nil
 	}
-	if err := st.SetSetting("theme", v); err != nil {
-		return err
+
+	if len(pos) == 1 {
+		v := strings.ToLower(strings.TrimSpace(pos[0]))
+		switch v {
+		case "auto", "dark", "light":
+		default:
+			return fmt.Errorf("未知主题模式 %q（可选 auto / dark / light）；设置配色用 zero theme palette zero-red|hanpai-blue", pos[0])
+		}
+		if err := st.SetSetting(tui.ThemeModeKey, v); err != nil {
+			return err
+		}
+		fmt.Printf("主题模式已设为 %s，重启终端界面生效。\n", v)
+		return nil
 	}
-	fmt.Printf("主题已设为 %s，重启终端界面生效。\n", v)
-	return nil
+	return errors.New("用法: zero theme [auto|dark|light] | palette zero-red|hanpai-blue | --init | --check")
+}
+
+// printThemeSummary 展示当前设置、自定义文件状态与常用命令。
+func printThemeSummary(st *store.Store, path string) {
+	mode := st.Setting(tui.ThemeModeKey, "auto")
+	name := st.Setting(tui.ThemePaletteKey, tui.PaletteZeroRed)
+	fmt.Printf("主题模式：%s（auto / dark / light）\n", mode)
+	fmt.Printf("配色：%s（%s）\n", name, tui.PaletteLabel(name))
+	if v := strings.TrimSpace(os.Getenv("ZERO_THEME")); v != "" {
+		fmt.Printf("环境覆盖：ZERO_THEME=%s\n", v)
+	}
+	if v := strings.TrimSpace(os.Getenv("ZERO_THEME_PALETTE")); v != "" {
+		fmt.Printf("环境覆盖：ZERO_THEME_PALETTE=%s\n", v)
+	}
+	if _, err := os.Stat(path); err == nil {
+		if n, err := tui.CheckThemeFile(path); err != nil {
+			fmt.Println("自定义颜色：" + path + "（无效：" + err.Error() + "）")
+		} else {
+			fmt.Printf("自定义颜色：%s（覆盖 %d 项）\n", path, n)
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		fmt.Println("自定义颜色：未创建（zero theme --init 生成）")
+	} else {
+		fmt.Println("自定义颜色：读取失败：" + err.Error())
+	}
+	fmt.Println("设置模式：zero theme auto|dark|light")
+	fmt.Println("设置配色：zero theme palette zero-red|hanpai-blue")
+	fmt.Println("生成 / 校验：zero theme --init | zero theme --check")
 }
 
 // runPlay 是最小可用的 headless 播放器，用来验证解析 + 解码 + 输出链路。

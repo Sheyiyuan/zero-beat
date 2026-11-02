@@ -350,10 +350,10 @@ func TestLyricStripGradientFollowsProgress(t *testing.T) {
 	if !strings.Contains(start, "\x1b[") {
 		t.Skip("当前终端未启用颜色，跳过颜色断言")
 	}
-	if !strings.Contains(start, "38;2;215;218;224") {
+	if !strings.Contains(start, fgSeq(zeroDark.text)) {
 		t.Fatalf("行首应为常规色：%q", start)
 	}
-	if !strings.Contains(end, "38;2;102;204;255") {
+	if !strings.Contains(end, fgSeq(zeroDark.accent)) {
 		t.Fatalf("行末应为高亮色：%q", end)
 	}
 	if start == mid || mid == end {
@@ -531,18 +531,18 @@ func TestProgressFill(t *testing.T) {
 	}
 }
 
-func TestProgressBarUsesBlueAndGray(t *testing.T) {
+func TestProgressBarUsesAccentAndDim(t *testing.T) {
 	m := fixtureModel()
 	m.position, m.duration = 42*time.Second, 213*time.Second
 	line := m.renderProgress()
 	if !strings.Contains(line, "\x1b[") {
 		t.Skip("当前终端未启用颜色，跳过颜色断言")
 	}
-	if !strings.Contains(line, "38;2;102;204;255") {
-		t.Fatalf("已播放部分应为蓝色：%q", line)
+	if !strings.Contains(line, fgSeq(zeroDark.accent)) {
+		t.Fatalf("已播放部分应为强调色：%q", line)
 	}
-	if !strings.Contains(line, "38;2;75;82;99") {
-		t.Fatalf("未播放部分应为灰色：%q", line)
+	if !strings.Contains(line, fgSeq(zeroDark.dim)) {
+		t.Fatalf("未播放部分应为 dim 色：%q", line)
 	}
 	if strings.Contains(line, "━") {
 		t.Fatalf("进度条不应再使用加粗字符：%q", line)
@@ -1175,11 +1175,11 @@ func TestSongRowHighlightStyles(t *testing.T) {
 	if !strings.Contains(selected, "\x1b[") {
 		t.Skip("当前终端未启用颜色，跳过背景断言")
 	}
-	if !strings.Contains(selected, "48;2;102;204;255") {
-		t.Fatalf("选中行应为蓝色背景：%q", selected)
+	if !strings.Contains(selected, bgSeq(zeroDark.selBg)) {
+		t.Fatalf("选中行应为选中背景：%q", selected)
 	}
-	if !strings.Contains(playing, "48;2;58;63;74") {
-		t.Fatalf("正在播放行应为灰色背景：%q", playing)
+	if !strings.Contains(playing, bgSeq(zeroDark.playBg)) {
+		t.Fatalf("正在播放行应为播放背景：%q", playing)
 	}
 	if !strings.Contains(ansi.Strip(playing), "▶") {
 		t.Fatalf("正在播放行应保留播放图标：%q", ansi.Strip(playing))
@@ -1189,8 +1189,8 @@ func TestSongRowHighlightStyles(t *testing.T) {
 	}
 	m.current = &m.songs[0]
 	both := m.songRow(0, 80)
-	if !strings.Contains(both, "48;2;102;204;255") || !strings.Contains(ansi.Strip(both), "▶") {
-		t.Fatalf("选中且正在播放时应保持蓝色背景和图标：%q", both)
+	if !strings.Contains(both, bgSeq(zeroDark.selBg)) || !strings.Contains(ansi.Strip(both), "▶") {
+		t.Fatalf("选中且正在播放时应保持选中背景和图标：%q", both)
 	}
 }
 

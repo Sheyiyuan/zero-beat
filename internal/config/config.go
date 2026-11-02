@@ -44,6 +44,15 @@ func KeymapPath() (string, error) {
 	return filepath.Join(dir, "keymap.toml"), nil
 }
 
+// ThemePath 返回自定义主题颜色文件路径。
+func ThemePath() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "theme.toml"), nil
+}
+
 // SyncTomlPath 返回同步配置路径（remote/branch/auth/auto，不含 token）。
 func SyncTomlPath() (string, error) {
 	dir, err := DataDir()

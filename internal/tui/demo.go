@@ -16,7 +16,8 @@ import (
 //
 // 它走的是真实的 View 代码路径，所以截图与运行时完全一致。
 func RenderDemo(name string, width, height int) string {
-	applyTheme(resolveThemeMode(nil).palette())
+	p, _ := resolveTheme(nil)
+	applyTheme(p)
 	songs := []store.Song{
 		{ID: "d1", Source: "bilibili", BVID: "BV1", Page: 1, Title: "【官方 MV】Never Gonna Give You Up", Artist: "Rick Astley", Duration: 213},
 		{ID: "d2", Source: "bilibili", BVID: "BV2", Page: 1, Title: "夜航星", Artist: "不才", Duration: 287},

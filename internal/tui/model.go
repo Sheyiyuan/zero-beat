@@ -346,7 +346,11 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMg
 	} else if len(keyWarnings) > 0 {
 		m.setWarn("快捷键配置部分降级：" + strings.Join(keyWarnings, "；"))
 	}
-	applyTheme(resolveThemeMode(st).palette())
+	p, themeErr := resolveTheme(st)
+	applyTheme(p)
+	if themeErr != nil {
+		m.setNotice("主题配置无效，已回退："+themeErr.Error(), true)
+	}
 	return m
 }
 

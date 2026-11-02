@@ -102,7 +102,7 @@ func TestUniformSongRowColumns(t *testing.T) {
 	}
 }
 
-// TestSongRowPlayingAndCursorStyles 验证播放行是灰底 + ▶、光标行是蓝底。
+// TestSongRowPlayingAndCursorStyles 验证播放行是播放底 + ▶、光标行是选中底。
 func TestSongRowPlayingAndCursorStyles(t *testing.T) {
 	m := fixtureModel()
 	a := store.NormalizeSong(store.Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "夜航星", Artist: "不才", Duration: 287})
@@ -118,11 +118,11 @@ func TestSongRowPlayingAndCursorStyles(t *testing.T) {
 	if !strings.Contains(playing, "\x1b[") {
 		t.Skip("当前终端未启用颜色，跳过背景断言")
 	}
-	if !strings.Contains(playing, "48;2;58;63;74") || !strings.Contains(rowCells(playing), "▶") {
-		t.Fatalf("队列播放行应为灰底 + ▶：%q", playing)
+	if !strings.Contains(playing, bgSeq(zeroDark.playBg)) || !strings.Contains(rowCells(playing), "▶") {
+		t.Fatalf("队列播放行应为播放底色 + ▶：%q", playing)
 	}
-	if !strings.Contains(cursor, "48;2;102;204;255") {
-		t.Fatalf("队列光标行应为蓝底：%q", cursor)
+	if !strings.Contains(cursor, bgSeq(zeroDark.selBg)) {
+		t.Fatalf("队列光标行应为选中底色：%q", cursor)
 	}
 
 	// 音源搜索：第一行正在播放，光标在第二行。
@@ -140,11 +140,11 @@ func TestSongRowPlayingAndCursorStyles(t *testing.T) {
 	})
 	m.current = &currentSong
 	searchLines := m.renderSearch(8)
-	if !strings.Contains(searchLines[2], "48;2;58;63;74") || !strings.Contains(rowCells(searchLines[2]), "▶") {
-		t.Fatalf("搜索播放行应为灰底 + ▶：%q", searchLines[2])
+	if !strings.Contains(searchLines[2], bgSeq(zeroDark.playBg)) || !strings.Contains(rowCells(searchLines[2]), "▶") {
+		t.Fatalf("搜索播放行应为播放底色 + ▶：%q", searchLines[2])
 	}
-	if !strings.Contains(searchLines[3], "48;2;102;204;255") {
-		t.Fatalf("搜索光标行应为蓝底：%q", searchLines[3])
+	if !strings.Contains(searchLines[3], bgSeq(zeroDark.selBg)) {
+		t.Fatalf("搜索光标行应为选中底色：%q", searchLines[3])
 	}
 
 	// 下载管理：第一行正在播放，光标在第二行。
@@ -155,11 +155,11 @@ func TestSongRowPlayingAndCursorStyles(t *testing.T) {
 	}
 	m.downloadIdx = 1
 	m.current = &m.downloadItems[0].entry.Song
-	if !strings.Contains(m.downloadRow(0, 80), "48;2;58;63;74") || !strings.Contains(rowCells(m.downloadRow(0, 80)), "▶") {
-		t.Fatalf("下载播放行应为灰底 + ▶：%q", m.downloadRow(0, 80))
+	if !strings.Contains(m.downloadRow(0, 80), bgSeq(zeroDark.playBg)) || !strings.Contains(rowCells(m.downloadRow(0, 80)), "▶") {
+		t.Fatalf("下载播放行应为播放底色 + ▶：%q", m.downloadRow(0, 80))
 	}
-	if !strings.Contains(m.downloadRow(1, 80), "48;2;102;204;255") {
-		t.Fatalf("下载光标行应为蓝底：%q", m.downloadRow(1, 80))
+	if !strings.Contains(m.downloadRow(1, 80), bgSeq(zeroDark.selBg)) {
+		t.Fatalf("下载光标行应为选中底色：%q", m.downloadRow(1, 80))
 	}
 }
 
@@ -353,8 +353,8 @@ func TestPlaylistRowsUsePlayMarkerOnlyWhenPlaying(t *testing.T) {
 	if !strings.Contains(playing, "\x1b[") {
 		t.Skip("当前终端未启用颜色，跳过背景断言")
 	}
-	if !strings.Contains(playing, "48;2;58;63;74") {
-		t.Fatalf("正在播放的歌单行应有灰底：%q", playing)
+	if !strings.Contains(playing, bgSeq(zeroDark.playBg)) {
+		t.Fatalf("正在播放的歌单行应有播放底色：%q", playing)
 	}
 }
 

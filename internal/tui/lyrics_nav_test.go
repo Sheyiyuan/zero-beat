@@ -125,9 +125,9 @@ func TestLyricsTopBottomAndClamp(t *testing.T) {
 	}
 }
 
-// TestLyricsFocusUsesGrayBackground 浏览态：中央焦点行用灰底表示选中，
-// 正在播放行保留蓝色渐变 + ▶，不再用蓝色背景表示焦点。
-func TestLyricsFocusUsesGrayBackground(t *testing.T) {
+// TestLyricsFocusUsesPlayBackground 浏览态：中央焦点行用播放行底色表示焦点，
+// 正在播放行保留渐变 + ▶，不再用选中底色表示焦点。
+func TestLyricsFocusUsesPlayBackground(t *testing.T) {
 	m := lyricFocusModel()
 	m.width, m.height = 100, 30
 	updated, _ := m.Update(keyPress("", tea.KeyDown)) // 焦点 21，播放 20
@@ -136,18 +136,18 @@ func TestLyricsFocusUsesGrayBackground(t *testing.T) {
 	lines := strings.Split(m.View().Content, "\n")
 	center := 2 + m.bodyHeight()/2
 	focusLine := lines[center]
-	if !strings.Contains(focusLine, "48;2;58;63;74") {
-		t.Fatalf("焦点行应使用灰底：%q", focusLine)
+	if !strings.Contains(focusLine, bgSeq(zeroDark.playBg)) {
+		t.Fatalf("焦点行应使用播放行底色：%q", focusLine)
 	}
-	if strings.Contains(focusLine, "48;2;102;204;255") {
-		t.Fatalf("焦点行不应再用蓝色选中底：%q", focusLine)
+	if strings.Contains(focusLine, bgSeq(zeroDark.selBg)) {
+		t.Fatalf("焦点行不应使用选中底色：%q", focusLine)
 	}
 
 	playingLine := lines[center-1]
 	if !strings.Contains(ansi.Strip(playingLine), "▶") {
 		t.Fatalf("正在播放行应有 ▶ 标记：%q", ansi.Strip(playingLine))
 	}
-	if strings.Contains(playingLine, "48;2;58;63;74") {
-		t.Fatalf("正在播放行不应套焦点灰底：%q", playingLine)
+	if strings.Contains(playingLine, bgSeq(zeroDark.playBg)) {
+		t.Fatalf("正在播放行不应套焦点底色：%q", playingLine)
 	}
 }
