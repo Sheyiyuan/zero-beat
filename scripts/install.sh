@@ -263,7 +263,7 @@ fi
 case "$(uname -s)" in
 	Linux) OS=linux ;;
 	Darwin) OS=darwin ;;
-	*) fail "只支持 Linux / macOS；Windows 请用 release 里的 zip（不保证可用）" ;;
+	*) fail "只支持 Linux / macOS；Windows 请用 release 里的 zip（未做适配）" ;;
 esac
 
 case "$(uname -m)" in

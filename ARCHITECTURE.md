@@ -106,7 +106,7 @@ internal/config          数据目录
        ├─ 把 stdout 包进 gainReader（应用音量 × 补偿，tanh 软限幅）
        └─ oto.Player 从 gainReader 拉 PCM
   → 并行发起 lyricsCmd：source.Lyrics（B 站字幕 / 网易云 LRC + 译文），没有再用 LRCLIB
-  → 顺序模式下再并行预解析下一首（prefetchMsg，只缓存一首，可跨源）
+  → 列表循环/顺序模式下再并行预解析下一首（prefetchMsg，只缓存一首，可跨源）
 ```
 
 **搜索与歌单**
@@ -157,7 +157,7 @@ a → 目标选择器（本地/混合/同源云端）
 - 队列、当前曲目、进度每 5 秒写入 `queue` 表；`queueRestoredMsg` 只恢复状态不起播，第一次 `space` 用 `PlayAt` 从断点开始。
 - `Stream.ExpiresAt`：B 站从 CDN 的 `deadline` / `expires` 解析，网易云从 `expi` 换算；临近过期时 seek、续播会先重新解析。
 - `EventFailed` 会带着最后进度重新解析并重试一次；成功重试后计数保留，防止解码错误无限循环。
-- 预解析只用于顺序模式；随机/单曲不猜下一首。队列变化、切音质、切模式都会让缓存作废。
+- 预解析只用于列表循环与顺序模式（顺序到队尾不预取）；随机/单曲不猜下一首。队列变化、切音质、切模式都会让缓存作废。
 - 旧库在 `store.Open` 里自动迁移：`remote_id` 从 `bvid` 回填，`playlists.source` 从 ID 前缀回填，旧 B 站歌曲 ID 不变。
 
 **进度与状态**

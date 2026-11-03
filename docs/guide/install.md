@@ -2,15 +2,15 @@
 
 ## 依赖
 
-- **Go 1.26.10+**（仅源码构建需要；Go 1.21+ 默认的 GOTOOLCHAIN=auto 会自动下载对应工具链）
-- **ffmpeg**（负责解码 AAC / HE-AAC / FLAC）
-- 可用的音频输出：Linux 上 PulseAudio/PipeWire，macOS CoreAudio（Windows 未适配，仅提供交叉编译产物）
+- **Go 1.26.10+**（仅源码构建需要）
+- **ffmpeg**（负责音频解码）
+- 音频输出：Linux 用 PulseAudio / PipeWire，macOS 用 CoreAudio
 - 可选：系统 `git`（跨设备同步需要）；Linux 会话 D-Bus（系统媒体面板需要）
-- 网易云协议层：`go-musicfox/netease-music`（Go module 自动拉取，无需额外系统依赖）
+- 网易云协议层随程序内置，无需额外安装
 
 ## 平台支持
 
-官方支持 Linux / macOS。Windows 会提供交叉编译的 zip，但不做适配、不维护、不保证可用；需要的用户请自行判断和处理，欢迎提交 PR。
+官方支持 Linux / macOS。Windows 提供了 zip 包，需要自己准备好 ffmpeg 和终端环境，欢迎提交 PR。
 
 ## Linux / macOS（安装脚本）
 
@@ -40,13 +40,15 @@ make build          # 产出 bin/zero
 ./bin/zero          # 进终端界面
 ```
 
-## Windows（不维护）
+## Windows
 
-Release 里会附带 `zero_<version>_windows_amd64.zip`，但没有做 Windows 适配，不保证可用；解压后需要自行处理 `ffmpeg` 与终端环境。欢迎 PR。
+Release 里提供 zip 包（交叉编译产物），解压后需要自己准备好 ffmpeg 和终端环境。欢迎 PR。
 
 ## 桌面菜单入口（Linux）
 
-安装脚本在 Linux 图形会话里会自动执行 `zero desktop install`：把 `.desktop` 入口和圆角图标装进 `~/.local/share`，应用菜单/启动器里显示的就是产品图标；`Terminal=true` 由桌面环境负责拉起终端。源码构建同样可以手动执行：
+安装脚本在 Linux 图形会话里会自动执行 `zero desktop install`：把 `.desktop` 入口（`~/.local/share/applications/zero-beat.desktop`）和 256×256 圆角图标装进 `~/.local/share`，应用菜单/启动器里显示的就是产品图标；`Terminal=true` 由桌面环境负责拉起终端。
+
+以 `sudo` 安装时脚本会跳过应用菜单注册，需要改用普通用户执行 `zero desktop install`。源码构建同样可以手动执行：
 
 ```bash
 zero desktop install      # 注册入口（含图标）

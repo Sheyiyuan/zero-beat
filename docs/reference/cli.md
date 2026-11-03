@@ -28,7 +28,7 @@ zero --version              # 打印版本
 
 ## 控制通道
 
-`zero frame` / `zero +<按键>` / `zero +type` 通过本机 Unix socket（`~/.config/zero-beat/control.sock`，0600）驱动正在运行的 TUI，适合脚本或 agent 验证界面：
+`zero frame` / `zero +<按键>` / `zero +type` 通过本机 Unix socket（`~/.config/zero-beat/control.sock`，0600）驱动正在运行的 TUI，适合脚本或自动化测试驱动界面：
 
 ```bash
 zero frame --stable 2 --json   # 等画面稳定后输出状态快照 + 纯文本帧
@@ -40,7 +40,7 @@ zero +type "周杰伦"            # 需要先打开搜索框、命令面板等�
 - 只有同一数据目录下正在运行的 TUI 才能连接；没有实例时直接报错。
 - `--force` 才允许删除、同步这类默认被拒的按键；`+type` 只接受输入态，避免字符落进全局快捷键。
 - `--ansi` 保留颜色；和 `--json` 同用时帧里也保留 ANSI。
-- macOS / Linux 可用；Windows 没有控制通道实现。
+- 控制通道目前仅 macOS / Linux 可用。
 
 ## 环境变量
 

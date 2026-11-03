@@ -7,7 +7,7 @@ zero keymap --init
 zero keymap --check
 ```
 
-动作 ID 全部定义在 `internal/keymap/keymap.go`（59 个）。
+全部动作共 59 个，生成配置后即可看到完整列表。
 
 ## 示例
 
