@@ -1,0 +1,158 @@
+/* 站点配色直接取自 TUI 的内置色板 internal/tui/theme.go：
+   默认是佐洛红（zeroDark / zeroLight），半拍蓝（blueDark / blueLight）作为备选配色。
+   改这里的值时请同步改 theme.go，两边不要各写一套色。 */
+
+:root {
+  /* 佐洛红 · 浅色（zeroLight） */
+  --vp-c-brand-1: #b02a52;
+  --vp-c-brand-2: #c2182f;
+  --vp-c-brand-3: #d94a5f;
+  --vp-c-brand-soft: rgba(176, 42, 82, 0.14);
+
+  --vp-c-default-1: #6b5f66;
+  --vp-c-default-soft: rgba(107, 95, 102, 0.14);
+
+  --vp-c-success-1: #1a7f37;
+  --vp-c-success-2: #229246;
+  --vp-c-success-3: #8fd0a0;
+  --vp-c-success-soft: rgba(26, 127, 55, 0.14);
+
+  --vp-c-warning-1: #8a5a00;
+  --vp-c-warning-2: #a06b00;
+  --vp-c-warning-3: #e8ad4c;
+  --vp-c-warning-soft: rgba(138, 90, 0, 0.14);
+
+  --vp-c-danger-1: #b42318;
+  --vp-c-danger-2: #c93025;
+  --vp-c-danger-3: #ff5555;
+  --vp-c-danger-soft: rgba(180, 35, 24, 0.14);
+
+  --vp-c-text-1: #2b262b;
+  --vp-c-text-2: #6b5f66;
+  --vp-c-text-3: #7a6e75;
+
+  --vp-c-bg: #fffdfd;
+  --vp-c-bg-alt: #f7f1f3;
+  --vp-c-bg-soft: #fdf6f7;
+  --vp-c-bg-mute: #f3e9ec;
+  --vp-c-divider: #ecdfe3;
+  --vp-c-border: #ddc9d1;
+
+  --vp-nav-logo-height: 30px;
+}
+
+.dark {
+  /* 佐洛红 · 深色（zeroDark） */
+  --vp-c-brand-1: #ff8080;
+  --vp-c-brand-2: #ff9c9c;
+  --vp-c-brand-3: #ff5555;
+  --vp-c-brand-soft: rgba(255, 128, 128, 0.16);
+
+  --vp-c-success-1: #8fd0a0;
+  --vp-c-success-soft: rgba(143, 208, 160, 0.16);
+  --vp-c-warning-1: #e8ad4c;
+  --vp-c-warning-soft: rgba(232, 173, 76, 0.16);
+  --vp-c-danger-1: #ff5555;
+  --vp-c-danger-soft: rgba(255, 85, 85, 0.16);
+
+  --vp-c-text-1: #f4eaec;
+  --vp-c-text-2: #b9a9b1;
+  --vp-c-text-3: #8a7c84;
+
+  --vp-c-bg: #1a1216;
+  --vp-c-bg-alt: #221a1f;
+  --vp-c-bg-soft: #2a2027;
+  --vp-c-bg-mute: #332d33;
+  --vp-c-divider: #3a2f36;
+  --vp-c-border: #4a3d44;
+}
+
+/* 选中态与高亮跟随 selBg / markBg，和界面里的选中行同一语义 */
+.vp-doc a {
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color 0.2s;
+}
+.vp-doc a:hover {
+  border-bottom-color: var(--vp-c-brand-1);
+}
+
+.vp-doc tr:nth-child(2n) {
+  background-color: var(--vp-c-bg-soft);
+}
+
+/* 首页 hero 用应用图标，深色下不需要额外底 */
+.VPHero .VPImage.image-src {
+  border-radius: 18%;
+}
+
+/* VitePress 在 960px 就切左右布局，但主栏最大 592px + 图标 392px
+   在 960–1199px 的容器里放不下，图标会压到标题和 tagline 上。
+   这段宽度沿用窄屏的上下布局，1200px 以上再左右排。 */
+@media (min-width: 960px) and (max-width: 1199px) {
+  .VPHero.has-image .container {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .VPHero.has-image .main {
+    order: 2;
+    width: 100%;
+    max-width: 640px;
+    margin: 0 auto;
+  }
+
+  .VPHero.has-image .name,
+  .VPHero.has-image .text,
+  .VPHero.has-image .tagline {
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .VPHero.has-image .actions {
+    justify-content: center;
+  }
+
+  .VPHero.has-image .image {
+    order: 1;
+    flex-grow: 0;
+    min-height: 0;
+    margin: 0 auto 24px;
+  }
+
+  .VPHero.has-image .image-container {
+    width: 320px;
+    height: 320px;
+    transform: none;
+  }
+}
+
+/* 首页能力卡图标用品牌色描边（Lucide 线性图标，stroke=currentColor） */
+.VPFeature .icon {
+  color: var(--vp-c-brand-1);
+}
+
+/* 版本发布提示 */
+.release-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 24px 0 8px;
+  padding: 12px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-left: 3px solid var(--vp-c-brand-1);
+  border-radius: 8px;
+  background: var(--vp-c-bg-soft);
+  font-size: 14px;
+  color: var(--vp-c-text-2);
+}
+
+.release-note strong {
+  color: var(--vp-c-brand-1);
+}
+
+.release-note a {
+  font-weight: 500;
+}
+
