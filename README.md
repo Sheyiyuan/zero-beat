@@ -61,6 +61,8 @@ zero
 
 ## 文档
 
+在线文档：<https://sheyiyuan.github.io/zero-beat/>（只放面向用户的指南；架构与 ADR 留在仓库 `docs/` 里）。
+
 具体指南放在 `docs/` 下。
 
 ### 使用指南
