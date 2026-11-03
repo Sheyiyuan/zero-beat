@@ -95,7 +95,7 @@ func (m *Model) handleMouseClick(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	case hitPlayPause:
 		return m, m.togglePlayback()
 	case hitMode:
-		m.setMode((m.mode + 1) % 3)
+		m.setMode((m.mode + 1) % modeCount)
 		return m, nil
 	case hitQuality:
 		m.cycleQuality()

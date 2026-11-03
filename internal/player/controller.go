@@ -13,9 +13,10 @@ import (
 type Mode int
 
 const (
-	ModeSequence Mode = iota
+	ModeListLoop Mode = iota // 末尾回到第一首
 	ModeLoopOne
 	ModeShuffle
+	ModeOrdered // 播完最后一首停止
 )
 
 // String 返回界面用的模式名。
@@ -25,8 +26,10 @@ func (m Mode) String() string {
 		return "单曲"
 	case ModeShuffle:
 		return "随机"
-	default:
+	case ModeOrdered:
 		return "顺序"
+	default:
+		return "列表循环"
 	}
 }
 
@@ -310,7 +313,7 @@ func (c *Controller) currentID() string {
 	return c.state.Current.ID
 }
 
-// Next 前进一首；LoopOne 时仍返回当前曲目。返回曲目、索引和是否有效。
+// Next 前进一首；LoopOne 时仍返回当前曲目，Ordered 到队尾时不动作。返回曲目、索引和是否有效。
 func (c *Controller) Next() (store.Song, int, bool) {
 	if len(c.state.Queue) == 0 {
 		return store.Song{}, 0, false
@@ -318,15 +321,21 @@ func (c *Controller) Next() (store.Song, int, bool) {
 	if c.state.Mode == ModeLoopOne && c.state.Current != nil {
 		return *c.state.Current, c.state.Index, true
 	}
+	if c.state.Mode == ModeOrdered && c.state.Index >= len(c.state.Queue)-1 {
+		return store.Song{}, c.state.Index, false
+	}
 	next := NextIndex(c.state.Index, len(c.state.Queue))
 	c.state.Index = next
 	return c.state.Queue[next], next, true
 }
 
-// Prev 返回上一首。
+// Prev 返回上一首；Ordered 在第一首时不动作。
 func (c *Controller) Prev() (store.Song, int, bool) {
 	if len(c.state.Queue) == 0 {
 		return store.Song{}, 0, false
+	}
+	if c.state.Mode == ModeOrdered && c.state.Index <= 0 {
+		return store.Song{}, c.state.Index, false
 	}
 	prev := PrevIndex(c.state.Index, len(c.state.Queue))
 	c.state.Index = prev
@@ -334,16 +343,31 @@ func (c *Controller) Prev() (store.Song, int, bool) {
 	return c.state.Queue[prev], prev, true
 }
 
-// NextSongID 返回顺序模式下将要播放的曲目 ID。
+// NextSongID 返回将要播放的曲目 ID。
 func (c *Controller) NextSongID() string {
-	if c.state.Mode != ModeSequence || len(c.state.Queue) < 2 {
+	idx := NextPlayableIndex(c.state.Mode, c.state.Index, len(c.state.Queue))
+	if idx < 0 {
 		return ""
 	}
-	next := NextIndex(c.state.Index, len(c.state.Queue))
-	if next == c.state.Index {
-		return ""
+	return store.NormalizeSong(c.state.Queue[idx]).ID
+}
+
+// NextPlayableIndex 返回可预取的下一首索引；列表循环回绕，顺序模式到队尾、
+// 单曲与随机不猜下一首，均返回 -1。纯函数，TUI 可直接用当前镜像计算，不必
+// 走 Controller.Load/Export。
+func NextPlayableIndex(mode Mode, index, length int) int {
+	if length < 2 {
+		return -1
 	}
-	return store.NormalizeSong(c.state.Queue[next]).ID
+	switch mode {
+	case ModeListLoop:
+		return NextIndex(index, length)
+	case ModeOrdered:
+		if next := index + 1; next < length {
+			return next
+		}
+	}
+	return -1
 }
 
 // Prefetch 返回预解析缓存。

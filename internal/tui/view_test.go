@@ -27,7 +27,7 @@ func fixtureModel() *Model {
 		height:      30,
 		view:        viewLibrary,
 		volume:      0.8,
-		mode:        modeSequence,
+		mode:        modeListLoop,
 		state:       audio.StatePlaying,
 		loginSource: source.Bilibili,
 		sources: source.NewRegistry(
@@ -66,7 +66,7 @@ func TestRenderLibrary(t *testing.T) {
 	lines := assertFrame(t, m.View().Content, 100, 30)
 	body := ansi.Strip(strings.Join(lines, "\n"))
 
-	for _, want := range []string{"zero", "曲库", "我喜欢的音乐", "本地歌单", "Never Gonna Give You Up", "夜航星", "0:42 / 3:33", "顺序"} {
+	for _, want := range []string{"zero", "曲库", "我喜欢的音乐", "本地歌单", "Never Gonna Give You Up", "夜航星", "0:42 / 3:33", "列表循环"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("界面里应该出现 %q", want)
 		}
@@ -429,7 +429,7 @@ func TestPlaySearchResultAppendsAndSelects(t *testing.T) {
 func TestAdvanceWrapsAndRespectsLoopOne(t *testing.T) {
 	m := fixtureModel()
 	m.queueIdx = len(m.queue) - 1
-	m.mode = modeSequence
+	m.mode = modeListLoop
 	_ = m.advance()
 	if m.queueIdx != 0 {
 		t.Fatalf("顺序模式应回到第一首，实际 %d", m.queueIdx)

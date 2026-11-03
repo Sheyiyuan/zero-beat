@@ -8,6 +8,25 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 )
 
+// LoopStatus 是 MPRIS 的循环语义，与播放模式一一对应。
+type LoopStatus string
+
+const (
+	LoopNone     LoopStatus = "None"     // 播完即停
+	LoopTrack    LoopStatus = "Track"    // 单曲循环
+	LoopPlaylist LoopStatus = "Playlist" // 列表循环
+)
+
+// Valid 判断是否为 MPRIS 接受的三个值之一；大小写敏感。
+func (l LoopStatus) Valid() bool {
+	switch l {
+	case LoopNone, LoopTrack, LoopPlaylist:
+		return true
+	default:
+		return false
+	}
+}
+
 // Snapshot 是推给系统面板的播放状态快照。Position 由调用方每 250ms 更新一次，
 // 平台实现可结合本地时钟做插值，避免高频写系统接口。
 type Snapshot struct {
@@ -22,6 +41,7 @@ type Snapshot struct {
 	Volume   float64
 	Muted    bool
 	Shuffle  bool
+	Loop     LoopStatus
 	CanNext  bool
 	CanPrev  bool
 }
@@ -39,6 +59,8 @@ const (
 	CommandSeekTo
 	CommandSeekBy
 	CommandSetVolume
+	CommandSetShuffle
+	CommandSetLoopStatus
 )
 
 // Command 是系统面板发来的操作。
@@ -48,6 +70,8 @@ type Command struct {
 	Offset   time.Duration // SeekBy 用
 	Position time.Duration // SeekTo 用
 	Volume   float64       // SetVolume 用
+	Shuffle  bool          // SetShuffle 用
+	Loop     LoopStatus    // SetLoopStatus 用
 }
 
 // Service 是系统媒体集成。

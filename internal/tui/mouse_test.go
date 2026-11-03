@@ -162,7 +162,7 @@ func TestMouseClickModeCyclesMode(t *testing.T) {
 	zone := findZone(t, m, hitMode)
 	updated, _ := m.Update(tea.MouseClickMsg{X: zone.x + 1, Y: zone.y, Button: tea.MouseLeft})
 	mm := updated.(*Model)
-	if mm.mode == modeSequence {
+	if mm.mode == modeListLoop {
 		t.Fatalf("点击播放模式应切换模式，实际 %v", mm.mode)
 	}
 }

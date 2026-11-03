@@ -52,7 +52,7 @@ func TestControlFrameAndState(t *testing.T) {
 	if state.Selected == nil || state.Selected.Title != "Never Gonna Give You Up" {
 		t.Fatalf("快照应包含选中曲目: %+v", state.Selected)
 	}
-	if state.Queue != 2 || state.Mode != "顺序" {
+	if state.Queue != 2 || state.Mode != "列表循环" {
 		t.Fatalf("队列/模式不符: %+v", state)
 	}
 }

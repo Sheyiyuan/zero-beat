@@ -121,9 +121,9 @@ func mprisIntrospection() *introspect.Node {
 	}
 	playerProps := []introspect.Property{
 		{Name: "PlaybackStatus", Type: "s", Access: "read"},
-		{Name: "LoopStatus", Type: "s", Access: "read"},
+		{Name: "LoopStatus", Type: "s", Access: "readwrite"},
 		{Name: "Rate", Type: "d", Access: "read"},
-		{Name: "Shuffle", Type: "b", Access: "read"},
+		{Name: "Shuffle", Type: "b", Access: "readwrite"},
 		{Name: "Metadata", Type: "a{sv}", Access: "read"},
 		{Name: "Volume", Type: "d", Access: "readwrite"},
 		{Name: "Position", Type: "x", Access: "read"},
@@ -192,6 +192,12 @@ func propertyChanges(old, snap Snapshot) []string {
 	}
 	if effectiveVolume(old) != effectiveVolume(snap) {
 		names = append(names, "Volume")
+	}
+	if old.Shuffle != snap.Shuffle {
+		names = append(names, "Shuffle")
+	}
+	if normalizeLoop(old.Loop) != normalizeLoop(snap.Loop) {
+		names = append(names, "LoopStatus")
 	}
 	if old.CanNext != snap.CanNext {
 		names = append(names, "CanGoNext")
@@ -262,7 +268,7 @@ func (s *linuxService) playerPropertyLocked(name string) (dbus.Variant, bool) {
 	case "PlaybackStatus":
 		return dbus.MakeVariant(playbackStatus(s.snap.State)), true
 	case "LoopStatus":
-		return dbus.MakeVariant("None"), true
+		return dbus.MakeVariant(string(normalizeLoop(s.snap.Loop))), true
 	case "Rate":
 		return dbus.MakeVariant(1.0), true
 	case "Shuffle":
@@ -396,21 +402,45 @@ func (p *props) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 }
 
 func (p *props) Set(iface string, name string, value dbus.Variant) *dbus.Error {
-	if iface != mprisPlayerIface || name != "Volume" {
+	if iface != mprisPlayerIface {
 		return dbus.NewError("org.freedesktop.DBus.Error.PropertyReadOnly", []any{name})
 	}
-	volume, ok := value.Value().(float64)
-	if !ok {
-		return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"Volume 需要 double"})
+	switch name {
+	case "Volume":
+		volume, ok := value.Value().(float64)
+		if !ok {
+			return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"Volume 需要 double"})
+		}
+		if volume < 0 {
+			volume = 0
+		}
+		if volume > 1 {
+			volume = 1
+		}
+		p.s.enqueue(Command{Kind: CommandSetVolume, Volume: volume})
+		return nil
+	case "Shuffle":
+		shuffle, ok := value.Value().(bool)
+		if !ok {
+			return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"Shuffle 需要 boolean"})
+		}
+		p.s.enqueue(Command{Kind: CommandSetShuffle, Shuffle: shuffle})
+		return nil
+	case "LoopStatus":
+		raw, ok := value.Value().(string)
+		if !ok {
+			return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"LoopStatus 需要 string"})
+		}
+		loop := LoopStatus(raw)
+		if !loop.Valid() {
+			return dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs",
+				[]any{"LoopStatus 只支持 None / Track / Playlist"})
+		}
+		p.s.enqueue(Command{Kind: CommandSetLoopStatus, Loop: loop})
+		return nil
+	default:
+		return dbus.NewError("org.freedesktop.DBus.Error.PropertyReadOnly", []any{name})
 	}
-	if volume < 0 {
-		volume = 0
-	}
-	if volume > 1 {
-		volume = 1
-	}
-	p.s.enqueue(Command{Kind: CommandSetVolume, Volume: volume})
-	return nil
 }
 
 type player struct{ s *linuxService }
@@ -465,6 +495,13 @@ func (p *player) SetPosition(trackID dbus.ObjectPath, position int64) *dbus.Erro
 		Position: time.Duration(position) * time.Microsecond,
 	})
 	return nil
+}
+
+func normalizeLoop(l LoopStatus) LoopStatus {
+	if l == "" {
+		return LoopNone
+	}
+	return l
 }
 
 func playbackStatus(st audio.State) string {

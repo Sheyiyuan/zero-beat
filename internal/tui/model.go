@@ -91,10 +91,61 @@ const (
 type playMode = player.Mode
 
 const (
-	modeSequence = player.ModeSequence
+	modeListLoop = player.ModeListLoop
 	modeLoopOne  = player.ModeLoopOne
 	modeShuffle  = player.ModeShuffle
+	modeOrdered  = player.ModeOrdered
 )
+
+// modeCount 是 p 键循环的模式数量，跟着最后一个枚举值走。
+const modeCount = modeOrdered + 1
+
+// loopForMode 返回模式对应的 MPRIS 循环语义。
+func loopForMode(m playMode) sysmedia.LoopStatus {
+	switch m {
+	case modeLoopOne:
+		return sysmedia.LoopTrack
+	case modeOrdered:
+		return sysmedia.LoopNone
+	default:
+		return sysmedia.LoopPlaylist
+	}
+}
+
+// modeForLoop 把面板写入的循环目标值映射回播放模式；未知值返回 false。
+func modeForLoop(l sysmedia.LoopStatus) (playMode, bool) {
+	switch l {
+	case sysmedia.LoopNone:
+		return modeOrdered, true
+	case sysmedia.LoopTrack:
+		return modeLoopOne, true
+	case sysmedia.LoopPlaylist:
+		return modeListLoop, true
+	default:
+		return modeListLoop, false
+	}
+}
+
+// canGoNext / canGoPrev 决定面板按钮是否可用；顺序模式在队首/队尾没有下一首或上一首。
+func canGoNext(m playMode, idx, n int) bool {
+	if n < 2 {
+		return false
+	}
+	if m == modeOrdered {
+		return idx < n-1
+	}
+	return true
+}
+
+func canGoPrev(m playMode, idx, n int) bool {
+	if n < 2 {
+		return false
+	}
+	if m == modeOrdered {
+		return idx > 0
+	}
+	return true
+}
 
 type promptKind int
 
@@ -159,6 +210,8 @@ type Model struct {
 	compDB   float64
 	mode     playMode
 	muted    bool
+	// modeBeforeShuffle 是进入随机前的模式；面板关闭随机时恢复到它。只在本机内存里，不持久化。
+	modeBeforeShuffle playMode
 
 	// 同步：页面状态、输入缓冲与冲突选择。口令只在本机内存里短暂停留。
 	syncMgr         *syncpkg.Manager
@@ -308,7 +361,7 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMg
 		lyricFollow: true,
 		selAnchor:   -1,
 		volume:      0.8,
-		mode:        modeSequence,
+		mode:        modeListLoop,
 		state:       audio.StateIdle,
 		searchPage:  1,
 		lrclib:      lrclib.New(),
@@ -1250,7 +1303,7 @@ func (m *Model) handleCommonPlaybackKey(key tea.Key) (tea.Model, tea.Cmd) {
 		m.changeComp(-1)
 		return m, nil
 	case m.match(keymap.Mode, key):
-		m.setMode((m.mode + 1) % 3)
+		m.setMode((m.mode + 1) % modeCount)
 		return m, nil
 	case m.match(keymap.PageUp, key):
 		return m, m.pageMove(-1)
@@ -2071,6 +2124,9 @@ func (m *Model) setMode(next playMode) {
 	if next == m.mode {
 		return
 	}
+	if next == modeShuffle {
+		m.modeBeforeShuffle = m.mode
+	}
 	var shuffled, restored bool
 	m.withController(func(c *player.Controller) {
 		shuffled, restored = c.SetMode(next)
@@ -2087,6 +2143,8 @@ func (m *Model) setMode(next playMode) {
 		m.persistQueue()
 	}
 	m.setNotice("播放模式："+label, false)
+	// 面板打开时立刻同步图标；sysCommandMsg 之后还会再发布一次，第二次是空操作。
+	m.publishNowPlaying()
 }
 
 // startShuffleQueue 按当前随机模式重排队列；恢复会话时用。
@@ -2105,17 +2163,21 @@ func (m *Model) loadQueue(queue []store.Song, idx int) {
 	m.queueCursor = m.queueIdx
 }
 
-// advance 按播放模式前进到下一首；顺序模式优先使用预解析结果。
+// advance 按播放模式前进到下一首；列表循环/顺序模式优先使用预解析结果。
 func (m *Model) advance() tea.Cmd {
 	var song store.Song
 	var ok bool
 	m.withController(func(c *player.Controller) { song, _, ok = c.Next() })
 	if !ok {
+		// 只有自然播完才提示；手动在队尾按下一首保持安静。
+		if m.mode == modeOrdered && len(m.queue) > 0 && m.state == audio.StateEnded {
+			m.setNotice("已播放到队尾", false)
+		}
 		return nil
 	}
 	// 队列页游标跟随播放索引，避免切歌后「正在播放」与选中行错位。
 	m.queueCursor = m.queueIdx
-	if m.mode == modeSequence {
+	if m.mode == modeListLoop || m.mode == modeOrdered {
 		if s, has := m.takePrefetch(song); has {
 			return m.startStream(song, s, 0)
 		}
@@ -2188,6 +2250,16 @@ func (m *Model) applySysCommand(cmd sysmedia.Command) tea.Cmd {
 		v := clamp01(cmd.Volume)
 		m.withController(func(c *player.Controller) { c.SetVolume(v) })
 		m.service().SaveVolume(m.volume)
+	case sysmedia.CommandSetShuffle:
+		if cmd.Shuffle {
+			m.setMode(modeShuffle)
+		} else if m.mode == modeShuffle {
+			m.setMode(m.modeBeforeShuffle)
+		}
+	case sysmedia.CommandSetLoopStatus:
+		if next, ok := modeForLoop(cmd.Loop); ok {
+			m.setMode(next)
+		}
 	}
 	return nil
 }
@@ -2204,8 +2276,9 @@ func (m *Model) publishNowPlaying() {
 		Volume:   m.volume,
 		Muted:    m.muted,
 		Shuffle:  m.mode == modeShuffle,
-		CanNext:  len(m.queue) > 1,
-		CanPrev:  len(m.queue) > 1,
+		Loop:     loopForMode(m.mode),
+		CanNext:  canGoNext(m.mode, m.queueIdx, len(m.queue)),
+		CanPrev:  canGoPrev(m.mode, m.queueIdx, len(m.queue)),
 	}
 	if m.current != nil {
 		snap.TrackID = m.current.ID
@@ -2565,30 +2638,30 @@ func (m *Model) invalidatePrefetch() {
 	m.withController(func(c *player.Controller) { c.PrefetchCache().Clear() })
 }
 
+// nextQueueIndex 返回可预取的下一首队列索引；不预取的模式或顺序模式到队尾时返回 -1。
+// 直接读镜像，避免为了算索引走一遍 Controller.Load/Export。
+func (m *Model) nextQueueIndex() int {
+	return player.NextPlayableIndex(m.mode, m.queueIdx, len(m.queue))
+}
+
 func (m *Model) nextQueueSongID() string {
-	if m.mode != modeSequence || len(m.queue) < 2 {
+	idx := m.nextQueueIndex()
+	if idx < 0 {
 		return ""
 	}
-	next := player.NextIndex(m.queueIdx, len(m.queue))
-	if next == m.queueIdx {
-		return ""
-	}
-	return store.NormalizeSong(m.queue[next]).ID
+	return store.NormalizeSong(m.queue[idx]).ID
 }
 
 // prefetchNextCmd 提前解析下一首，缩短切歌时「已缓冲」的等待。
 func (m *Model) prefetchNextCmd() tea.Cmd {
-	if m.engine == nil || m.sources == nil || m.store == nil || m.mode != modeSequence || len(m.queue) < 2 {
+	if m.engine == nil || m.sources == nil || m.store == nil {
 		return nil
 	}
-	next := m.queueIdx + 1
-	if next >= len(m.queue) {
-		next = 0
-	}
-	if next == m.queueIdx {
+	idx := m.nextQueueIndex()
+	if idx < 0 {
 		return nil
 	}
-	song := store.NormalizeSong(m.queue[next])
+	song := store.NormalizeSong(m.queue[idx])
 	if m.prefetch.Matches(song.ID, time.Now()) {
 		return nil
 	}

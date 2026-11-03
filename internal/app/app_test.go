@@ -170,6 +170,18 @@ func TestPreferencesRoundTrip(t *testing.T) {
 	if got.Volume != 0.5 || got.CompDB != 2 || got.Quality != source.QualityLossless || got.Mode != 2 || got.PlayingPlaylist != "local-default" {
 		t.Fatalf("偏好回读不符: %+v", got)
 	}
+
+	// 顺序（播完即停）是第 4 个模式值；越界值忽略，旧版本读到它也能回落默认。
+	svc.SaveMode(3)
+	if got := New(nil, st, nil).Preferences(); got.Mode != 3 {
+		t.Fatalf("mode=3 应能读出，实际 %+v", got)
+	}
+	if err := st.SetSetting("mode", "4"); err != nil {
+		t.Fatalf("写入越界 mode: %v", err)
+	}
+	if got := New(nil, st, nil).Preferences(); got.Mode != 0 {
+		t.Fatalf("越界 mode 应回落到默认列表循环，实际 %d", got.Mode)
+	}
 }
 
 func TestPlaylistOpsAndQueueSave(t *testing.T) {

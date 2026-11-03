@@ -650,7 +650,7 @@ func TestMusicfoxTransportKeys(t *testing.T) {
 	m.queueCursor = 0
 	current := m.queue[0]
 	m.current = &current
-	m.mode = modeSequence
+	m.mode = modeListLoop
 
 	updated, _ := m.Update(keyPress("]", ']'))
 	mm := updated.(*Model)
@@ -714,7 +714,7 @@ func TestShuffleUsesShuffledQueue(t *testing.T) {
 	}
 	m.queueIdx = 1
 	m.current = &m.queue[1]
-	m.mode = modeSequence
+	m.mode = modeListLoop
 	m.shuffleFn = func(songs []store.Song) {
 		for i, j := 0, len(songs)-1; i < j; i, j = i+1, j-1 {
 			songs[i], songs[j] = songs[j], songs[i]
@@ -749,7 +749,7 @@ func TestShuffleUsesShuffledQueue(t *testing.T) {
 	}
 
 	// 退出随机按进入前的顺序恢复，随机期间新增的曲目追加到末尾。
-	m.setMode(modeSequence)
+	m.setMode(modeListLoop)
 	if len(m.queue) != 9 || m.queue[0].Title != "song-0" || m.queue[8].Title != "extra" {
 		t.Fatalf("退出随机应恢复原顺序并保留新增曲目: %+v", m.queue)
 	}
@@ -791,7 +791,7 @@ func TestCustomKeymapAffectsHandlingAndHelp(t *testing.T) {
 	}
 	m := fixtureModel()
 	m.keys = km
-	m.mode = modeSequence
+	m.mode = modeListLoop
 	m.queueIdx = 0
 	updated, _ := m.Update(keyPress("z", 'z'))
 	mm := updated.(*Model)
@@ -806,5 +806,89 @@ func TestCustomKeymapAffectsHandlingAndHelp(t *testing.T) {
 	}
 	if got := mm.helpLines(mm.width); len(got) == 0 {
 		t.Fatal("帮助页为空")
+	}
+}
+
+// TestModeKeyCyclesFourStates 验证 p 键四态循环：列表循环 → 单曲 → 随机 → 顺序 → 回到列表循环。
+func TestModeKeyCyclesFourStates(t *testing.T) {
+	mm := fixtureModel()
+	want := []playMode{modeLoopOne, modeShuffle, modeOrdered, modeListLoop}
+	for i, expect := range want {
+		updated, _ := mm.Update(keyPress("p", 'p'))
+		mm = updated.(*Model)
+		if mm.mode != expect {
+			t.Fatalf("第 %d 次按 p 应为 %v，实际 %v", i+1, expect, mm.mode)
+		}
+	}
+}
+
+// TestOrderedModeStopsAtBothEnds 验证顺序模式在队尾不回到第一首、在队首不回绕到队尾。
+func TestOrderedModeStopsAtBothEnds(t *testing.T) {
+	m := fixtureModel()
+	m.mode = modeOrdered
+
+	m.queueIdx = 0
+	m.queueCursor = 0
+	if cmd := m.rewind(); cmd != nil {
+		t.Fatalf("顺序模式第一首不应回绕，实际起了新播放: %v", cmd)
+	}
+	if m.queueIdx != 0 {
+		t.Fatalf("第一首上一首后索引应不变，实际 %d", m.queueIdx)
+	}
+
+	last := len(m.queue) - 1
+	m.queueIdx = last
+	m.state = audio.StatePlaying
+	if cmd := m.advance(); cmd != nil {
+		t.Fatal("顺序模式队尾不应起播下一首")
+	}
+	if m.queueIdx != last {
+		t.Fatalf("队尾下一首后索引应不变，实际 %d", m.queueIdx)
+	}
+	if m.note.text != "" {
+		t.Fatalf("手动在队尾按下一首不应提示，实际 %q", m.note.text)
+	}
+
+	// 自然播完才提示队尾。
+	m.state = audio.StateEnded
+	if cmd := m.advance(); cmd != nil {
+		t.Fatal("播完后不应起播下一首")
+	}
+	if m.note.text != "已播放到队尾" {
+		t.Fatalf("队尾应有提示，实际 %q", m.note.text)
+	}
+}
+
+// TestNextQueueIndexByMode 表驱动验证预取目标索引：列表循环回绕、顺序模式到队尾停止。
+func TestNextQueueIndexByMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode playMode
+		idx  int
+		want int
+	}{
+		{"列表循环中间", modeListLoop, 0, 1},
+		{"列表循环末尾回绕", modeListLoop, 1, 0},
+		{"单曲不预取", modeLoopOne, 0, -1},
+		{"随机不预取", modeShuffle, 0, -1},
+		{"顺序中间", modeOrdered, 0, 1},
+		{"顺序队尾", modeOrdered, 1, -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := fixtureModel()
+			m.mode = tc.mode
+			m.queueIdx = tc.idx
+			if got := m.nextQueueIndex(); got != tc.want {
+				t.Fatalf("下一首索引 = %d，期望 %d", got, tc.want)
+			}
+			wantID := ""
+			if tc.want >= 0 {
+				wantID = m.queue[tc.want].ID
+			}
+			if got := m.nextQueueSongID(); got != wantID {
+				t.Fatalf("下一首 ID = %q，期望 %q", got, wantID)
+			}
+		})
 	}
 }

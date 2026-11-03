@@ -113,6 +113,134 @@ func TestMPRISExportsStateAndCommands(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("没有收到 SetPosition 命令")
 	}
+
+	if err := obj.Call(propsIface+".Set", 0, mprisPlayerIface, "LoopStatus", dbus.MakeVariant("Track")).Err; err != nil {
+		t.Fatalf("写入 LoopStatus: %v", err)
+	}
+	select {
+	case cmd := <-svc.Commands():
+		if cmd.Kind != CommandSetLoopStatus || cmd.Loop != LoopTrack {
+			t.Fatalf("LoopStatus 命令 = %+v", cmd)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("没有收到 LoopStatus 写入命令")
+	}
+	var loop string
+	if err := obj.Call(propsIface+".Get", 0, mprisPlayerIface, "LoopStatus").Store(&loop); err != nil {
+		t.Fatalf("读取 LoopStatus: %v", err)
+	}
+	if loop != string(LoopNone) {
+		t.Fatalf("写入只入队命令，快照未更新时 LoopStatus 应仍是 %q，实际 %q", LoopNone, loop)
+	}
+	if err := obj.Call(propsIface+".Set", 0, mprisPlayerIface, "LoopStatus", dbus.MakeVariant("loop")).Err; err == nil {
+		t.Fatal("非法 LoopStatus 值应被拒绝")
+	}
+}
+
+func TestPropertiesSetEnqueuesOrderCommands(t *testing.T) {
+	s := &linuxService{commands: make(chan Command, 8)}
+	p := &props{s: s}
+
+	cases := []struct {
+		name  string
+		prop  string
+		value dbus.Variant
+		want  Command
+	}{
+		{"随机开启", "Shuffle", dbus.MakeVariant(true), Command{Kind: CommandSetShuffle, Shuffle: true}},
+		{"随机关闭", "Shuffle", dbus.MakeVariant(false), Command{Kind: CommandSetShuffle}},
+		{"播完即停", "LoopStatus", dbus.MakeVariant("None"), Command{Kind: CommandSetLoopStatus, Loop: LoopNone}},
+		{"单曲循环", "LoopStatus", dbus.MakeVariant("Track"), Command{Kind: CommandSetLoopStatus, Loop: LoopTrack}},
+		{"列表循环", "LoopStatus", dbus.MakeVariant("Playlist"), Command{Kind: CommandSetLoopStatus, Loop: LoopPlaylist}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := p.Set(mprisPlayerIface, tc.prop, tc.value); err != nil {
+				t.Fatalf("写入 %s 应成功: %v", tc.prop, err)
+			}
+			select {
+			case got := <-s.commands:
+				if got != tc.want {
+					t.Fatalf("命令 = %+v，期望 %+v", got, tc.want)
+				}
+			default:
+				t.Fatal("没有入队命令")
+			}
+		})
+	}
+}
+
+func TestPropertiesSetRejectsBadValues(t *testing.T) {
+	s := &linuxService{commands: make(chan Command, 8)}
+	p := &props{s: s}
+
+	rejected := []struct {
+		name  string
+		value dbus.Variant
+	}{
+		{"Shuffle", dbus.MakeVariant("true")},
+		{"LoopStatus", dbus.MakeVariant("track")},
+		{"LoopStatus", dbus.MakeVariant("Repeat")},
+		{"LoopStatus", dbus.MakeVariant(2)},
+	}
+	for _, tc := range rejected {
+		err := p.Set(mprisPlayerIface, tc.name, tc.value)
+		if err == nil || !strings.Contains(err.Name, "InvalidArgs") {
+			t.Fatalf("%s=%v 应返回 InvalidArgs，实际 %v", tc.name, tc.value, err)
+		}
+	}
+	for _, name := range []string{"Metadata", "PlaybackStatus", "Position"} {
+		err := p.Set(mprisPlayerIface, name, dbus.MakeVariant("x"))
+		if err == nil || !strings.Contains(err.Name, "PropertyReadOnly") {
+			t.Fatalf("%s 应保持只读，实际 %v", name, err)
+		}
+	}
+	select {
+	case cmd := <-s.commands:
+		t.Fatalf("非法写入不应入队命令: %+v", cmd)
+	default:
+	}
+}
+
+func TestPropertyChangesCoversShuffleAndLoop(t *testing.T) {
+	old := Snapshot{TrackID: "a", Shuffle: true, Loop: LoopPlaylist}
+	next := Snapshot{TrackID: "a", Shuffle: false, Loop: LoopNone}
+	names := propertyChanges(old, next)
+	for _, want := range []string{"Shuffle", "LoopStatus"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("缺少属性 %q，实际 %v", want, names)
+		}
+	}
+
+	// 空快照与显式 None 是同一个状态，不应产生抖动。
+	if names := propertyChanges(Snapshot{}, Snapshot{Loop: LoopNone}); len(names) != 0 {
+		t.Fatalf("空 Loop 与 None 应等价，实际 %v", names)
+	}
+}
+
+func TestIntrospectionMarksOrderPropertiesWritable(t *testing.T) {
+	access := map[string]string{}
+	for _, iface := range mprisIntrospection().Interfaces {
+		if iface.Name != mprisPlayerIface {
+			continue
+		}
+		for _, prop := range iface.Properties {
+			access[prop.Name] = prop.Access
+		}
+	}
+	if len(access) == 0 {
+		t.Fatal("内省结果缺少 Player 接口")
+	}
+	for _, name := range []string{"Shuffle", "LoopStatus", "Volume"} {
+		if access[name] != "readwrite" {
+			t.Fatalf("%s access = %q，期望 readwrite", name, access[name])
+		}
+	}
+	for _, name := range []string{"Metadata", "PlaybackStatus", "Position"} {
+		if access[name] != "read" {
+			t.Fatalf("%s 应保持只读，实际 %q", name, access[name])
+		}
+	}
 }
 
 func TestMPRISNameConflictIsExplicit(t *testing.T) {

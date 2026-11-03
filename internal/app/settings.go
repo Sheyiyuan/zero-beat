@@ -29,7 +29,9 @@ func (s *Service) Preferences() Preferences {
 	if v, err := strconv.ParseFloat(s.store.Setting("comp_db", "0"), 64); err == nil {
 		prefs.CompDB = v
 	}
-	if v, err := strconv.Atoi(s.store.Setting("mode", "0")); err == nil && v >= 0 && v <= 2 {
+	// 模式取值 0..3（列表循环 / 单曲 / 随机 / 顺序）；越界值按默认处理，
+	// 这样旧版本二进制读到新配置也不会崩。
+	if v, err := strconv.Atoi(s.store.Setting("mode", "0")); err == nil && v >= 0 && v <= 3 {
 		prefs.Mode = v
 	}
 	if v, err := strconv.Atoi(s.store.Setting("quality", "0")); err == nil {

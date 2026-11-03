@@ -40,7 +40,7 @@ func RenderDemo(name string, width, height int) string {
 		view:        viewLibrary,
 		volume:      0.76,
 		compDB:      2,
-		mode:        modeSequence,
+		mode:        modeListLoop,
 		state:       audio.StatePlaying,
 		position:    84 * time.Second,
 		duration:    287 * time.Second,

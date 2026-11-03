@@ -94,9 +94,57 @@ func TestControllerQueueAndMode(t *testing.T) {
 	if len(ids) != 3 || !contains(ids, "a") || c.Mode() != ModeShuffle {
 		t.Fatalf("随机模式队列不符: %v", ids)
 	}
-	c.SetMode(ModeSequence)
+	c.SetMode(ModeListLoop)
 	if got := c.Queue(); got[0].ID != "a" || got[1].ID != "b" || got[2].ID != "c" {
 		t.Fatalf("退出随机后顺序不符: %+v", got)
+	}
+}
+
+// TestControllerOrderedModeStopsAtQueueEnd 验证顺序模式播完即停：队尾不再回绕，
+// 队首不再回绕到末尾。
+func TestControllerOrderedModeStopsAtQueueEnd(t *testing.T) {
+	c := New(nil, nil)
+	c.SetMode(ModeOrdered)
+	c.LoadQueue(queueSongs("a", "b", "c"), 2)
+
+	if _, idx, ok := c.Next(); ok || idx != 2 {
+		t.Fatalf("顺序模式最后一首 Next 应不动作，ok=%v idx=%d", ok, idx)
+	}
+	c.SetIndex(0)
+	if _, idx, ok := c.Prev(); ok || idx != 0 {
+		t.Fatalf("顺序模式第一首 Prev 应不动作，ok=%v idx=%d", ok, idx)
+	}
+
+	c.SetIndex(1)
+	if got, idx, ok := c.Next(); !ok || got.ID != "c" || idx != 2 {
+		t.Fatalf("顺序模式未到队尾应正常前进: %+v idx=%d ok=%v", got, idx, ok)
+	}
+}
+
+func TestControllerNextSongIDByMode(t *testing.T) {
+	cases := []struct {
+		name string
+		mode Mode
+		idx  int
+		want string
+	}{
+		{"列表循环末尾回绕", ModeListLoop, 2, "a"},
+		{"列表循环中间", ModeListLoop, 0, "b"},
+		{"单曲不猜下一首", ModeLoopOne, 0, ""},
+		{"随机不猜下一首", ModeShuffle, 0, ""},
+		{"顺序中间", ModeOrdered, 0, "b"},
+		{"顺序队尾不预取", ModeOrdered, 2, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(nil, nil)
+			c.state.Mode = tc.mode
+			c.state.Queue = queueSongs("a", "b", "c")
+			c.state.Index = tc.idx
+			if got := c.NextSongID(); got != tc.want {
+				t.Fatalf("NextSongID = %q，期望 %q", got, tc.want)
+			}
+		})
 	}
 }
 
