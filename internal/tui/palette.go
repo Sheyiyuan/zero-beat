@@ -28,6 +28,7 @@ const (
 	palUnlock     paletteAction = "unlock"
 	palAddCurrent paletteAction = "add-current"
 	palLocalFirst paletteAction = "local-first"
+	palAutoGain   paletteAction = "auto-gain"
 	palAbout      paletteAction = "about"
 	palSync       paletteAction = "sync"
 )
@@ -54,11 +55,21 @@ func (m *Model) paletteItems() []paletteItem {
 	if !m.localFirst {
 		localState = "关闭"
 	}
+	autoLabel := "自动响度均衡：关闭"
+	autoDesc := "按 -16 LUFS 目标自动拉平曲目响度"
+	if m.autoGain {
+		autoLabel = "自动响度均衡：开启"
+	}
+	if m.engine != nil && !m.engine.AutoGainSupported() {
+		autoLabel = "自动响度均衡：不可用"
+		autoDesc = "当前 ffmpeg 缺少 loudnorm 滤镜"
+	}
 	items := []paletteItem{
 		{palBlank, "新建本地歌单", "创建一个只存在于本机的歌单"},
 		{palMix, "新建混合歌单", "引用多个歌单，自己加歌不影响源歌单"},
 		{palAddCurrent, "将正在播放加入歌单", "选择本地、混合或同源云端歌单"},
 		{palLocalFirst, "本地优先：" + localState, "已下载歌曲优先播放本地文件"},
+		{palAutoGain, autoLabel, autoDesc},
 		{palAbout, "关于 zero-beat", "版本、许可证与项目地址"},
 		{palSync, "跨设备同步", "git 仓库、加密登录态与冲突处理"},
 	}
@@ -205,6 +216,8 @@ func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 		}
 		m.setNotice("本地优先已"+state+"（下一首生效）", false)
 		return nil
+	case palAutoGain:
+		return m.toggleAutoGain()
 	case palAbout:
 		m.aboutPopup = true
 		return nil

@@ -124,7 +124,11 @@ func (m *Model) openPlaylistMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 	}
 	switch p.Kind {
 	case "remote":
-		items = append(items, menuItem{label: "同步刷新", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
+		if p.Frozen {
+			items = append(items, menuItem{label: "已冻结 · 登录后恢复同步", disabled: true})
+		} else {
+			items = append(items, menuItem{label: "同步刷新", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
+		}
 	case "mixin":
 		items = append(items, menuItem{label: "同步刷新引用", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
 	default:

@@ -30,6 +30,8 @@ func (f *mouseFakeEngine) Events() <-chan audio.Event { return f.events }
 func (f *mouseFakeEngine) State() audio.State         { return f.state }
 func (f *mouseFakeEngine) SetVolume(float64)          {}
 func (f *mouseFakeEngine) SetCompensationDB(float64)  {}
+func (f *mouseFakeEngine) SetAutoGain(bool)           {}
+func (f *mouseFakeEngine) AutoGainSupported() bool    { return true }
 func (f *mouseFakeEngine) Pause()                     { f.state = audio.StatePaused }
 func (f *mouseFakeEngine) Resume()                    { f.state = audio.StatePlaying }
 func (f *mouseFakeEngine) Stop()                      { f.state = audio.StateIdle }

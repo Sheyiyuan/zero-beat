@@ -608,14 +608,21 @@ func TestLyricsFallbackToLRCLIB(t *testing.T) {
 	}
 }
 
-func TestLogoutClearsAccountAndRemoteMirror(t *testing.T) {
+func TestLogoutFreezesAccountRemoteMirror(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "logout.db"))
 	if err != nil {
 		t.Fatalf("打开数据库失败: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	if _, err := st.EnsurePlaylist(store.Playlist{ID: "bili-fav-1", Source: "bilibili", Title: "收藏夹", Kind: "remote"}); err != nil {
+	if _, err := st.EnsurePlaylist(store.Playlist{ID: "bili-fav-1", Source: "bilibili", Title: "收藏夹", Kind: "remote", RemoteID: "1"}); err != nil {
 		t.Fatalf("建远端歌单失败: %v", err)
+	}
+	if err := st.AddSongToPlaylist("bili-fav-1", store.Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "缓存曲目"}); err != nil {
+		t.Fatalf("写入远端歌单曲目失败: %v", err)
+	}
+	mix, err := st.CreateMixin("混合", []string{"bili-fav-1"})
+	if err != nil {
+		t.Fatalf("建混合歌单失败: %v", err)
 	}
 	if err := st.SaveAccount("bilibili", []byte(`{"SESSDATA":"x"}`)); err != nil {
 		t.Fatalf("保存登录态失败: %v", err)
@@ -635,12 +642,66 @@ func TestLogoutClearsAccountAndRemoteMirror(t *testing.T) {
 	if _, err := st.LoadAccount("bilibili"); err != store.ErrNotFound {
 		t.Fatalf("登录态未清除: %v", err)
 	}
-	items, err := st.ListPlaylists()
+	remote, err := st.Playlist("bili-fav-1")
 	if err != nil {
-		t.Fatalf("列出歌单失败: %v", err)
+		t.Fatalf("远端镜像不应被删除: %v", err)
 	}
-	if len(items) != 0 {
-		t.Fatalf("远端镜像应已清空: %+v", items)
+	if !remote.Frozen {
+		t.Fatal("退出登录后远端镜像应被冻结")
+	}
+	songs, err := st.PlaylistSongs(remote.ID)
+	if err != nil || len(songs) != 1 || songs[0].Title != "缓存曲目" {
+		t.Fatalf("冻结后应保留缓存曲目: %+v err=%v", songs, err)
+	}
+	refs, err := st.MixinRefs(mix.ID)
+	if err != nil {
+		t.Fatalf("读取混合歌单引用失败: %v", err)
+	}
+	if len(refs) != 1 || refs[0].ID != remote.ID {
+		t.Fatalf("混合歌单对远端镜像的引用应保留: %+v", refs)
+	}
+}
+
+func TestExpiredSessionAutoLogoutFreezes(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "expired.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	remote, err := st.EnsurePlaylist(store.Playlist{
+		ID: "bili-fav-1", Source: "bilibili", Title: "收藏夹", Kind: "remote", RemoteID: "1",
+	})
+	if err != nil {
+		t.Fatalf("建远端歌单失败: %v", err)
+	}
+	if err := st.SaveAccount("bilibili", []byte(`{"SESSDATA":"x"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	m := fixtureModel()
+	m.store = st
+	m.users = map[source.ID]source.User{
+		source.Bilibili: {Name: "Sheyiyuan", LoggedIn: true},
+	}
+	updated, cmd := m.Update(usersMsg{
+		users:   map[source.ID]source.User{source.Bilibili: {}},
+		expired: []source.ID{source.Bilibili},
+	})
+	mm := updated.(*Model)
+	if cmd == nil {
+		t.Fatal("登录过期后应重新加载账号与歌单")
+	}
+	if _, ok := mm.users[source.Bilibili]; ok {
+		t.Fatalf("过期音源的用户信息应被移除: %+v", mm.users)
+	}
+	if _, err := st.LoadAccount("bilibili"); err != store.ErrNotFound {
+		t.Fatalf("过期后应清除登录态: %v", err)
+	}
+	got, err := st.Playlist(remote.ID)
+	if err != nil || !got.Frozen {
+		t.Fatalf("过期后应冻结远端歌单: %+v err=%v", got, err)
+	}
+	if !strings.Contains(mm.note.text, "登录已过期") || !strings.Contains(mm.note.text, "冻结") {
+		t.Fatalf("应提示自动退出与冻结，实际 %q", mm.note.text)
 	}
 }
 

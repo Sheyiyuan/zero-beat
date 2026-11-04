@@ -18,17 +18,21 @@ type fakeEngine struct {
 	duration time.Duration
 	volume   float64
 	comp     float64
+	autoGain bool
+	autoOK   bool
 	events   chan audio.Event
 	paused   bool
 }
 
 func newFakeEngine() *fakeEngine {
-	return &fakeEngine{state: audio.StateIdle, events: make(chan audio.Event)}
+	return &fakeEngine{state: audio.StateIdle, events: make(chan audio.Event), autoOK: true}
 }
 func (f *fakeEngine) Events() <-chan audio.Event  { return f.events }
 func (f *fakeEngine) State() audio.State          { return f.state }
 func (f *fakeEngine) SetVolume(v float64)         { f.volume = v }
 func (f *fakeEngine) SetCompensationDB(v float64) { f.comp = v }
+func (f *fakeEngine) SetAutoGain(v bool)          { f.autoGain = v }
+func (f *fakeEngine) AutoGainSupported() bool     { return f.autoOK }
 func (f *fakeEngine) Pause()                      { f.state = audio.StatePaused }
 func (f *fakeEngine) Resume()                     { f.state = audio.StatePlaying }
 func (f *fakeEngine) Stop()                       { f.state = audio.StateIdle; f.stream = audio.Stream{} }
@@ -316,6 +320,36 @@ func TestSeekKeepsPausedState(t *testing.T) {
 	}
 	if got := c.Export().PlaybackState; got != audio.StatePlaying {
 		t.Fatalf("播放中跳转后界面状态应为播放，实际 %v", got)
+	}
+}
+
+func TestControllerCompensationAndAutoGain(t *testing.T) {
+	eng := newFakeEngine()
+	c := New(eng, &fakeSaver{})
+
+	c.SetCompDB(2)
+	c.SetSongCompDB(1)
+	if eng.comp != 3 {
+		t.Fatalf("实际增益应为全局 2 + 单曲 1 = 3，实际 %v", eng.comp)
+	}
+	if c.CompDB() != 2 || c.SongCompDB() != 1 {
+		t.Fatalf("补偿状态不符: global=%v song=%v", c.CompDB(), c.SongCompDB())
+	}
+	c.SetSongCompDB(99)
+	if c.SongCompDB() != 12 || eng.comp != 12 {
+		t.Fatalf("单曲补偿应夹到 12 dB，实际 song=%v eff=%v", c.SongCompDB(), eng.comp)
+	}
+	c.SetCompDB(-20)
+	if eng.comp != -8 {
+		t.Fatalf("全局 -20 + 单曲 12 应为 -8，实际 %v", eng.comp)
+	}
+
+	if !c.SetAutoGain(true) || !c.AutoGain() || !eng.autoGain {
+		t.Fatalf("支持 loudnorm 时应能开启自动均衡: state=%v engine=%v", c.AutoGain(), eng.autoGain)
+	}
+	eng.autoOK = false
+	if c.SetAutoGain(true) {
+		t.Fatal("引擎不支持 loudnorm 时应返回 false")
 	}
 }
 

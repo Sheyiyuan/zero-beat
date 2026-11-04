@@ -350,8 +350,12 @@ func (m *Model) renderPlaylistRow(s playlistRowSpec, width int) string {
 	return padRight(b.String(), width)
 }
 
-// playlistTag 返回歌单短标记：混合/本地用固定字，远端用音源短标记。
+// playlistTag 返回歌单短标记：冻结的远端镜像优先显示「冻」，
+// 混合/本地用固定字，其他远端用音源短标记。
 func (m *Model) playlistTag(p store.Playlist) string {
+	if p.Frozen && p.Kind == "remote" {
+		return "冻"
+	}
 	switch p.Kind {
 	case "mixin":
 		return "混"

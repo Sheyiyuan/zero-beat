@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -319,23 +320,39 @@ func (s *Service) Lyrics(ctx context.Context, song store.Song) LyricsResult {
 	return out
 }
 
-// Users 读取所有已登录音源的账号信息。
-func (s *Service) Users(ctx context.Context) map[source.ID]source.User {
+// Users 读取所有已登录音源的账号信息；同时返回登录态已经不可用的音源
+// （平台判定过期，或库里有账号但装不进音源）。这里只做判定，不直接清理：
+// 由调用方决定冻结歌单与提示时机，避免读接口带副作用。
+func (s *Service) Users(ctx context.Context) (map[source.ID]source.User, []source.ID) {
 	users := map[source.ID]source.User{}
+	var expired []source.ID
 	if s.sources == nil {
-		return users
+		return users, nil
 	}
 	for _, src := range s.sources.All() {
 		if !src.LoggedIn() {
 			users[src.ID()] = source.User{}
+			// 库里有账号却装不进音源，说明本地登录态已经不可用：
+			// 与平台侧过期一样处理，避免歌单一直停在「同步中」。
+			if s.store != nil {
+				if _, err := s.store.LoadAccount(string(src.ID())); err == nil {
+					expired = append(expired, src.ID())
+				}
+			}
 			continue
 		}
-		if got, err := src.Account(ctx); err == nil {
+		got, err := src.Account(ctx)
+		switch {
+		case errors.Is(err, source.ErrSessionExpired):
+			users[src.ID()] = source.User{}
+			expired = append(expired, src.ID())
+		case err != nil:
+			// 网络或风控错误时不写 entry，标题栏仍能用 cookie 状态显示「已登录」。
+		default:
 			users[src.ID()] = got
 		}
-		// 网络错误时不写 entry，标题栏仍能用 cookie 状态显示「已登录」。
 	}
-	return users
+	return users, expired
 }
 
 // Queue 是恢复出来的播放队列。

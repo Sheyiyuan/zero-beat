@@ -36,6 +36,8 @@ const (
 	VolumeUp         Action = "volume_up"
 	CompDown         Action = "comp_down"
 	CompUp           Action = "comp_up"
+	SongCompDown     Action = "song_comp_down"
+	SongCompUp       Action = "song_comp_up"
 	Mode             Action = "mode"
 	Mute             Action = "mute"
 	Quality          Action = "quality"
@@ -103,6 +105,8 @@ var Defaults = map[Action][]string{
 	VolumeUp:         {"+", "="},
 	CompDown:         {","},
 	CompUp:           {"."},
+	SongCompDown:     {";"},
+	SongCompUp:       {"'"},
 	Mode:             {"p"},
 	Mute:             {"m"},
 	Quality:          {"y"},

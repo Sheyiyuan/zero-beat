@@ -50,6 +50,26 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("netease: %s 返回 code=%d %s", e.Path, e.Code, e.Message)
 }
 
+// isAuthCode 判断业务码是否表示「需要登录 / 登录已失效」。
+// 403 通常是风控或版权限制，不在这里触发自动登出。
+func isAuthCode(code int) bool {
+	switch code {
+	case 301, 302, 401:
+		return true
+	}
+	return false
+}
+
+// apiError 把平台业务错误归一成 APIError；登录态相关的错误再包一层
+// source.ErrSessionExpired，让上层能自动清理账号并冻结远端歌单。
+func apiError(code int, message, path string) error {
+	err := &APIError{Code: code, Message: message, Path: path}
+	if isAuthCode(code) {
+		return fmt.Errorf("%w: %w", source.ErrSessionExpired, err)
+	}
+	return err
+}
+
 // Client 是网易云客户端。协议细节由 go-musicfox/netease-music 处理。
 var _ source.DailyRecommender = (*Client)(nil)
 var _ source.PlaylistWriter = (*Client)(nil)
@@ -240,11 +260,17 @@ func (c *Client) accountLocked(ctx context.Context) (source.User, error) {
 	code, body := svc.AccountInfo()
 	if code != 200 {
 		c.setUser(source.User{})
-		return source.User{}, &APIError{Code: int(code), Message: "账号信息不可用", Path: "nuser/account/get"}
+		return source.User{}, apiError(int(code), "账号信息不可用", "nuser/account/get")
 	}
 	u, err := parseAccount(body)
 	if err != nil {
 		return source.User{}, err
+	}
+	if !u.LoggedIn {
+		// MUSIC_U 还在，但账号接口已经不认它了：这就是登录过期，而不是未登录。
+		c.setUser(source.User{})
+		return source.User{}, fmt.Errorf("%w: %w", source.ErrSessionExpired,
+			&APIError{Code: int(code), Message: "账号信息为空", Path: "nuser/account/get"})
 	}
 	c.setUser(u)
 	return u, nil
@@ -715,7 +741,7 @@ func (c *Client) DailyRecommendations(ctx context.Context) ([]source.Track, erro
 	svc := &neaservice.RecommendSongsService{}
 	code, body := svc.RecommendSongs()
 	if code != 200 {
-		return nil, &APIError{Code: int(code), Message: "每日推荐不可用", Path: "discovery/recommend/songs"}
+		return nil, apiError(int(code), "每日推荐不可用", "discovery/recommend/songs")
 	}
 	return parseDailySongs(body)
 }
@@ -733,7 +759,7 @@ func parseDailySongs(body []byte) ([]source.Track, error) {
 		return nil, fmt.Errorf("netease: 解析每日推荐: %w", err)
 	}
 	if data.Code != 0 && data.Code != 200 {
-		return nil, &APIError{Code: data.Code, Message: "每日推荐不可用", Path: "discovery/recommend/songs"}
+		return nil, apiError(data.Code, "每日推荐不可用", "discovery/recommend/songs")
 	}
 	raw := data.Data.DailySongs
 	if len(raw) == 0 {
@@ -773,7 +799,7 @@ func (c *Client) RemotePlaylists(ctx context.Context) ([]source.Playlist, error)
 	svc := &neaservice.UserPlaylistService{Uid: u.ID, Limit: "1000", Offset: "0"}
 	code, body := svc.UserPlaylist()
 	if code != 200 {
-		return nil, &APIError{Code: int(code), Message: "歌单列表不可用", Path: "user/playlist"}
+		return nil, apiError(int(code), "歌单列表不可用", "user/playlist")
 	}
 	return parsePlaylists(body)
 }
@@ -791,7 +817,7 @@ func parsePlaylists(body []byte) ([]source.Playlist, error) {
 		return nil, fmt.Errorf("netease: 解析歌单响应: %w", err)
 	}
 	if data.Code != 0 && data.Code != 200 {
-		return nil, &APIError{Code: data.Code, Message: "歌单列表不可用", Path: "user/playlist"}
+		return nil, apiError(data.Code, "歌单列表不可用", "user/playlist")
 	}
 	out := make([]source.Playlist, 0, len(data.Playlist))
 	for _, p := range data.Playlist {
@@ -823,7 +849,7 @@ func (c *Client) PlaylistTracks(ctx context.Context, remoteID string) ([]source.
 	svc := &neaservice.PlaylistDetailService{Id: strconv.FormatInt(id, 10), S: "8"}
 	code, body := svc.PlaylistDetail()
 	if code != 200 {
-		return nil, &APIError{Code: int(code), Message: "歌单不可用", Path: "playlist/detail"}
+		return nil, apiError(int(code), "歌单不可用", "playlist/detail")
 	}
 	return parsePlaylistTracks(body)
 }
@@ -932,7 +958,7 @@ func parsePlaylistTracks(body []byte) ([]source.Track, error) {
 		return nil, fmt.Errorf("netease: 解析歌单详情: %w", err)
 	}
 	if data.Code != 0 && data.Code != 200 {
-		return nil, &APIError{Code: data.Code, Message: "歌单不可用", Path: "playlist/detail"}
+		return nil, apiError(data.Code, "歌单不可用", "playlist/detail")
 	}
 	raw := data.Result.Tracks
 	if len(raw) == 0 {

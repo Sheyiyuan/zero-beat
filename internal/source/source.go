@@ -6,12 +6,17 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 )
+
+// ErrSessionExpired 表示本地保存的登录态仍存在，但平台已判定失效。
+// 调用方应清除该音源的账号、冻结其远端歌单，并提示用户重新登录。
+var ErrSessionExpired = errors.New("source: 登录态已过期")
 
 // ID 是音源的稳定标识，同时会写进歌曲的 source 字段。
 type ID string

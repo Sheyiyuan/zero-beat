@@ -49,12 +49,13 @@ type RefFile struct {
 	RemoteID string `json:"remote_id,omitempty"`
 }
 
-// AnnotationFile 是单曲歌词偏移与播放片段；一歌一文件，按歌曲 ID 稳定。
+// AnnotationFile 是单曲歌词偏移、单曲音量补偿与播放片段；一歌一文件，按歌曲 ID 稳定。
 type AnnotationFile struct {
-	SongID        string `json:"song_id"`
-	LyricOffsetMS int    `json:"lyric_offset_ms,omitempty"`
-	ClipStartMS   int64  `json:"clip_start_ms,omitempty"`
-	ClipEndMS     int64  `json:"clip_end_ms,omitempty"`
+	SongID        string  `json:"song_id"`
+	LyricOffsetMS int     `json:"lyric_offset_ms,omitempty"`
+	CompDB        float64 `json:"comp_db,omitempty"`
+	ClipStartMS   int64   `json:"clip_start_ms,omitempty"`
+	ClipEndMS     int64   `json:"clip_end_ms,omitempty"`
 }
 
 // GitAttributes 关闭 JSON 的行级合并：同一实体两端都改就整版冲突。
@@ -271,6 +272,7 @@ func annotationFileFrom(a store.SongAnnotation) AnnotationFile {
 	return AnnotationFile{
 		SongID:        a.SongID,
 		LyricOffsetMS: a.LyricOffsetMS,
+		CompDB:        a.CompDB,
 		ClipStartMS:   a.ClipStartMS,
 		ClipEndMS:     a.ClipEndMS,
 	}
@@ -503,6 +505,7 @@ func importAnnotations(in ImportInput) (map[string]bool, []string) {
 		if err := in.Store.SaveAnnotation(store.SongAnnotation{
 			SongID:        file.SongID,
 			LyricOffsetMS: file.LyricOffsetMS,
+			CompDB:        file.CompDB,
 			ClipStartMS:   file.ClipStartMS,
 			ClipEndMS:     file.ClipEndMS,
 		}); err != nil {

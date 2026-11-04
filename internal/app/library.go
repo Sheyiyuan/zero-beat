@@ -136,7 +136,10 @@ func (s *Service) PlaylistSongs(ctx context.Context, p store.Playlist, force boo
 	}
 
 	isDaily := IsDailyPlaylist(p)
-	needRemote := p.Kind == "remote" && (force || p.Count == 0 || isDaily)
+	needRemote := p.Kind == "remote" && !p.Frozen && (force || p.Count == 0 || isDaily)
+	if p.Kind == "remote" && p.Frozen && force {
+		warn = fmt.Errorf("%s 已冻结，重新登录后恢复同步", p.Title)
+	}
 	if needRemote {
 		srcID := strings.TrimSpace(p.Source)
 		if srcID == "" {
@@ -188,7 +191,7 @@ func (s *Service) refreshMixinRefs(ctx context.Context, p store.Playlist) error 
 	}
 	var warn error
 	for _, ref := range refs {
-		if ref.Kind != "remote" {
+		if ref.Kind != "remote" || ref.Frozen {
 			continue
 		}
 		src := s.sources.GetString(ref.Source)

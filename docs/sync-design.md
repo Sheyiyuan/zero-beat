@@ -67,9 +67,9 @@
 | `kind=mixin` 歌单 | 是 | `playlists/<id>.json` | 含 `refs`、`excludes`、自己加入的曲目 |
 | `kind=remote` 镜像、每日推荐 | 否 | — | 打开时按平台刷新；混合歌单引用它时在导入侧补占位 |
 | `keymap.toml` | 是 | `keymap.toml` | 原样同步；导入前校验 |
-| 单曲歌词偏移、片段 | 是（P2） | `annotations/<song>.json` | 按歌曲 ID 稳定；一歌一文件避免整文件冲突 |
+| 单曲歌词偏移、单曲音量补偿、片段 | 是（P2） | `annotations/<song>.json` | 按歌曲 ID 稳定；一歌一文件避免整文件冲突 |
 | 登录态 | 是 | `accounts/<source>.age` | 加密；按 `updated_at` LWW |
-| 音量/补偿/音质/模式/鼠标/本地优先/当前歌单 | 否 | — | 设备态，跨设备同步会互相覆盖 |
+| 音量/全局补偿/自动响度均衡/音质/模式/鼠标/本地优先/当前歌单 | 否 | — | 设备态，跨设备同步会互相覆盖；单曲补偿在注释里 |
 | `queue`、`downloads` | 否 | — | 设备态；下载路径是绝对路径 |
 | SQLite 文件 | 否 | — | 二进制、WAL、无法合并 |
 

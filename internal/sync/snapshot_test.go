@@ -55,7 +55,7 @@ func seedSnapshot(t *testing.T, st *store.Store) (localID, mixID string) {
 	if err := st.RemoveSongFromPlaylist(mix.ID, inherited); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveAnnotation(store.SongAnnotation{SongID: "bilibili:BV1xx411c7mD:1", LyricOffsetMS: -500, ClipStartMS: 1000, ClipEndMS: 2000}); err != nil {
+	if err := st.SaveAnnotation(store.SongAnnotation{SongID: "bilibili:BV1xx411c7mD:1", LyricOffsetMS: -500, CompDB: -1.5, ClipStartMS: 1000, ClipEndMS: 2000}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.SaveAccountAt("bilibili", []byte(`{"SESSDATA":"secret"}`), 1761980000); err != nil {
@@ -155,7 +155,7 @@ func TestSnapshotImportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(annotations) != 1 || annotations[0].ClipEndMS != 2000 || annotations[0].LyricOffsetMS != -500 {
+	if len(annotations) != 1 || annotations[0].ClipEndMS != 2000 || annotations[0].LyricOffsetMS != -500 || annotations[0].CompDB != -1.5 {
 		t.Fatalf("注释导入不符: %+v", annotations)
 	}
 

@@ -1,11 +1,21 @@
 package netease
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/sheyiyuan/zero-beat/internal/source"
 )
+
+func TestAPIErrorMarksExpiredSession(t *testing.T) {
+	if err := apiError(301, "需要登录", "user/playlist"); !errors.Is(err, source.ErrSessionExpired) {
+		t.Fatalf("301 应标记登录过期: %v", err)
+	}
+	if err := apiError(404, "不存在", "playlist/detail"); errors.Is(err, source.ErrSessionExpired) {
+		t.Fatalf("404 不应标记登录过期: %v", err)
+	}
+}
 
 func TestCapsIncludePlaylistWrite(t *testing.T) {
 	c := New()

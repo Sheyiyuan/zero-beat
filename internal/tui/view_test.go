@@ -73,6 +73,21 @@ func TestRenderLibrary(t *testing.T) {
 	}
 }
 
+func TestRenderFrozenPlaylist(t *testing.T) {
+	m := fixtureModel()
+	m.playlistIdx = 0
+	m.playlists[0].Frozen = true
+	m.songs = nil
+	m.songIdx = 0
+	lines := assertFrame(t, m.View().Content, 100, 30)
+	body := ansi.Strip(strings.Join(lines, "\n"))
+	for _, want := range []string{"[冻]", "已冻结", "登录失效或已退出", "缓存曲目仍保留"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("冻结歌单界面里应该出现 %q，实际：\n%s", want, body)
+		}
+	}
+}
+
 func TestRenderAllViews(t *testing.T) {
 	m := fixtureModel()
 	m.searchKeyword = "周杰伦"
@@ -460,6 +475,49 @@ func TestVolumeAndCompensationClamp(t *testing.T) {
 	}
 	if m.compDB != -20 {
 		t.Fatalf("补偿下限应为 -20 dB，实际 %v", m.compDB)
+	}
+}
+
+func TestSongCompensationClamp(t *testing.T) {
+	m := fixtureModel()
+	for i := 0; i < 20; i++ {
+		m.changeSongComp(1)
+	}
+	if m.songCompDB != 12 {
+		t.Fatalf("单曲补偿上限应为 12 dB，实际 %v", m.songCompDB)
+	}
+	if !strings.Contains(m.note.text, "单曲音量补偿") {
+		t.Fatalf("调整单曲补偿应有提示，实际 %q", m.note.text)
+	}
+	for i := 0; i < 40; i++ {
+		m.changeSongComp(-1)
+	}
+	if m.songCompDB != -12 {
+		t.Fatalf("单曲补偿下限应为 -12 dB，实际 %v", m.songCompDB)
+	}
+}
+
+func TestSongCompKeyBinding(t *testing.T) {
+	m := fixtureModel()
+	updated, _ := m.Update(keyPress("'", '\''))
+	mm := updated.(*Model)
+	if mm.songCompDB != 1 {
+		t.Fatalf("' 应把单曲补偿加 1 dB，实际 %v", mm.songCompDB)
+	}
+	updated, _ = mm.Update(keyPress(";", ';'))
+	mm = updated.(*Model)
+	if mm.songCompDB != 0 {
+		t.Fatalf("; 应把单曲补偿减 1 dB，实际 %v", mm.songCompDB)
+	}
+}
+
+func TestHelpDocumentsVolumeFeatures(t *testing.T) {
+	m := fixtureModel()
+	help := ansi.Strip(strings.Join(m.helpLines(100), "\n"))
+	for _, want := range []string{"全局音量补偿", "单曲音量补偿", "自动响度均衡"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("帮助页应记录 %q，实际：\n%s", want, help)
+		}
 	}
 }
 

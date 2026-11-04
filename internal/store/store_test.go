@@ -276,6 +276,65 @@ func TestDeleteRemotePlaylists(t *testing.T) {
 	}
 }
 
+func TestFreezeRemotePlaylistsKeepsMirrorAndRefs(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.EnsurePlaylist(Playlist{ID: "bili-fav-1", Source: "bilibili", Title: "收藏夹", Kind: "remote", RemoteID: "1"}); err != nil {
+		t.Fatalf("建远端歌单失败: %v", err)
+	}
+	if _, err := st.EnsurePlaylist(Playlist{ID: "netease-pl-1", Source: "netease", Title: "云歌单", Kind: "remote", RemoteID: "1"}); err != nil {
+		t.Fatalf("建远端歌单失败: %v", err)
+	}
+	if err := st.AddSongToPlaylist("bili-fav-1", Song{Source: "bilibili", BVID: "BV1", Page: 1, Title: "A"}); err != nil {
+		t.Fatalf("加入远端歌单失败: %v", err)
+	}
+	mix, err := st.CreateMixin("混合", []string{"bili-fav-1"})
+	if err != nil {
+		t.Fatalf("建混合歌单失败: %v", err)
+	}
+
+	n, err := st.FreezeRemotePlaylistsBySource("bilibili")
+	if err != nil || n != 1 {
+		t.Fatalf("冻结结果不符: n=%d err=%v", n, err)
+	}
+	remote, err := st.Playlist("bili-fav-1")
+	if err != nil || !remote.Frozen {
+		t.Fatalf("B 站镜像应被冻结: %+v err=%v", remote, err)
+	}
+	other, err := st.Playlist("netease-pl-1")
+	if err != nil || other.Frozen {
+		t.Fatalf("其他音源不应被冻结: %+v err=%v", other, err)
+	}
+	songs, err := st.PlaylistSongs(remote.ID)
+	if err != nil || len(songs) != 1 {
+		t.Fatalf("冻结后应保留缓存曲目: %+v err=%v", songs, err)
+	}
+	refs, err := st.MixinRefs(mix.ID)
+	if err != nil || len(refs) != 1 || refs[0].ID != remote.ID || !refs[0].Frozen {
+		t.Fatalf("混合歌单引用与冻结状态应保留: %+v err=%v", refs, err)
+	}
+	mixSongs, err := st.PlaylistSongs(mix.ID)
+	if err != nil || len(mixSongs) != 1 || mixSongs[0].Title != "A" {
+		t.Fatalf("冻结后混合歌单仍应展开缓存曲目: %+v err=%v", mixSongs, err)
+	}
+	if _, err := st.EnsurePlaylist(Playlist{ID: "bili-fav-1", Source: "bilibili", Title: "收藏夹", Kind: "remote", RemoteID: "1"}); err != nil {
+		t.Fatalf("重新导入失败: %v", err)
+	}
+	remote, err = st.Playlist("bili-fav-1")
+	if err != nil || remote.Frozen {
+		t.Fatalf("重新导入应解冻: %+v err=%v", remote, err)
+	}
+	if _, err := st.FreezeRemotePlaylistsBySource("bilibili"); err != nil {
+		t.Fatalf("再次冻结失败: %v", err)
+	}
+	if err := st.SaveAccount("bilibili", []byte(`{"SESSDATA":"x"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	remote, err = st.Playlist("bili-fav-1")
+	if err != nil || remote.Frozen {
+		t.Fatalf("保存登录态后应解冻: %+v err=%v", remote, err)
+	}
+}
+
 func TestMigrateLegacyBilibiliSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite", path)
@@ -517,6 +576,31 @@ func TestDownloadLifecycle(t *testing.T) {
 	}
 	if _, err := st.Download(song.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("删除后应返回 ErrNotFound: %v", err)
+	}
+}
+
+func TestSongCompDBPersistsAndFeedsAnnotation(t *testing.T) {
+	st := openTestStore(t)
+	const songID = "netease:1:1"
+	if v, err := st.SongCompDB(songID); err != nil || v != 0 {
+		t.Fatalf("默认单曲补偿应为 0: v=%v err=%v", v, err)
+	}
+	if err := st.SetSongCompDB(songID, -2.5); err != nil {
+		t.Fatalf("写入单曲补偿失败: %v", err)
+	}
+	if v, err := st.SongCompDB(songID); err != nil || v != -2.5 {
+		t.Fatalf("单曲补偿读取不符: v=%v err=%v", v, err)
+	}
+	annotations, err := st.ListAnnotations()
+	if err != nil || len(annotations) != 1 || annotations[0].CompDB != -2.5 {
+		t.Fatalf("单曲补偿应进入同步注释: %+v err=%v", annotations, err)
+	}
+	if err := st.SetSongCompDB(songID, 0); err != nil {
+		t.Fatalf("清除单曲补偿失败: %v", err)
+	}
+	annotations, err = st.ListAnnotations()
+	if err != nil || len(annotations) != 0 {
+		t.Fatalf("补偿归零后不应再导出注释: %+v err=%v", annotations, err)
 	}
 }
 

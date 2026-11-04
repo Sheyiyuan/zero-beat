@@ -30,6 +30,10 @@ const (
 	bytesPerSecond = sampleRate * channelCount * 2
 
 	eventBuffer = 16
+
+	// loudnormFilter 是自动响度均衡的单遍滤镜：目标 -16 LUFS、真峰值 -1.5 dBTP。
+	// 单遍模式不需要预分析整首歌，代价是增益会随节目动态缓慢调整。
+	loudnormFilter = "loudnorm=I=-16:TP=-1.5:LRA=11"
 )
 
 // State 是播放状态。
@@ -91,14 +95,17 @@ type Engine struct {
 	state    State
 	volume   float64
 	compDB   float64
-	stream   Stream
-	cmd      *exec.Cmd
-	proxy    *headerProxy
-	player   *oto.Player
-	gain     *gainReader
-	seekBase time.Duration
-	gen      int
-	closed   bool
+	autoGain bool
+	// autoGainSupported 表示本机 ffmpeg 提供 loudnorm 滤镜；没有时开关会明确拒绝。
+	autoGainSupported bool
+	stream            Stream
+	cmd               *exec.Cmd
+	proxy             *headerProxy
+	player            *oto.Player
+	gain              *gainReader
+	seekBase          time.Duration
+	gen               int
+	closed            bool
 }
 
 // New 创建引擎并初始化音频设备（PulseAudio / WASAPI / CoreAudio）。
@@ -122,12 +129,37 @@ func New() (*Engine, error) {
 		return nil, errors.New("audio: 未找到 ffmpeg，请先安装（Debian/Ubuntu: sudo apt install ffmpeg）")
 	}
 	return &Engine{
-		ctx:    ctx,
-		events: make(chan Event, eventBuffer),
-		ffmpeg: ffmpeg,
-		volume: 0.8,
-		state:  StateIdle,
+		ctx:               ctx,
+		events:            make(chan Event, eventBuffer),
+		ffmpeg:            ffmpeg,
+		volume:            0.8,
+		state:             StateIdle,
+		autoGainSupported: detectLoudnorm(ffmpeg),
 	}, nil
+}
+
+// detectLoudnorm 检查 ffmpeg 是否带 loudnorm 滤镜。少数精简构建会裁掉
+// libebur128，此时自动响度均衡需要优雅地不可用，而不是每次播放都失败。
+func detectLoudnorm(ffmpeg string) bool {
+	out, err := exec.Command(ffmpeg, "-hide_banner", "-h", "filter=loudnorm").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "loudnorm")
+}
+
+// AutoGainSupported 返回本机 ffmpeg 是否支持自动响度均衡。
+func (e *Engine) AutoGainSupported() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.autoGainSupported
+}
+
+// SetAutoGain 开关自动响度均衡；对正在播放的流要在重启后生效。
+func (e *Engine) SetAutoGain(enabled bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.autoGain = enabled && e.autoGainSupported
 }
 
 // Events 返回事件通道。
@@ -221,7 +253,10 @@ func (e *Engine) startLocked(ctx context.Context, s Stream, seek time.Duration) 
 		streamURL = proxy.URL()
 	}
 
-	args := ffmpegArgs(streamURL, seek, s.clipEnd())
+	e.mu.Lock()
+	autoGain := e.autoGain
+	e.mu.Unlock()
+	args := ffmpegArgs(streamURL, seek, s.clipEnd(), autoGain)
 
 	cmd := exec.CommandContext(ctx, e.ffmpeg, args...)
 	stdout, err := cmd.StdoutPipe()
@@ -498,7 +533,8 @@ func (e *Engine) emit(ev Event) {
 }
 
 // ffmpegArgs 拼装解码参数；clipEnd > 0 时用 -t 把输出限制到区间末尾。
-func ffmpegArgs(streamURL string, seek, clipEnd time.Duration) []string {
+// autoGain 打开时在解码后接 loudnorm，把曲目响度拉向统一目标。
+func ffmpegArgs(streamURL string, seek, clipEnd time.Duration, autoGain bool) []string {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin",
 	}
@@ -506,6 +542,9 @@ func ffmpegArgs(streamURL string, seek, clipEnd time.Duration) []string {
 		args = append(args, "-ss", formatSeconds(seek))
 	}
 	args = append(args, "-i", streamURL)
+	if autoGain {
+		args = append(args, "-af", loudnormFilter)
+	}
 	if clipEnd > seek {
 		args = append(args, "-t", formatSeconds(clipEnd-seek))
 	}

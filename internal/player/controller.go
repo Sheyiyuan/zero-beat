@@ -44,6 +44,8 @@ type Engine interface {
 	State() audio.State
 	SetVolume(float64)
 	SetCompensationDB(float64)
+	SetAutoGain(bool)
+	AutoGainSupported() bool
 	PlayAt(ctx context.Context, s audio.Stream, at time.Duration) error
 	Pause()
 	Resume()
@@ -65,6 +67,8 @@ type State struct {
 	Mode           Mode
 	Volume         float64
 	CompDB         float64
+	SongCompDB     float64
+	AutoGain       bool
 	Muted          bool
 	ResumeAt       time.Duration
 	Retry          int
@@ -129,8 +133,14 @@ func (c *Controller) Quality() source.Quality { return c.state.Quality }
 // Volume 返回音量。
 func (c *Controller) Volume() float64 { return c.state.Volume }
 
-// CompDB 返回响度补偿。
+// CompDB 返回全局响度补偿。
 func (c *Controller) CompDB() float64 { return c.state.CompDB }
+
+// SongCompDB 返回当前曲目的额外补偿（相对全局）。
+func (c *Controller) SongCompDB() float64 { return c.state.SongCompDB }
+
+// AutoGain 返回自动响度均衡开关。
+func (c *Controller) AutoGain() bool { return c.state.AutoGain }
 
 // Muted 返回是否静音。
 func (c *Controller) Muted() bool { return c.state.Muted }
@@ -428,7 +438,7 @@ func (c *Controller) ToggleMute() bool {
 	return c.state.Muted
 }
 
-// SetCompDB 设置响度补偿并应用到引擎。
+// SetCompDB 设置全局响度补偿并应用到引擎。实际增益是全局补偿 + 单曲补偿。
 func (c *Controller) SetCompDB(v float64) {
 	if v < -20 {
 		v = -20
@@ -437,9 +447,45 @@ func (c *Controller) SetCompDB(v float64) {
 		v = 12
 	}
 	c.state.CompDB = v
-	if c.engine != nil {
-		c.engine.SetCompensationDB(v)
+	c.applyComp()
+}
+
+// SetSongCompDB 设置当前曲目的额外补偿（相对全局）；范围 ±12 dB。
+func (c *Controller) SetSongCompDB(v float64) {
+	if v < -12 {
+		v = -12
 	}
+	if v > 12 {
+		v = 12
+	}
+	c.state.SongCompDB = v
+	c.applyComp()
+}
+
+// SetAutoGain 开关自动响度均衡；返回 false 表示当前引擎不支持 loudnorm。
+func (c *Controller) SetAutoGain(enabled bool) bool {
+	if enabled && c.engine != nil && !c.engine.AutoGainSupported() {
+		return false
+	}
+	c.state.AutoGain = enabled
+	if c.engine != nil {
+		c.engine.SetAutoGain(enabled)
+	}
+	return true
+}
+
+func (c *Controller) applyComp() {
+	if c.engine == nil {
+		return
+	}
+	v := c.state.CompDB + c.state.SongCompDB
+	if v < -20 {
+		v = -20
+	}
+	if v > 12 {
+		v = 12
+	}
+	c.engine.SetCompensationDB(v)
 }
 
 // CycleSleep 循环睡眠定时，返回新的结束时间。

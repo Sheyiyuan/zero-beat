@@ -105,12 +105,18 @@ func (s *Service) SaveAccount(id source.ID, session map[string]string) error {
 	return s.store.SaveAccount(string(id), payload)
 }
 
-// DeleteAccount 删除某音源的登录态与远端歌单镜像。
-func (s *Service) DeleteAccount(id source.ID) {
+// Logout 清除某音源的登录态，并冻结它的远端歌单镜像。
+// 镜像、缓存曲目与混合歌单引用都保留；重新登录后自动解冻并恢复刷新。
+func (s *Service) Logout(id source.ID) {
+	if s.sources != nil {
+		if src := s.sources.Get(id); src != nil {
+			src.Logout()
+		}
+	}
 	if s.store == nil {
 		return
 	}
 	defer bumpLibraryRevision()
 	_ = s.store.DeleteAccount(string(id))
-	_ = s.store.DeleteRemotePlaylistsBySource(string(id))
+	_, _ = s.store.FreezeRemotePlaylistsBySource(string(id))
 }

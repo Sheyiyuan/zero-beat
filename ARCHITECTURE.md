@@ -103,7 +103,8 @@ internal/config          数据目录
   → streamMsg 回到 Update
   → engine.PlayAt(audio.Stream{URL, Headers, Codec, ExpiresAt...}, startAt)
        ├─ 起回环 header 代理注入 Referer/Cookie；exec ffmpeg -ss startAt -i http://127.0.0.1:<port>/<token> -f s16le ... pipe:1
-       ├─ 把 stdout 包进 gainReader（应用音量 × 补偿，tanh 软限幅）
+       ├─ （可选）ffmpeg `loudnorm` 做单遍自动响度均衡：-16 LUFS / -1.5 dBTP
+       ├─ 把 stdout 包进 gainReader（应用音量 ×（全局补偿 + 单曲补偿），tanh 软限幅）
        └─ oto.Player 从 gainReader 拉 PCM
   → 并行发起 lyricsCmd：source.Lyrics（B 站字幕 / 网易云 LRC + 译文），没有再用 LRCLIB
   → 列表循环/顺序模式下再并行预解析下一首（prefetchMsg，只缓存一首，可跨源）
@@ -158,6 +159,8 @@ a → 目标选择器（本地/混合/同源云端）
 - `Stream.ExpiresAt`：B 站从 CDN 的 `deadline` / `expires` 解析，网易云从 `expi` 换算；临近过期时 seek、续播会先重新解析。
 - `EventFailed` 会带着最后进度重新解析并重试一次；成功重试后计数保留，防止解码错误无限循环。
 - 预解析只用于列表循环与顺序模式（顺序到队尾不预取）；随机/单曲不猜下一首。队列变化、切音质、切模式都会让缓存作废。
+- 登录态过期：后台每 15 分钟用 `Account` 校验一次；cookie 还在但平台返回空账号或 301/401 时自动退出，
+  清掉该源账号并把它的远端歌单置为 `frozen`。混合歌单对冻结歌单的引用与缓存曲目都保留，重新登录后自动解冻。
 - 旧库在 `store.Open` 里自动迁移：`remote_id` 从 `bvid` 回填，`playlists.source` 从 ID 前缀回填，旧 B 站歌曲 ID 不变。
 
 **进度与状态**
@@ -257,12 +260,13 @@ macOS/Windows 是空实现（`sysmedia.New` 返回 nil）。
 ```sql
 songs(id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at)
   UNIQUE(source, remote_id, page)     -- B 站 remote_id=BV 号，网易云=song id
-playlists(id, source, title, kind, remote_id, created_at)  -- kind: local / remote / mixin
+playlists(id, source, title, kind, remote_id, frozen, created_at)  -- kind: local / remote / mixin
+  -- frozen=1：该源登录失效或已退出，远端镜像暂停刷新；曲目、混合歌单引用与隐藏项保留
 playlist_items(playlist_id, song_id, position, added_at)    -- 本地曲目/混合歌单自己加的曲目
 playlist_refs(playlist_id, ref_id, position)                -- 混合歌单引用哪些歌单
 playlist_excludes(playlist_id, song_id)                     -- 混合歌单里隐藏的继承曲目
 queue(id=1, data, position, queue_index, updated)   -- 单行：队列 ID JSON + 进度
-settings(key, value)                                -- volume / comp_db / mode / quality / lyric_offset:<songID> / clip:<songID> / last_add_playlist
+settings(key, value)                                -- volume / comp_db / auto_gain / song_comp:<songID> / mode / quality / lyric_offset:<songID> / clip:<songID> / last_add_playlist
 accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
 downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载文件索引
 ```
@@ -277,6 +281,7 @@ downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载�
 └── cache/covers/                            # 系统媒体面板封面缓存（64 MiB 上限）
 仓库布局：meta.json + playlists/<id>.json + annotations/<song>.json
         + keymap.toml + accounts/<source>.age + .gitattributes
+注释文件包含歌词偏移、单曲音量补偿与播放片段。
 ```
 
 歌单与注释是明文 JSON（一实体一文件，`merge=binary`）；登录态是 XChaCha20-Poly1305

@@ -80,6 +80,8 @@ type DownloadEntry struct {
 
 // Playlist 是一个歌单，Kind 为「remote」（某音源的远端歌单/收藏夹镜像）、
 // 「local」或「mixin」（引用其他歌单并叠加自己的曲目）。
+// Frozen 只对远端镜像有意义：登录态失效或退出登录后停止刷新，但保留本地曲目，
+// 混合歌单对它的引用也不会断。
 type Playlist struct {
 	ID        string
 	Source    string
@@ -87,6 +89,7 @@ type Playlist struct {
 	Kind      string
 	RemoteID  string
 	Count     int
+	Frozen    bool
 	CreatedAt int64
 }
 
@@ -117,6 +120,7 @@ CREATE TABLE IF NOT EXISTS playlists (
 	title     TEXT NOT NULL,
 	kind      TEXT NOT NULL DEFAULT 'local',
 	remote_id TEXT NOT NULL DEFAULT '',
+	frozen    INTEGER NOT NULL DEFAULT 0,
 	created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS playlist_items (
@@ -208,6 +212,15 @@ func (s *Store) migrate() error {
 	if !hasPlaylistSource {
 		if _, err := s.db.Exec(`ALTER TABLE playlists ADD COLUMN source TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("store: 升级歌单表: %w", err)
+		}
+	}
+	hasPlaylistFrozen, err := s.hasColumn("playlists", "frozen")
+	if err != nil {
+		return err
+	}
+	if !hasPlaylistFrozen {
+		if _, err := s.db.Exec(`ALTER TABLE playlists ADD COLUMN frozen INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("store: 升级歌单冻结字段: %w", err)
 		}
 	}
 	if _, err := s.db.Exec(`UPDATE songs SET remote_id = bvid WHERE remote_id = '' AND bvid <> ''`); err != nil {
@@ -468,7 +481,8 @@ func (s *Store) DeleteDownload(songID string) error {
 	return nil
 }
 
-// EnsurePlaylist 确保歌单存在（按 ID 幂等）。
+// EnsurePlaylist 确保歌单存在（按 ID 幂等）。重新导入或登录后补齐远端歌单时
+// 会顺带解冻，让镜像恢复刷新。
 func (s *Store) EnsurePlaylist(p Playlist) (Playlist, error) {
 	if p.ID == "" {
 		return Playlist{}, fmt.Errorf("store: 歌单缺少 ID")
@@ -477,9 +491,9 @@ func (s *Store) EnsurePlaylist(p Playlist) (Playlist, error) {
 		p.Kind = "local"
 	}
 	_, err := s.db.Exec(`
-INSERT INTO playlists (id, source, title, kind, remote_id, created_at) VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO playlists (id, source, title, kind, remote_id, frozen, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)
 ON CONFLICT(id) DO UPDATE SET source = excluded.source, title = excluded.title,
-	kind = excluded.kind, remote_id = excluded.remote_id`,
+	kind = excluded.kind, remote_id = excluded.remote_id, frozen = 0`,
 		p.ID, p.Source, p.Title, p.Kind, p.RemoteID, time.Now().Unix())
 	if err != nil {
 		return Playlist{}, fmt.Errorf("store: 写入歌单: %w", err)
@@ -573,7 +587,7 @@ func (s *Store) UnlockPlaylist(id string) (Playlist, error) {
 	if p.Kind != "remote" {
 		return Playlist{}, fmt.Errorf("store: 只有同步歌单可以解锁")
 	}
-	if _, err := s.db.Exec(`UPDATE playlists SET kind = 'local', source = '', remote_id = '' WHERE id = ?`, id); err != nil {
+	if _, err := s.db.Exec(`UPDATE playlists SET kind = 'local', source = '', remote_id = '', frozen = 0 WHERE id = ?`, id); err != nil {
 		return Playlist{}, fmt.Errorf("store: 解锁歌单: %w", err)
 	}
 	return s.Playlist(id)
@@ -713,7 +727,7 @@ func (s *Store) validateMixinRefs(refIDs []string) ([]Playlist, error) {
 // MixinRefs 按顺序返回混合歌单引用的歌单。
 func (s *Store) MixinRefs(playlistID string) ([]Playlist, error) {
 	rows, err := s.db.Query(`
-SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.created_at,
+SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.frozen, p.created_at,
        (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
 FROM playlist_refs r JOIN playlists p ON p.id = r.ref_id
 WHERE r.playlist_id = ? ORDER BY r.position`, playlistID)
@@ -724,7 +738,7 @@ WHERE r.playlist_id = ? ORDER BY r.position`, playlistID)
 	var out []Playlist
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt, &p.Count); err != nil {
+		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Frozen, &p.CreatedAt, &p.Count); err != nil {
 			return nil, err
 		}
 		if p.Kind == "mixin" {
@@ -738,11 +752,11 @@ WHERE r.playlist_id = ? ORDER BY r.position`, playlistID)
 // Playlist 按 ID 取歌单（带曲目数；混合歌单为展开后的去重数量）。
 func (s *Store) Playlist(id string) (Playlist, error) {
 	row := s.db.QueryRow(`
-SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.created_at,
+SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.frozen, p.created_at,
        (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
 FROM playlists p WHERE p.id = ?`, id)
 	var p Playlist
-	err := row.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt, &p.Count)
+	err := row.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Frozen, &p.CreatedAt, &p.Count)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Playlist{}, ErrNotFound
 	}
@@ -762,7 +776,7 @@ FROM playlists p WHERE p.id = ?`, id)
 // ListPlaylists 列出全部歌单，远端在前、混合次之、本地最后。
 func (s *Store) ListPlaylists() ([]Playlist, error) {
 	rows, err := s.db.Query(`
-SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.created_at,
+SELECT p.id, p.source, p.title, p.kind, p.remote_id, p.frozen, p.created_at,
        (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id)
 FROM playlists p
 ORDER BY CASE p.kind WHEN 'remote' THEN 0 WHEN 'mixin' THEN 1 ELSE 2 END, p.created_at`)
@@ -772,7 +786,7 @@ ORDER BY CASE p.kind WHEN 'remote' THEN 0 WHEN 'mixin' THEN 1 ELSE 2 END, p.crea
 	var out []Playlist
 	for rows.Next() {
 		var p Playlist
-		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.CreatedAt, &p.Count); err != nil {
+		if err := rows.Scan(&p.ID, &p.Source, &p.Title, &p.Kind, &p.RemoteID, &p.Frozen, &p.CreatedAt, &p.Count); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1151,6 +1165,45 @@ func (s *Store) ClearClip(songID string) error {
 	return nil
 }
 
+// SongCompDB 读取一首歌的额外音量补偿（dB，相对全局）；没有设置时返回 0。
+func (s *Store) SongCompDB(songID string) (float64, error) {
+	songID = strings.TrimSpace(songID)
+	if songID == "" {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(s.Setting("song_comp:"+songID, ""))
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("store: 解析单曲音量补偿: %w", err)
+	}
+	return v, nil
+}
+
+// SetSongCompDB 写入一首歌的额外音量补偿；0 dB 等价于清除，范围 ±12 dB。
+func (s *Store) SetSongCompDB(songID string, db float64) error {
+	songID = strings.TrimSpace(songID)
+	if songID == "" {
+		return fmt.Errorf("store: 歌曲 ID 不能为空")
+	}
+	if db < -12 {
+		db = -12
+	}
+	if db > 12 {
+		db = 12
+	}
+	if db == 0 {
+		_, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, "song_comp:"+songID)
+		if err != nil {
+			return fmt.Errorf("store: 清除单曲音量补偿: %w", err)
+		}
+		return nil
+	}
+	return s.SetSetting("song_comp:"+songID, strconv.FormatFloat(db, 'f', 1, 64))
+}
+
 func (c Clip) normalized() Clip {
 	if c.StartMS < 0 {
 		c.StartMS = 0
@@ -1161,7 +1214,8 @@ func (c Clip) normalized() Clip {
 	return c
 }
 
-// SaveAccount 保存音源登录态（JSON）。
+// SaveAccount 保存音源登录态（JSON）。拿到新登录态意味着该音源重新可用，
+// 顺带解冻它的远端歌单镜像，让下次刷新恢复同步。
 func (s *Store) SaveAccount(source string, payload []byte) error {
 	_, err := s.db.Exec(`INSERT INTO accounts (source, payload, updated_at) VALUES (?, ?, ?)
 ON CONFLICT(source) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
@@ -1169,6 +1223,7 @@ ON CONFLICT(source) DO UPDATE SET payload = excluded.payload, updated_at = exclu
 	if err != nil {
 		return fmt.Errorf("store: 保存登录态: %w", err)
 	}
+	s.unfreezeSource(source)
 	return nil
 }
 
@@ -1193,7 +1248,8 @@ func (s *Store) DeleteAccount(source string) error {
 	return nil
 }
 
-// DeleteRemotePlaylists 删除所有远端收藏夹镜像及其条目（退出登录时用）。
+// DeleteRemotePlaylists 清空所有远端收藏夹镜像及其条目；只给显式清理用。
+// 退出登录不再删镜像，而是按音源冻结（见 FreezeRemotePlaylistsBySource）。
 func (s *Store) DeleteRemotePlaylists() error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1230,7 +1286,40 @@ func (s *Store) CleanRemotePlaylistsOnce(marker string) (bool, error) {
 	return true, nil
 }
 
-// DeleteRemotePlaylistsBySource 删除指定音源的远端歌单镜像（退出该源账号时用）。
+// FreezeRemotePlaylistsBySource 冻结某音源的远端歌单镜像：保留歌单、曲目、
+// 隐藏项与混合歌单引用，只停止刷新。登录态过期或用户退出登录时调用。
+func (s *Store) FreezeRemotePlaylistsBySource(source string) (int, error) {
+	return s.setSourcePlaylistsFrozen(source, true)
+}
+
+// UnfreezeRemotePlaylistsBySource 解冻某音源的远端歌单镜像，重新登录后调用。
+func (s *Store) UnfreezeRemotePlaylistsBySource(source string) (int, error) {
+	return s.setSourcePlaylistsFrozen(source, false)
+}
+
+func (s *Store) unfreezeSource(source string) {
+	_, _ = s.setSourcePlaylistsFrozen(source, false)
+}
+
+func (s *Store) setSourcePlaylistsFrozen(source string, frozen bool) (int, error) {
+	value := 0
+	if frozen {
+		value = 1
+	}
+	res, err := s.db.Exec(`UPDATE playlists SET frozen = ? WHERE kind = 'remote' AND source = ? AND frozen <> ?`,
+		value, source, value)
+	if err != nil {
+		return 0, fmt.Errorf("store: 更新歌单冻结状态: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: 读取冻结数量: %w", err)
+	}
+	return int(n), nil
+}
+
+// DeleteRemotePlaylistsBySource 显式清空指定音源的远端歌单镜像。
+// 退出登录不走这里：那会连同混合歌单的引用一起删掉，改为冻结。
 func (s *Store) DeleteRemotePlaylistsBySource(source string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -1320,6 +1409,7 @@ ON CONFLICT(source) DO UPDATE SET payload = excluded.payload, updated_at = exclu
 	if err != nil {
 		return fmt.Errorf("store: 保存登录态: %w", err)
 	}
+	s.unfreezeSource(source)
 	return nil
 }
 
@@ -1650,20 +1740,21 @@ func validatePlaylistID(kind, id string) error {
 
 // SongAnnotation 是单曲的同步附属信息：歌词偏移与播放片段。
 type SongAnnotation struct {
-	SongID        string `json:"song_id"`
-	LyricOffsetMS int    `json:"lyric_offset_ms,omitempty"`
-	ClipStartMS   int64  `json:"clip_start_ms,omitempty"`
-	ClipEndMS     int64  `json:"clip_end_ms,omitempty"`
+	SongID        string  `json:"song_id"`
+	LyricOffsetMS int     `json:"lyric_offset_ms,omitempty"`
+	CompDB        float64 `json:"comp_db,omitempty"`
+	ClipStartMS   int64   `json:"clip_start_ms,omitempty"`
+	ClipEndMS     int64   `json:"clip_end_ms,omitempty"`
 }
 
 // Active 判断注释里是否有需要同步的内容。
 func (a SongAnnotation) Active() bool {
-	return a.LyricOffsetMS != 0 || a.ClipStartMS > 0 || a.ClipEndMS > 0
+	return a.LyricOffsetMS != 0 || a.CompDB != 0 || a.ClipStartMS > 0 || a.ClipEndMS > 0
 }
 
-// ListAnnotations 列出全部单曲注释（歌词偏移与片段都存于 settings）。
+// ListAnnotations 列出全部单曲注释（歌词偏移、单曲补偿与片段都存于 settings）。
 func (s *Store) ListAnnotations() ([]SongAnnotation, error) {
-	rows, err := s.db.Query(`SELECT key, value FROM settings WHERE key LIKE 'clip:%' OR key LIKE 'lyric_offset:%'`)
+	rows, err := s.db.Query(`SELECT key, value FROM settings WHERE key LIKE 'clip:%' OR key LIKE 'lyric_offset:%' OR key LIKE 'song_comp:%'`)
 	if err != nil {
 		return nil, fmt.Errorf("store: 读取单曲注释: %w", err)
 	}
@@ -1696,6 +1787,12 @@ func (s *Store) ListAnnotations() ([]SongAnnotation, error) {
 				continue
 			}
 			get(strings.TrimPrefix(key, "lyric_offset:")).LyricOffsetMS = offset
+		case strings.HasPrefix(key, "song_comp:"):
+			comp, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+			if err != nil {
+				continue
+			}
+			get(strings.TrimPrefix(key, "song_comp:")).CompDB = comp
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1729,13 +1826,16 @@ func (s *Store) SaveAnnotation(a SongAnnotation) error {
 			return fmt.Errorf("store: 清除歌词偏移: %w", err)
 		}
 	}
+	if err := s.SetSongCompDB(a.SongID, a.CompDB); err != nil {
+		return err
+	}
 	return s.SetClip(a.SongID, Clip{StartMS: a.ClipStartMS, EndMS: a.ClipEndMS})
 }
 
-// DeleteAnnotation 清除一首歌的歌词偏移与片段。
+// DeleteAnnotation 清除一首歌的歌词偏移、单曲补偿与片段。
 func (s *Store) DeleteAnnotation(songID string) error {
-	if _, err := s.db.Exec(`DELETE FROM settings WHERE key = ? OR key = ?`,
-		"clip:"+songID, "lyric_offset:"+songID); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM settings WHERE key = ? OR key = ? OR key = ?`,
+		"clip:"+songID, "lyric_offset:"+songID, "song_comp:"+songID); err != nil {
 		return fmt.Errorf("store: 清除单曲注释: %w", err)
 	}
 	return nil

@@ -25,6 +25,7 @@ type baseFake struct {
 	lyricName  string
 	playlists  []source.Playlist
 	tracks     []source.Track
+	accountErr error
 }
 
 func (f *baseFake) ID() source.ID           { return f.id }
@@ -34,6 +35,9 @@ func (f *baseFake) Caps() source.Capability { return f.caps }
 func (f *baseFake) LoggedIn() bool          { return f.logged }
 func (f *baseFake) User() source.User       { return source.User{LoggedIn: f.logged} }
 func (f *baseFake) Account(context.Context) (source.User, error) {
+	if f.accountErr != nil {
+		return source.User{}, f.accountErr
+	}
 	return f.User(), nil
 }
 func (f *baseFake) StartQRLogin(context.Context) (source.QRCode, error) {
@@ -184,6 +188,25 @@ func TestPreferencesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPreferencesAutoGainAndSongComp(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+	if svc.Preferences().AutoGain {
+		t.Fatal("自动响度均衡默认应关闭")
+	}
+	svc.SaveAutoGain(true)
+	if !New(nil, st, nil).Preferences().AutoGain {
+		t.Fatal("自动响度均衡开关未持久化")
+	}
+	if got := svc.SongCompDB("song-1"); got != 0 {
+		t.Fatalf("单曲补偿默认应为 0，实际 %v", got)
+	}
+	svc.SaveSongCompDB("song-1", -1.5)
+	if got := New(nil, st, nil).SongCompDB("song-1"); got != -1.5 {
+		t.Fatalf("单曲补偿未持久化，实际 %v", got)
+	}
+}
+
 func TestPlaylistOpsAndQueueSave(t *testing.T) {
 	st := openTestStore(t)
 	svc := New(nil, st, nil)
@@ -206,6 +229,65 @@ func TestPlaylistOpsAndQueueSave(t *testing.T) {
 	q, err := st.LoadQueue()
 	if err != nil || len(q.IDs) != 1 || q.Position != 1234 {
 		t.Fatalf("队列回读不符: %+v err=%v", q, err)
+	}
+}
+
+func TestUsersDetectsExpiredSessionAndLogoutFreezes(t *testing.T) {
+	st := openTestStore(t)
+	remote, err := st.EnsurePlaylist(store.Playlist{
+		ID: "fake-fav-1", Source: "fake", Title: "收藏", Kind: "remote", RemoteID: "1",
+	})
+	if err != nil {
+		t.Fatalf("建远端歌单失败: %v", err)
+	}
+	mix, err := st.CreateMixin("混合", []string{remote.ID})
+	if err != nil {
+		t.Fatalf("建混合歌单失败: %v", err)
+	}
+	if err := st.SaveAccount("fake", []byte(`{"token":"x"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &baseFake{id: "fake", logged: true, accountErr: source.ErrSessionExpired}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	users, expired := svc.Users(context.Background())
+	if len(expired) != 1 || expired[0] != "fake" {
+		t.Fatalf("应检测到登录过期: expired=%+v", expired)
+	}
+	if u := users["fake"]; u.LoggedIn {
+		t.Fatalf("过期音源不应继续显示已登录: %+v", u)
+	}
+	if _, err := st.LoadAccount("fake"); err != nil {
+		t.Fatalf("检测阶段不应清理账号: %v", err)
+	}
+
+	svc.Logout("fake")
+	if _, err := st.LoadAccount("fake"); err != store.ErrNotFound {
+		t.Fatalf("登出后应清除账号: %v", err)
+	}
+	got, err := st.Playlist(remote.ID)
+	if err != nil || !got.Frozen {
+		t.Fatalf("登出后应冻结远端歌单: %+v err=%v", got, err)
+	}
+	refs, err := st.MixinRefs(mix.ID)
+	if err != nil || len(refs) != 1 || refs[0].ID != remote.ID {
+		t.Fatalf("登出后混合歌单引用不应丢失: %+v err=%v", refs, err)
+	}
+}
+
+func TestUsersDetectsUnloadableStoredSession(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.SaveAccount("fake", []byte(`{"token":"x"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	svc := New(source.NewRegistry(
+		&baseFake{id: "fake", logged: false},
+		&baseFake{id: "other", logged: false},
+	), st, nil)
+
+	_, expired := svc.Users(context.Background())
+	if len(expired) != 1 || expired[0] != "fake" {
+		t.Fatalf("库里有账号但装不进音源时应判定过期: %+v", expired)
 	}
 }
 

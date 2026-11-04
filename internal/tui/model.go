@@ -52,6 +52,10 @@ const remotePlaylistsCleanupMarker = "maintenance.remote_playlists.cleared_v1"
 // qrCacheTTL 是登录二维码的本地缓存时间；到期或轮询返回失效时再重新申请。
 const qrCacheTTL = 150 * time.Second
 
+// sessionCheckInterval 是后台校验登录态的间隔；平台侧过期后无需等用户操作，
+// 下一轮检查就会自动登出并冻结该音源的远端歌单。
+const sessionCheckInterval = 15 * time.Minute
+
 type qrCacheEntry struct {
 	qr           *source.QRCode
 	ascii        string
@@ -181,6 +185,8 @@ type Model struct {
 	keys    *keymap.Keymap
 
 	users map[source.ID]source.User
+	// nextSessionCheck 是下一次后台校验登录态的时间。
+	nextSessionCheck time.Time
 
 	playlists         []store.Playlist
 	playlistIdx       int
@@ -208,8 +214,11 @@ type Model struct {
 	duration time.Duration
 	volume   float64
 	compDB   float64
-	mode     playMode
-	muted    bool
+	// songCompDB 是当前曲目的额外补偿（相对全局），autoGain 是自动响度均衡开关。
+	songCompDB float64
+	autoGain   bool
+	mode       playMode
+	muted      bool
 	// modeBeforeShuffle 是进入随机前的模式；面板关闭随机时恢复到它。只在本机内存里，不持久化。
 	modeBeforeShuffle playMode
 
@@ -384,6 +393,7 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMg
 	prefs := app.New(sources, st, nil).Preferences()
 	m.volume = prefs.Volume
 	m.compDB = prefs.CompDB
+	m.autoGain = prefs.AutoGain && engine.AutoGainSupported()
 	m.mode = playMode(prefs.Mode)
 	m.quality = prefs.Quality
 	m.playingPlaylistID = prefs.PlayingPlaylist
@@ -391,6 +401,7 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMg
 	m.mouseOff = !prefs.Mouse || os.Getenv("ZERO_MOUSE") == "0"
 	engine.SetVolume(m.volume)
 	engine.SetCompensationDB(m.compDB)
+	engine.SetAutoGain(m.autoGain)
 	if cleaned {
 		m.setNotice("已清理旧的远端歌单，按 f 重新导入", false)
 	}
@@ -403,6 +414,9 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMg
 	applyTheme(p)
 	if themeErr != nil {
 		m.setNotice("主题配置无效，已回退："+themeErr.Error(), true)
+	}
+	if prefs.AutoGain && !m.autoGain {
+		m.setWarn("当前 ffmpeg 不提供 loudnorm，自动响度均衡已关闭")
 	}
 	return m
 }
@@ -423,6 +437,7 @@ func (m *Model) keyLabel(a keymap.Action) string {
 
 // Init 启动定时器、事件监听与首批数据加载。
 func (m *Model) Init() tea.Cmd {
+	m.nextSessionCheck = time.Now().Add(sessionCheckInterval)
 	cmds := []tea.Cmd{
 		tickCmd(),
 		waitEngineCmd(m.engine.Events()),
@@ -505,6 +520,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.notifySyncIfChanged()
 		cmds := []tea.Cmd{tickCmd()}
+		if !m.nextSessionCheck.IsZero() && time.Now().After(m.nextSessionCheck) {
+			m.nextSessionCheck = time.Now().Add(sessionCheckInterval)
+			if m.store != nil && m.sources != nil {
+				cmds = append(cmds, m.loadUsersCmd())
+			}
+		}
 		if cmd := m.syncArtwork(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -558,6 +579,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if len(msg.sources) > 0 {
+			// 同步回来的登录态可能已经在平台侧失效：立刻校验一次，
+			// 过期就走自动退出与冻结，不把「已登录」留在界面上。
+			return m, m.loadUsersCmd()
+		}
 		return m, nil
 
 	case coverMsg:
@@ -572,6 +598,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case usersMsg:
 		if msg.users != nil {
 			m.users = msg.users
+		}
+		if len(msg.expired) > 0 {
+			return m, m.handleExpiredSessions(msg.expired)
 		}
 		return m, nil
 
@@ -618,10 +647,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case songsMsg:
 		m.songsBusy = false
+		check := m.sessionCheckCmd(msg.err)
 		if msg.err != nil {
 			if len(msg.items) == 0 {
 				m.setError(msg.err)
-				return m, nil
+				return m, check
 			}
 			m.setNotice(msg.err.Error(), true)
 		}
@@ -629,7 +659,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 加载结果走，否则会一直留着旧数字，直到下一次全量加载歌单。
 		m.syncPlaylistCount(msg.playlistID, len(msg.items))
 		if msg.playlistID != m.currentPlaylistID() {
-			return m, nil
+			return m, check
 		}
 		m.songs = msg.items
 		if m.songIdx >= len(m.songs) {
@@ -640,11 +670,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingPlayPlaylist = false
 			if len(m.songs) == 0 {
 				m.setNotice("这个歌单还是空的", false)
-				return m, nil
+				return m, check
 			}
-			return m, m.playPlaylistFromStart()
+			return m, tea.Batch(check, m.playPlaylistFromStart())
 		}
-		return m, nil
+		return m, check
 
 	case foldersMsg:
 		if msg.source != m.folderSource {
@@ -653,7 +683,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.folderBusy = false
 		if msg.err != nil {
 			m.setError(msg.err)
-			return m, nil
+			return m, m.sessionCheckCmd(msg.err)
 		}
 		m.folderItems = msg.items
 		if m.folderIdx >= len(m.folderItems) {
@@ -825,6 +855,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				c.RestoreSession(msg.songs, idx, &song, position)
 			})
 			m.queueCursor = m.queueIdx
+			m.syncSongComp(song.ID)
 			m.setActiveClip(song.ID, clip)
 			m.lyricLoaded = false
 			m.lyricLines = nil
@@ -958,6 +989,7 @@ func (m *Model) handleEngineEvent(ev audio.Event) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleStream(msg streamMsg) (tea.Model, tea.Cmd) {
 	song := store.NormalizeSong(msg.song)
+	m.syncSongComp(song.ID)
 	duration := msg.stream.Duration
 	if duration == 0 && song.Duration > 0 {
 		duration = time.Duration(song.Duration) * time.Second
@@ -997,6 +1029,7 @@ func (m *Model) playbackClip(song store.Song, duration time.Duration) (store.Cli
 // startStream 把已解析的音频流交给控制器并刷新界面状态。
 func (m *Model) startStream(song store.Song, stream source.Stream, startAt time.Duration) tea.Cmd {
 	song = store.NormalizeSong(song)
+	m.syncSongComp(song.ID)
 	if m.clip != nil && m.clip.songID != song.ID {
 		m.clip = nil
 	}
@@ -1301,6 +1334,12 @@ func (m *Model) handleCommonPlaybackKey(key tea.Key) (tea.Model, tea.Cmd) {
 		return m, nil
 	case m.match(keymap.CompDown, key):
 		m.changeComp(-1)
+		return m, nil
+	case m.match(keymap.SongCompUp, key):
+		m.changeSongComp(1)
+		return m, nil
+	case m.match(keymap.SongCompDown, key):
+		m.changeSongComp(-1)
 		return m, nil
 	case m.match(keymap.Mode, key):
 		m.setMode((m.mode + 1) % modeCount)
@@ -2411,7 +2450,65 @@ func (m *Model) changeComp(delta float64) {
 	next := m.compDB + delta
 	m.withController(func(c *player.Controller) { c.SetCompDB(next) })
 	m.service().SaveCompDB(m.compDB)
-	m.setNotice(fmt.Sprintf("音量补偿 %+.0f dB", m.compDB), false)
+	m.setNotice(fmt.Sprintf("全局音量补偿 %+.0f dB", m.compDB), false)
+}
+
+// changeSongComp 调整当前曲目的额外补偿；它叠加在全局补偿之上，只影响这首歌。
+func (m *Model) changeSongComp(delta float64) {
+	if m.current == nil {
+		m.setNotice("先播放一首歌，再调单曲音量补偿", true)
+		return
+	}
+	songID := m.current.ID
+	next := m.songCompDB + delta
+	m.withController(func(c *player.Controller) { c.SetSongCompDB(next) })
+	m.service().SaveSongCompDB(songID, m.songCompDB)
+	if m.songCompDB == 0 {
+		m.setNotice(fmt.Sprintf("单曲音量补偿 0 dB（跟随全局 %+.0f dB）", m.compDB), false)
+		return
+	}
+	m.setNotice(fmt.Sprintf("单曲音量补偿 %+.0f dB（全局 %+.0f dB）", m.songCompDB, m.compDB), false)
+}
+
+// syncSongComp 在切歌时读取该曲目的额外补偿并应用；没有设置时回到 0。
+func (m *Model) syncSongComp(songID string) {
+	m.songCompDB = m.service().SongCompDB(songID)
+	m.withController(func(c *player.Controller) { c.SetSongCompDB(m.songCompDB) })
+}
+
+// toggleAutoGain 开关自动响度均衡；当前曲目在播放/暂停中时立即重新起播应用。
+func (m *Model) toggleAutoGain() tea.Cmd {
+	if m.engine != nil && !m.engine.AutoGainSupported() {
+		m.setNotice("当前 ffmpeg 不提供 loudnorm，无法开启自动响度均衡", true)
+		return nil
+	}
+	next := !m.autoGain
+	ok := false
+	m.withController(func(c *player.Controller) { ok = c.SetAutoGain(next) })
+	if !ok {
+		m.setNotice("当前 ffmpeg 不提供 loudnorm，无法开启自动响度均衡", true)
+		return nil
+	}
+	m.service().SaveAutoGain(m.autoGain)
+	state := "关闭"
+	if m.autoGain {
+		state = "开启"
+	}
+	if m.current != nil && (m.state == audio.StatePlaying || m.state == audio.StatePaused) {
+		pos := m.position
+		paused := m.state == audio.StatePaused
+		clip := m.activeClip()
+		restarted := false
+		m.withController(func(c *player.Controller) {
+			restarted = c.RestartWithClip(m.ctx, clip, pos, paused)
+		})
+		if restarted {
+			m.setNotice("自动响度均衡已"+state+"（当前曲目已重新起播）", false)
+			return nil
+		}
+	}
+	m.setNotice("自动响度均衡已"+state+"（下一首生效）", false)
+	return nil
 }
 
 func (m *Model) movePlaylist(delta int) tea.Cmd {
@@ -3019,6 +3116,8 @@ func (m *Model) playerState() player.State {
 		Mode:           m.mode,
 		Volume:         m.volume,
 		CompDB:         m.compDB,
+		SongCompDB:     m.songCompDB,
+		AutoGain:       m.autoGain,
 		Muted:          m.muted,
 		ResumeAt:       m.resumeAt,
 		Retry:          m.retryCount,
@@ -3045,6 +3144,8 @@ func (m *Model) applyPlayerState(s player.State) {
 	m.mode = s.Mode
 	m.volume = s.Volume
 	m.compDB = s.CompDB
+	m.songCompDB = s.SongCompDB
+	m.autoGain = s.AutoGain
 	m.muted = s.Muted
 	m.resumeAt = s.ResumeAt
 	m.retryCount = s.Retry
@@ -3195,13 +3296,11 @@ func (m *Model) setPlayingPlaylist(id string) {
 	m.service().SavePlayingPlaylist(id)
 }
 
-// logout 清除指定音源的 cookie、用户信息与远端歌单镜像。
+// logout 退出指定音源：清除 cookie 与账号，并冻结它的远端歌单镜像。
+// 冻结只停止刷新，歌单、缓存曲目与混合歌单引用都保留；重新登录后自动解冻。
 func (m *Model) logout(srcID source.ID) tea.Cmd {
 	src := m.sources.Get(srcID)
-	if src != nil {
-		src.Logout()
-	}
-	m.service().DeleteAccount(srcID)
+	m.service().Logout(srcID)
 	if m.users != nil {
 		delete(m.users, srcID)
 	}
@@ -3218,12 +3317,55 @@ func (m *Model) logout(srcID source.ID) tea.Cmd {
 	m.playlistIdx = 0
 	m.songs = nil
 	m.songIdx = 0
-	label := "已退出登录，本地歌单与队列保留"
+	label := "已退出登录，远端歌单已冻结；本地歌单与队列保留"
 	if src != nil {
-		label = src.Name() + " 已退出登录，本地歌单与队列保留"
+		label = src.Name() + " 已退出登录，远端歌单已冻结；本地歌单与队列保留"
 	}
 	m.setNotice(label, false)
 	return tea.Batch(m.loadUsersCmd(), m.loadLocalPlaylistsCmd(), m.ensureLoginQR())
+}
+
+// sessionCheckCmd 在业务请求返回「登录态过期」时立即触发账号校验。
+// 真正的清理与冻结统一由 usersMsg -> handleExpiredSessions 处理，避免多处重复。
+func (m *Model) sessionCheckCmd(err error) tea.Cmd {
+	if err != nil && errors.Is(err, source.ErrSessionExpired) {
+		return m.loadUsersCmd()
+	}
+	return nil
+}
+
+// handleExpiredSessions 处理平台判定失效的登录态：自动退出并冻结远端歌单。
+// 只做本地清理与重载，不再向已过期的音源发请求。
+func (m *Model) handleExpiredSessions(ids []source.ID) tea.Cmd {
+	if len(ids) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		names = append(names, m.sourceName(id))
+		m.service().Logout(id)
+		delete(m.users, id)
+		delete(m.qrCache, id)
+		if m.qrSource == id {
+			m.qr = nil
+			m.qrSource = ""
+			m.qrASCII = ""
+			m.qrASCIICompact = ""
+			m.qrPath = ""
+			m.qrStatus = ""
+		}
+	}
+	m.setWarn(strings.Join(names, "、") + " 登录已过期，已自动退出并冻结远端歌单；重新登录后自动恢复")
+	var cmds []tea.Cmd
+	if m.store != nil {
+		cmds = append(cmds, m.loadLocalPlaylistsCmd())
+	}
+	if m.view == viewLogin {
+		if _, ok := m.userFor(m.loginSource); !ok {
+			cmds = append(cmds, m.ensureLoginQR())
+		}
+	}
+	return tea.Batch(cmds...)
 }
 
 // switchLoginSource 在登录页按上下键/ s 切换音源；优先复用缓存，没有才拉取。

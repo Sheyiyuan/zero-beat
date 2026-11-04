@@ -36,8 +36,9 @@ type coverMsg struct {
 }
 
 type usersMsg struct {
-	users map[source.ID]source.User
-	err   error
+	users   map[source.ID]source.User
+	expired []source.ID
+	err     error
 }
 
 type playlistsMsg struct {
@@ -154,7 +155,8 @@ func (m *Model) loadUsersCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		return usersMsg{users: svc.Users(ctx)}
+		users, expired := svc.Users(ctx)
+		return usersMsg{users: users, expired: expired}
 	}
 }
 

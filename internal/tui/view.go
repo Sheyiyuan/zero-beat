@@ -310,6 +310,12 @@ func (m *Model) nowPlayingMeta() (text string, mode, quality metaSegment) {
 	if m.compDB != 0 {
 		add(fmt.Sprintf("补偿 %+.0f dB", m.compDB), false)
 	}
+	if m.current != nil && m.songCompDB != 0 {
+		add(fmt.Sprintf("单曲 %+.0f dB", m.songCompDB), false)
+	}
+	if m.autoGain {
+		add("自动均衡", false)
+	}
 	if !m.sleepUntil.IsZero() {
 		if left := time.Until(m.sleepUntil); left > 0 {
 			add("睡眠 "+formatDuration(left), false)
@@ -492,9 +498,13 @@ func (m *Model) renderLibrary(h int) []string {
 	}
 
 	main := make([]string, 0, h)
+	cur, hasCur := m.currentPlaylist()
 	header := fmt.Sprintf(" 曲目 · %d 首", len(m.songs))
-	if p, ok := m.currentPlaylist(); ok && strings.TrimSpace(p.Title) != "" {
-		header = fmt.Sprintf(" %s · %d 首", p.Title, len(m.songs))
+	if hasCur && strings.TrimSpace(cur.Title) != "" {
+		header = fmt.Sprintf(" %s · %d 首", cur.Title, len(m.songs))
+		if cur.Frozen && cur.Kind == "remote" {
+			header += " · 已冻结"
+		}
 	}
 	if n := m.selectionCount(); n > 0 {
 		header += fmt.Sprintf(" · 已选 %d 首", n)
@@ -510,10 +520,14 @@ func (m *Model) renderLibrary(h int) []string {
 
 	if len(m.songs) == 0 && !m.songsBusy {
 		main = append(main, "")
-		if len(m.playlists) == 0 {
+		switch {
+		case hasCur && cur.Kind == "remote" && cur.Frozen:
+			main = append(main, st.dim.Render(" 登录失效或已退出，这个歌单已冻结"))
+			main = append(main, st.dim.Render(" 缓存曲目仍保留；重新登录后自动恢复同步"))
+		case len(m.playlists) == 0:
 			main = append(main, st.dim.Render(" 还没有歌单"))
 			main = append(main, st.dim.Render(" 按 N 新建歌单；搜索后按 a 会自动建一个"))
-		} else {
+		default:
 			main = append(main, st.dim.Render(" 这个歌单还是空的"))
 			main = append(main, st.dim.Render(" 按 ? 搜索音源，选中后按 a 加入歌单"))
 		}

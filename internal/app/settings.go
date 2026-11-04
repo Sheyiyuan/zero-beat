@@ -10,6 +10,7 @@ import (
 type Preferences struct {
 	Volume          float64
 	CompDB          float64
+	AutoGain        bool
 	Quality         source.Quality
 	Mode            int
 	PlayingPlaylist string
@@ -40,6 +41,7 @@ func (s *Service) Preferences() Preferences {
 	prefs.PlayingPlaylist = s.store.Setting("playing_playlist", "")
 	prefs.LocalFirst = s.store.Setting("local_first", "1") != "0"
 	prefs.Mouse = s.store.Setting("mouse", "1") != "0"
+	prefs.AutoGain = s.store.Setting("auto_gain", "0") != "0"
 	return prefs
 }
 
@@ -50,11 +52,44 @@ func (s *Service) SaveVolume(v float64) {
 	}
 }
 
-// SaveCompDB 持久化响度补偿。
+// SaveCompDB 持久化全局响度补偿。
 func (s *Service) SaveCompDB(v float64) {
 	if s.store != nil {
 		_ = s.store.SetSetting("comp_db", strconv.FormatFloat(v, 'f', 1, 64))
 	}
+}
+
+// SaveAutoGain 持久化自动响度均衡开关。
+func (s *Service) SaveAutoGain(enabled bool) {
+	if s.store == nil {
+		return
+	}
+	value := "0"
+	if enabled {
+		value = "1"
+	}
+	_ = s.store.SetSetting("auto_gain", value)
+}
+
+// SongCompDB 读取单曲额外补偿（dB，相对全局）。
+func (s *Service) SongCompDB(songID string) float64 {
+	if s.store == nil || songID == "" {
+		return 0
+	}
+	v, err := s.store.SongCompDB(songID)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// SaveSongCompDB 持久化单曲额外补偿。
+func (s *Service) SaveSongCompDB(songID string, v float64) {
+	if s.store == nil || songID == "" {
+		return
+	}
+	defer bumpLibraryRevision()
+	_ = s.store.SetSongCompDB(songID, v)
 }
 
 // SaveQuality 持久化音质偏好。
