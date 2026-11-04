@@ -63,12 +63,14 @@ export default defineConfig({
     logo: '/assets/icons/appicon-round.svg',
     siteTitle: 'zero-beat',
     nav: [
-      { text: '指南', activeMatch: '/guide/', items: [
-        { text: '安装', link: '/guide/install' },
-        { text: '快速上手', link: '/guide/quickstart' },
-        { text: '跨设备同步', link: '/guide/sync' },
-        { text: '已知限制', link: '/guide/limitations' },
-      ] },
+      {
+        text: '指南', activeMatch: '/guide/', items: [
+          { text: '安装', link: '/guide/install' },
+          { text: '快速上手', link: '/guide/quickstart' },
+          { text: '跨设备同步', link: '/guide/sync' },
+          { text: '已知限制', link: '/guide/limitations' },
+        ]
+      },
       { text: '参考', activeMatch: '/reference/', link: '/reference/keys' },
       { text: '更新', activeMatch: '/changelog/', items: changelog.slice(0, 3) },
     ],
@@ -84,7 +86,7 @@ export default defineConfig({
     },
     footer: {
       message: 'AGPL-3.0 · 本项目不提供、不托管任何音源内容，音频与封面版权归 B 站、网易云及权利人所有。',
-      copyright: 'zero-beat · 零拍',
+      copyright: 'zero-beat · 零拍 © 2026 Sheyiyuan',
     },
     search: { provider: 'local' },
     outline: { level: [2, 3], label: '本页目录' },
