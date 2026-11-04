@@ -10,7 +10,7 @@
 
 > 这个项目延续了 [Half Beat Player](https://github.com/Sheyiyuan/Half-Beat-Player) 在电脑上听 B 站视频的初衷，界面和交互也参考了 [go-musicfox](https://github.com/go-musicfox/go-musicfox)。欢迎提交 issue 和 PR。
 
-> **v0.6.1 已就绪。** 这个版本补上登录态过期自动退出与远端歌单冻结，新增单曲音量补偿与自动响度均衡；v0.6.0 的跨设备同步、系统媒体面板与播放顺序控制保持。改动见 [v0.6.1 发布说明](docs/release-notes-v0.6.1.md)，更远的计划见 [ROADMAP.md](ROADMAP.md)。
+> **v0.6.1 已发布。** 这个版本补上登录态过期自动退出与远端歌单冻结，新增单曲音量补偿与自动响度均衡；v0.6.0 的跨设备同步、系统媒体面板与播放顺序控制保持。改动见 [v0.6.1 发布说明](docs/release-notes-v0.6.1.md)，更远的计划见 [ROADMAP.md](ROADMAP.md)。
 
 ---
 

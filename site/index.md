@@ -4,7 +4,7 @@ layout: home
 hero:
   name: zero-beat · 零拍
   text: B 站 + 网易云音乐终端播放器
-  tagline: v0.6.1 已就绪：登录态过期自动冻结歌单，单曲音量补偿与自动响度均衡；在同一个终端里搜索、收藏、排队、播放两个平台的音频，带逐行歌词。
+  tagline: v0.6.1 已发布：登录态过期自动冻结歌单，单曲音量补偿与自动响度均衡；在同一个终端里搜索、收藏、排队、播放两个平台的音频，带逐行歌词。
   image:
     src: /assets/icons/appicon-round.svg
     alt: zero-beat 应用图标
@@ -59,7 +59,7 @@ features:
 ---
 
 <div class="release-note">
-  <strong>v0.6.1 已就绪</strong>
+  <strong>v0.6.1 已发布</strong>
   <span>登录态过期冻结、单曲音量补偿与自动响度均衡</span>
   <a href="./changelog/v0.6.1.html">发布说明 →</a>
 </div>
