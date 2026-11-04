@@ -44,7 +44,7 @@ const changelog = manifest
 export default defineConfig({
   lang: 'zh-CN',
   title: 'zero-beat 零拍',
-  description: 'B 站 + 网易云音乐终端播放器：双源搜索、混源队列、逐行歌词、下载与跨设备同步',
+  description: 'B 站 + 网易云音乐终端播放器：双源搜索、混源队列、逐行歌词、音量均衡、下载与跨设备同步',
   // GitHub Pages 项目页部署在 /<repo>/ 下；本地 dev 默认根路径。
   base,
   // GitHub Pages 不做 clean URL 重写，统一输出 .html。
@@ -55,7 +55,7 @@ export default defineConfig({
     ['meta', { property: 'og:title', content: 'zero-beat · 零拍' }],
     ['meta', {
       property: 'og:description',
-      content: 'B 站 + 网易云音乐终端播放器，双源搜索、混源队列、逐行歌词、跨设备同步',
+      content: 'B 站 + 网易云音乐终端播放器，双源搜索、混源队列、逐行歌词、音量均衡、跨设备同步',
     }],
   ],
 

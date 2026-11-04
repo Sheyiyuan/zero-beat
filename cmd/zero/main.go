@@ -32,7 +32,7 @@ import (
 )
 
 // version 由发布流水线通过 -ldflags "-X main.version=..." 注入。
-var version = "0.6.0"
+var version = "0.6.1"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {

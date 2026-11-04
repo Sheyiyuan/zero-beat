@@ -4,7 +4,7 @@ layout: home
 hero:
   name: zero-beat · 零拍
   text: B 站 + 网易云音乐终端播放器
-  tagline: v0.6.0 已发布。跨设备同步、Linux 系统媒体面板与播放顺序控制已就绪；在同一个终端里搜索、收藏、排队、播放两个平台的音频，带逐行歌词。
+  tagline: v0.6.1 已就绪：登录态过期自动冻结歌单，单曲音量补偿与自动响度均衡；在同一个终端里搜索、收藏、排队、播放两个平台的音频，带逐行歌词。
   image:
     src: /assets/icons/appicon-round.svg
     alt: zero-beat 应用图标
@@ -49,15 +49,19 @@ features:
     title: 佐洛红 / 半拍蓝
     details: 两套内置配色各有深浅变体，还能用 theme.toml 逐项覆盖颜色；快捷键全部可自定义。
   - icon: >-
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z"/><path d="M16 9a5 5 0 0 1 0 6m3.4 3.4a9 9 0 0 0 0-12.8"/></g></svg>
+    title: 音量与响度
+    details: 全局与单曲 dB 补偿，自动响度均衡可选；登录过期后远端歌单冻结而不是消失，混合歌单引用也保留。
+  - icon: >-
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19h8M4 17l6-6l-6-6"/></svg>
     title: 为终端而生
     details: 为终端打造，支持鼠标和命令面板；zero demo 不联网就能预览界面。
 ---
 
 <div class="release-note">
-  <strong>v0.6.0 已发布</strong>
-  <span>跨设备同步、Linux 系统媒体面板与播放顺序控制</span>
-  <a href="./changelog/v0.6.0.html">发布说明 →</a>
+  <strong>v0.6.1 已就绪</strong>
+  <span>登录态过期冻结、单曲音量补偿与自动响度均衡</span>
+  <a href="./changelog/v0.6.1.html">发布说明 →</a>
 </div>
 
 <img src="/assets/readme/hero.svg" alt="zero-beat 零拍：两个平台，为你同频" style="width:100%;border-radius:12px" />

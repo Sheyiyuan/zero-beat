@@ -19,11 +19,11 @@ CI（GitHub Actions `ci.yml`）在 push 到 main 与 PR 上执行：gofmt、`go 
 ```bash
 make check
 go test -race ./...
-git tag v0.6.0
-git push origin main v0.6.0
+git tag v0.6.1
+git push origin main v0.6.1
 ```
 
-发布前手工过一遍：双设备首次加入、SSH/HTTPS 切换、歌单冲突的本地/远程/保留两者、换口令、Linux 系统媒体面板与封面。发布说明样例见 [v0.6.0](../release-notes-v0.6.0.md)。
+发布前手工过一遍：登录态过期后的自动退出与歌单冻结、单曲补偿、自动响度均衡，以及双设备首次加入、SSH/HTTPS 切换、歌单冲突的本地/远程/保留两者、换口令、Linux 系统媒体面板与封面。发布说明样例见 [v0.6.1](../release-notes-v0.6.1.md)。
 
 GitHub Actions 的 `Release` 工作流会用 GoReleaser 构建：
 

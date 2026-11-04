@@ -22,7 +22,7 @@ sh install.sh
 默认安装到 `~/.local/bin`。如果该目录不在 `PATH` 里，脚本会识别登录 shell（bash / zsh / fish / sh）并写入对应的配置文件，免去手动改环境变量；不想改动配置文件可加 `--no-path`。也可指定版本/前缀：
 
 ```bash
-VERSION=v0.6.0 sh install.sh
+VERSION=v0.6.1 sh install.sh
 sudo sh install.sh --prefix /usr/local
 ```
 
