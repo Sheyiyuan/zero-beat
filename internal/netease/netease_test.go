@@ -1,6 +1,7 @@
 package netease
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -232,6 +233,44 @@ func TestSessionRoundTripAndLogout(t *testing.T) {
 	c.Logout()
 	if c.LoggedIn() || c.Session()["MUSIC_U"] != "" {
 		t.Fatalf("退出后应清空凭证: %+v", c.Session())
+	}
+}
+
+func TestSetSessionAppliesClientIdentity(t *testing.T) {
+	c := New()
+	c.SetSession(map[string]string{"MUSIC_U": "token-1", "os": "ios"})
+	session := c.Session()
+	if session["os"] != sessionOS || session["appver"] != sessionAppVer {
+		t.Fatalf("会话应统一成 PC 身份: %+v", session)
+	}
+	if session["__remember_me"] != "true" {
+		t.Fatalf("会话应带 __remember_me: %+v", session)
+	}
+	c.Logout()
+	if session := c.Session(); session["os"] != "" || session["appver"] != "" {
+		t.Fatalf("退出后不应残留请求身份: %+v", session)
+	}
+}
+
+func TestRefreshSessionWithoutLoginIsNoop(t *testing.T) {
+	c := New()
+	if err := c.RefreshSession(context.Background()); err != nil {
+		t.Fatalf("未登录时续期应是 no-op: %v", err)
+	}
+}
+
+func TestRefreshErrorClassifiesAuthCodes(t *testing.T) {
+	if err := refreshError(200); err != nil {
+		t.Fatalf("200 应视为续期成功: %v", err)
+	}
+	for _, code := range []int{301, 302, 401} {
+		if err := refreshError(code); !errors.Is(err, source.ErrSessionExpired) {
+			t.Fatalf("code=%d 应标记登录过期: %v", code, err)
+		}
+	}
+	err := refreshError(502)
+	if err == nil || errors.Is(err, source.ErrSessionExpired) {
+		t.Fatalf("502 不应标记登录过期: %v", err)
 	}
 }
 

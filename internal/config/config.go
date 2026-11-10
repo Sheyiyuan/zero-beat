@@ -53,6 +53,15 @@ func ThemePath() (string, error) {
 	return filepath.Join(dir, "theme.toml"), nil
 }
 
+// LyricsPath 返回本地歌词识别配置路径（lyrics.toml，只在本机生效）。
+func LyricsPath() (string, error) {
+	dir, err := DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "lyrics.toml"), nil
+}
+
 // SyncTomlPath 返回同步配置路径（remote/branch/auth/auto，不含 token）。
 func SyncTomlPath() (string, error) {
 	dir, err := DataDir()

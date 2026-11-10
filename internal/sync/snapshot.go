@@ -49,13 +49,15 @@ type RefFile struct {
 	RemoteID string `json:"remote_id,omitempty"`
 }
 
-// AnnotationFile 是单曲歌词偏移、单曲音量补偿与播放片段；一歌一文件，按歌曲 ID 稳定。
+// AnnotationFile 是单曲歌词偏移、单曲音量补偿、播放片段与歌词绑定；
+// 一歌一文件，按歌曲 ID 稳定。LyricBind 只出现可跨设备复现的绑定。
 type AnnotationFile struct {
-	SongID        string  `json:"song_id"`
-	LyricOffsetMS int     `json:"lyric_offset_ms,omitempty"`
-	CompDB        float64 `json:"comp_db,omitempty"`
-	ClipStartMS   int64   `json:"clip_start_ms,omitempty"`
-	ClipEndMS     int64   `json:"clip_end_ms,omitempty"`
+	SongID        string              `json:"song_id"`
+	LyricOffsetMS int                 `json:"lyric_offset_ms,omitempty"`
+	CompDB        float64             `json:"comp_db,omitempty"`
+	ClipStartMS   int64               `json:"clip_start_ms,omitempty"`
+	ClipEndMS     int64               `json:"clip_end_ms,omitempty"`
+	LyricBind     *store.LyricBinding `json:"lyric_bind,omitempty"`
 }
 
 // GitAttributes 关闭 JSON 的行级合并：同一实体两端都改就整版冲突。
@@ -109,12 +111,26 @@ func BuildSnapshot(in SnapshotInput) (Snapshot, error) {
 	if in.Now.IsZero() {
 		in.Now = time.Now()
 	}
-	playlists, err := in.Store.ListPlaylistSnapshots("local", "mixin")
+	// 只导出可同步歌单；sync_excluded 的过滤在 store 里，导入删除共用同一份集合。
+	playlists, err := in.Store.ListPlaylistSnapshots(store.PlaylistKindLocal, store.PlaylistKindMixin)
 	if err != nil {
 		return snap, err
 	}
 	sort.Slice(playlists, func(i, j int) bool { return playlists[i].ID < playlists[j].ID })
 	for _, p := range playlists {
+		// 防御：能走到这里的歌单一定是不排除同步的。如果它引用了文件夹歌单，
+		// 说明库里已经处于不一致状态；静默导出会在别的设备上留下断引用。
+		for _, ref := range p.Refs {
+			if ref.Kind == store.PlaylistKindFolder {
+				return snap, fmt.Errorf("歌单 %s 引用了文件夹歌单 %s，不能同步", p.Title, ref.Title)
+			}
+		}
+		// 静默过滤本地曲目会在导入时删掉本机条目，所以宁可直接失败。
+		for _, song := range p.Songs {
+			if song.Source == "local" {
+				return snap, fmt.Errorf("歌单 %s 含本地曲目 %q，不能同步", p.Title, song.Title)
+			}
+		}
 		file := playlistFileFromSnapshot(p)
 		data, err := encodeJSON(file)
 		if err != nil {
@@ -124,7 +140,8 @@ func BuildSnapshot(in SnapshotInput) (Snapshot, error) {
 		snap.Playlists++
 	}
 
-	annotations, err := in.Store.ListAnnotations()
+	// 本地曲目上的注释不进仓库：曲目本身不在仓库里，附属数据过去没有意义。
+	annotations, err := in.Store.ListSyncAnnotations()
 	if err != nil {
 		return snap, err
 	}
@@ -269,13 +286,18 @@ func playlistFileFromSnapshot(p store.PlaylistSnapshot) PlaylistFile {
 }
 
 func annotationFileFrom(a store.SongAnnotation) AnnotationFile {
-	return AnnotationFile{
+	file := AnnotationFile{
 		SongID:        a.SongID,
 		LyricOffsetMS: a.LyricOffsetMS,
 		CompDB:        a.CompDB,
 		ClipStartMS:   a.ClipStartMS,
 		ClipEndMS:     a.ClipEndMS,
 	}
+	if a.LyricBind != nil && a.LyricBind.Portable() {
+		bind := *a.LyricBind
+		file.LyricBind = &bind
+	}
+	return file
 }
 
 // WriteSnapshot 把快照写入受管克隆。playlists/ 与 annotations/ 先清空再重写，
@@ -487,6 +509,11 @@ func importAnnotations(in ImportInput) (map[string]bool, []string) {
 			warnings = append(warnings, "注释文件名无效："+name)
 			continue
 		}
+		// 本地曲目注释不该出现在仓库；出现了也不导入，免得在本机留下孤儿设置。
+		if strings.HasPrefix(songID, "local:") {
+			warnings = append(warnings, "仓库含本地曲目注释，已跳过："+name)
+			continue
+		}
 		ids[songID] = true
 		data, err := readRepoFile(in.Dir, AnnotationsDir+"/"+name)
 		if err != nil {
@@ -502,21 +529,32 @@ func importAnnotations(in ImportInput) (map[string]bool, []string) {
 			warnings = append(warnings, "注释歌曲 ID 与文件名不符："+name)
 			continue
 		}
-		if err := in.Store.SaveAnnotation(store.SongAnnotation{
+		annotation := store.SongAnnotation{
 			SongID:        file.SongID,
 			LyricOffsetMS: file.LyricOffsetMS,
 			CompDB:        file.CompDB,
 			ClipStartMS:   file.ClipStartMS,
 			ClipEndMS:     file.ClipEndMS,
-		}); err != nil {
+		}
+		if file.LyricBind != nil {
+			if !file.LyricBind.Portable() {
+				// 仓库里出现本机绑定说明导出端有 bug；不导入，免得把路径带到这台设备。
+				warnings = append(warnings, "注释含本机歌词绑定，已忽略："+name)
+			} else {
+				annotation.LyricBind = file.LyricBind
+			}
+		}
+		if err := in.Store.SaveAnnotation(annotation); err != nil {
 			warnings = append(warnings, "写入注释失败："+name)
 		}
 	}
 	return ids, warnings
 }
 
+// deleteMissingAnnotations 只清理「可同步」的注释集合，
+// 本机曲目上的注释不会因为远端没有就被删掉。
 func deleteMissingAnnotations(st *store.Store, keep map[string]bool) error {
-	local, err := st.ListAnnotations()
+	local, err := st.ListSyncAnnotations()
 	if err != nil {
 		return err
 	}

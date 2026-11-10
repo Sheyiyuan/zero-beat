@@ -24,6 +24,8 @@ type ID string
 const (
 	Bilibili ID = "bilibili"
 	NetEase  ID = "netease"
+	// Local 是本机文件音源；它不需要登录，也不参与远端歌单。
+	Local ID = "local"
 )
 
 // Capability 是音源能力位，UI 只按能力显隐，不按平台名分支。
@@ -40,6 +42,9 @@ const (
 	CapDailyRecommendations
 	// CapPlaylistWrite 表示可以把歌曲写入该音源的云端歌单。
 	CapPlaylistWrite
+	// CapAccount 表示音源有登录态，需要出现在登录页与账号摘要里。
+	// 本地源不置位，避免把「本机」渲染成需要扫码的音源。
+	CapAccount
 )
 
 // Has 判断是否具备某项能力。
@@ -235,6 +240,16 @@ type Source interface {
 	Logout()
 }
 
+// SessionRefresher 是支持续期登录态的音源。
+//
+// 续期成功后，调用方应尽快把 Session() 的最新值写回持久化存储：平台可能
+// 换发 MUSIC_U 一类的 token，只留旧值会在下次启动时被判定失效。平台明确
+// 拒绝续期时返回包装了 ErrSessionExpired 的错误；网络错误原样返回，调用方
+// 不应据此清理账号。
+type SessionRefresher interface {
+	RefreshSession(ctx context.Context) error
+}
+
 // Registry 保存按 ID 索引的音源，顺序决定界面展示顺序。
 type Registry struct {
 	order   []Source
@@ -376,6 +391,35 @@ func (r *Registry) ParseTarget(input string, pageOverride int) (Ref, bool, error
 		return ref, true, nil
 	}
 	return Ref{}, false, nil
+}
+
+// AccountIDs 返回需要登录的音源 ID，顺序与注册顺序一致。
+// 登录页、二维码轮换与账号摘要都只遍历这些源。
+func (r *Registry) AccountIDs() []ID {
+	if r == nil {
+		return nil
+	}
+	out := make([]ID, 0, len(r.order))
+	for _, s := range r.order {
+		if s.Caps().Has(CapAccount) {
+			out = append(out, s.ID())
+		}
+	}
+	return out
+}
+
+// AccountSources 返回需要登录的音源，供需要 Source 实例的登录流程使用。
+func (r *Registry) AccountSources() []Source {
+	if r == nil {
+		return nil
+	}
+	var out []Source
+	for _, s := range r.order {
+		if s.Caps().Has(CapAccount) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // IDs 返回全部音源 ID。

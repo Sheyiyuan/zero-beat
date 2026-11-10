@@ -57,7 +57,9 @@ func DecodeMeta(data []byte) (Meta, error) {
 	if err := decodeJSONStrict(data, &m); err != nil {
 		return Meta{}, fmt.Errorf("%w: 解析 meta.json: %v", ErrCorruptRepo, err)
 	}
-	if m.V != MetaVersion {
+	// 旧客户端读到这里只认自己写出的版本；v2 仓库对 v1 客户端必须报 schema
+	// 错误而不是尝试降级，否则会重新导出并删掉仅本机数据。
+	if m.V < MetaVersionMin || m.V > MetaVersion {
 		return Meta{}, fmt.Errorf("%w: meta.v=%d，请升级 zero-beat", ErrSchema, m.V)
 	}
 	if m.KeyVersion < 1 {

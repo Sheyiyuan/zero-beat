@@ -4,7 +4,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
-	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
@@ -155,10 +154,7 @@ func (m *Model) renderMix(h int) []string {
 	for i := start; i < end; i++ {
 		p := m.mix.items[i]
 		checked := m.mix.selected[p.ID]
-		tag := "本"
-		if p.Source != "" {
-			tag = m.sourceMark(source.ID(p.Source))
-		}
+		tag := m.playlistTag(p)
 		out = append(out, m.renderPlaylistRow(playlistRowSpec{
 			Selected: i == m.mix.idx,
 			Tag:      tag,
@@ -167,6 +163,12 @@ func (m *Model) renderMix(h int) []string {
 			Check:    &checked,
 		}, m.width))
 	}
-	out = append(out, st.dim.Render(" space 勾选 · enter 下一步 · j/k 移动 · esc 返回"))
+	hint := " space 勾选 · enter 下一步 · j/k 移动 · esc 返回"
+	if m.mix.editingID != "" {
+		if p, ok := m.currentPlaylist(); ok && !p.SyncExcluded {
+			hint += " · 已同步歌单不能引用「夹/仅」歌单"
+		}
+	}
+	out = append(out, st.dim.Render(hint))
 	return out
 }

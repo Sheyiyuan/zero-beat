@@ -269,6 +269,7 @@ func (m *Model) handleMouseWheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 func (m *Model) hardModal() bool {
 	return m.palette != nil ||
 		m.prompt != promptNone ||
+		m.lyricBind != nil ||
 		m.clip != nil ||
 		m.picker != nil ||
 		m.helpPopup ||
@@ -290,6 +291,11 @@ func (m *Model) handleOverlayClick(mouse tea.Mouse) (bool, tea.Cmd) {
 	var lines []string
 	var cancel func() tea.Cmd
 	switch {
+	case m.lyricBind != nil:
+		lines, cancel = m.lyricBindLines(), func() tea.Cmd {
+			m.lyricBind = nil
+			return nil
+		}
 	case m.clip != nil:
 		lines, cancel = m.clipLines(), m.cancelClipEditor
 	case m.picker != nil:

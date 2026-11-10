@@ -41,6 +41,9 @@ type usersMsg struct {
 	err     error
 }
 
+// sessionsRefreshedMsg 是后台续期登录态完成后的信号，不改变界面。
+type sessionsRefreshedMsg struct{}
+
 type playlistsMsg struct {
 	items []store.Playlist
 	warn  error
@@ -90,12 +93,26 @@ type downloadsMsg struct {
 	err   error
 }
 
+// folderAddedMsg 是一次「添加/更换文件夹 + 扫描」的结果。
+type folderAddedMsg struct {
+	playlist store.Playlist
+	scan     app.LibraryScan
+	err      error
+}
+
 type lyricMsg struct {
 	songID   string
 	lines    []lyrics.Line
 	offsetMS int
 	source   string
-	err      error
+	// offsetKey 表示 offset 属于哪一层来源；空值按 auto 处理。
+	offsetKey store.BindingScope
+	bound     bool
+	degraded  bool
+	warning   string
+	// gen 是请求代号：绑定切换后旧响应必须被丢弃。
+	gen int
+	err error
 }
 
 type queueRestoredMsg struct {
@@ -157,6 +174,31 @@ func (m *Model) loadUsersCmd() tea.Cmd {
 		defer cancel()
 		users, expired := svc.Users(ctx)
 		return usersMsg{users: users, expired: expired}
+	}
+}
+
+// startupUsersCmd 先续期登录态再校验账号。两步必须串行：先校验会把还能
+// 续期的旧 token 直接判成过期，启动时就冻结歌单。
+func (m *Model) startupUsersCmd() tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		svc.RefreshSessions(ctx)
+		users, expired := svc.Users(ctx)
+		return usersMsg{users: users, expired: expired}
+	}
+}
+
+// refreshSessionsCmd 在后台给登录态续期；成功与否都不打扰用户，
+// 真正的过期判定仍由 Users 负责。
+func (m *Model) refreshSessionsCmd() tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		svc.RefreshSessions(ctx)
+		return sessionsRefreshedMsg{}
 	}
 }
 
@@ -263,11 +305,23 @@ func (m *Model) playSongCmdAtMode(song store.Song, startAt time.Duration, retry 
 func (m *Model) lyricsCmd(song store.Song) tea.Cmd {
 	svc := m.service()
 	song = store.NormalizeSong(song)
+	m.lyricGen++
+	gen := m.lyricGen
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		res := svc.Lyrics(ctx, song)
-		return lyricMsg{songID: song.ID, lines: res.Lines, offsetMS: res.OffsetMS, source: res.Source}
+		return lyricMsg{
+			songID:    song.ID,
+			lines:     res.Lines,
+			offsetMS:  res.OffsetMS,
+			source:    res.Source,
+			offsetKey: res.OffsetKey,
+			bound:     res.Bound,
+			degraded:  res.Degraded,
+			warning:   res.Warning,
+			gen:       gen,
+		}
 	}
 }
 

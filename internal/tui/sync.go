@@ -18,7 +18,11 @@ import (
 // 同步相关的 tea.Msg。
 type syncEventMsg struct{ ev syncpkg.Event }
 
-type syncStatusMsg struct{ status syncpkg.Status }
+type syncStatusMsg struct {
+	status          syncpkg.Status
+	localOnly       int
+	localAnnotation int
+}
 
 type syncConflictsMsg struct {
 	index syncpkg.ConflictIndex
@@ -196,6 +200,12 @@ func (m *Model) renderSync(h int) []string {
 			st.muted.Render("分支"), st.text.Render(status.Branch),
 			st.muted.Render("认证"), st.text.Render(status.Auth),
 			st.muted.Render("密钥"), st.text.Render(keyline)))
+	}
+	if m.localOnly > 0 || m.localAnnotation > 0 {
+		add(fmt.Sprintf(" %s %s · %s %s", st.muted.Render("仅本机"),
+			st.text.Render(fmt.Sprintf("%d 个歌单", m.localOnly)),
+			st.muted.Render("本机注释"), st.text.Render(fmt.Sprintf("%d 条", m.localAnnotation))))
+		add(" " + st.dim.Render(truncate("仅本机数据不进仓库，其它设备不会看到，也不会被同步删除。", max(1, m.width-4))))
 	}
 	if status.KeyIssue != "" {
 		add(" " + st.warn.Render(truncate("密钥："+status.KeyIssue, max(1, m.width-4))))
@@ -609,7 +619,10 @@ func (m *Model) syncStatusCmd() tea.Cmd {
 	if mgr == nil {
 		return nil
 	}
-	return func() tea.Msg { return syncStatusMsg{status: mgr.Status()} }
+	return func() tea.Msg {
+		localOnly, localAnnotations := m.service().LocalOnlyCounts()
+		return syncStatusMsg{status: mgr.Status(), localOnly: localOnly, localAnnotation: localAnnotations}
+	}
 }
 
 func (m *Model) testSyncConnectionCmd() tea.Cmd {

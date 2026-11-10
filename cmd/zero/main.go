@@ -23,16 +23,18 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/control"
 	"github.com/sheyiyuan/zero-beat/internal/instance"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
+	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/netease"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	bilibilisource "github.com/sheyiyuan/zero-beat/internal/source/bilibili"
+	localsource "github.com/sheyiyuan/zero-beat/internal/source/local"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 	syncpkg "github.com/sheyiyuan/zero-beat/internal/sync"
 	"github.com/sheyiyuan/zero-beat/internal/tui"
 )
 
 // version 由发布流水线通过 -ldflags "-X main.version=..." 注入。
-var version = "0.6.1"
+var version = "0.7.0"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -78,6 +80,10 @@ func run(args []string) error {
 		return nil
 	case "download":
 		return runDownload(fs.Args()[1:])
+	case "library":
+		return runLibrary(fs.Args()[1:])
+	case "lyrics":
+		return runLyrics(fs.Args()[1:])
 	case "clean-playlists":
 		return runCleanPlaylists()
 	case "keymap":
@@ -106,8 +112,10 @@ func usage(fs *flag.FlagSet) {
   zero                  启动终端界面
   zero play <链接或 ID>  直接播放（headless，便于验证音频链路）
   zero login [音源]     在终端里扫码登录并保存 cookie（默认第一个音源）
-  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/help/login/clip/picker/menu/about/downloads/selection/sync/conflicts）
+  zero demo [view]      打印一帧示例界面（library/search/queue/lyrics/lyricbind/help/login/clip/picker/menu/about/downloads/selection/sync/conflicts）
   zero download <目标...>  下载单曲（支持 -j 并发、Range 续传）
+  zero library <子命令>  本地文件夹歌单：add/list/scan/remove
+  zero lyrics <子命令>   歌词来源：show/bind/unbind
   zero clean-playlists  清空已导入的远端歌单，保留本地歌单
   zero theme [auto|dark|light]  查看/设置深色/浅色模式
   zero theme palette zero-red|hanpai-blue  选择配色（佐洛红 / 半拍蓝）
@@ -136,6 +144,19 @@ func openStore() (*store.Store, error) {
 	return store.Open(path)
 }
 
+// loadLyricsConfig 读取本地歌词配置；配置问题只提示，不影响启动。
+func loadLyricsConfig() lyrics.LocalConfig {
+	path, err := config.LyricsPath()
+	if err != nil {
+		return lyrics.DefaultLocalConfig()
+	}
+	cfg, warnings := lyrics.LoadLocalConfig(path)
+	for _, w := range warnings {
+		fmt.Fprintln(os.Stderr, "提示："+w)
+	}
+	return cfg
+}
+
 func loadSession(st *store.Store, src source.Source) {
 	payload, err := st.LoadAccount(string(src.ID()))
 	if err != nil {
@@ -149,9 +170,12 @@ func loadSession(st *store.Store, src source.Source) {
 
 func newSources(st *store.Store) *source.Registry {
 	// 组合根：新增平台只需要在这里追加构造器，其余层通过 Registry 工作。
+	lyricsCfg := loadLyricsConfig()
 	list := []source.Source{
 		bilibilisource.New(bili.New()),
 		netease.New(),
+		// 本地源放在最后：它没有 CapAccount/CapSearch，不会出现在登录页与搜索范围内。
+		localsource.New(st, lyricsCfg),
 	}
 	for _, src := range list {
 		loadSession(st, src)
@@ -475,13 +499,14 @@ func runLogin(name string) error {
 	sources := newSources(st)
 	src := sources.GetByName(name)
 	if src == nil && strings.TrimSpace(name) == "" {
-		if all := sources.All(); len(all) > 0 {
+		// 只有需要登录的音源才出现在命令行登录入口；本地源没有登录流程。
+		if all := sources.AccountSources(); len(all) > 0 {
 			src = all[0]
 		}
 	}
-	if src == nil {
-		ids := make([]string, 0, len(sources.IDs()))
-		for _, id := range sources.IDs() {
+	if src == nil || !src.Caps().Has(source.CapAccount) {
+		ids := make([]string, 0)
+		for _, id := range sources.AccountIDs() {
 			ids = append(ids, string(id))
 		}
 		return fmt.Errorf("未知音源 %q（可选 %s）", name, strings.Join(ids, " / "))

@@ -70,18 +70,20 @@ const (
 	Downloads        Action = "downloads"
 	MixEdit          Action = "mix_edit"
 	EditClip         Action = "edit_clip"
-	ClipSetStart     Action = "clip_set_start"
-	ClipSetEnd       Action = "clip_set_end"
-	ClipClear        Action = "clip_clear"
-	Unlock           Action = "unlock"
-	Refresh          Action = "refresh"
-	QueueUp          Action = "queue_up"
-	QueueDown        Action = "queue_down"
-	Source           Action = "source"
-	LoginImage       Action = "login_image"
-	Logout           Action = "logout"
-	Back             Action = "back"
-	Sync             Action = "sync"
+	// BindLyrics 打开歌词来源浮层：手动指定平台、LRCLIB 或本地歌词。
+	BindLyrics   Action = "bind_lyrics"
+	ClipSetStart Action = "clip_set_start"
+	ClipSetEnd   Action = "clip_set_end"
+	ClipClear    Action = "clip_clear"
+	Unlock       Action = "unlock"
+	Refresh      Action = "refresh"
+	QueueUp      Action = "queue_up"
+	QueueDown    Action = "queue_down"
+	Source       Action = "source"
+	LoginImage   Action = "login_image"
+	Logout       Action = "logout"
+	Back         Action = "back"
+	Sync         Action = "sync"
 )
 
 // Defaults 是内置键位；配置文件按动作覆盖，不写出的动作继续使用这里。
@@ -139,6 +141,7 @@ var Defaults = map[Action][]string{
 	Downloads:        {"F"},
 	MixEdit:          {"M"},
 	EditClip:         {"C"},
+	BindLyrics:       {"B"},
 	ClipSetStart:     {"{"},
 	ClipSetEnd:       {"}"},
 	ClipClear:        {"ctrl+r"},

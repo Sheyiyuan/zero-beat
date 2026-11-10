@@ -74,7 +74,7 @@ func (s *Source) ParseTarget(input string, pageOverride int) (source.Ref, bool, 
 func (s *Source) Caps() source.Capability {
 	return source.CapSearch | source.CapMultiPart | source.CapRemotePlaylists |
 		source.CapOfficialLyrics | source.CapQualitySelect | source.CapLossless |
-		source.CapPlaylistWrite
+		source.CapPlaylistWrite | source.CapAccount
 }
 
 // LoggedIn 实现 source.Source。

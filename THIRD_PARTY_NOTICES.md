@@ -64,12 +64,19 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 - 用途：Linux 会话 D-Bus，MPRIS 系统媒体面板与媒体键。
 - 项目：https://github.com/godbus/dbus
 
-## golang.org/x/crypto、golang.org/x/term
+## dhowden/tag
 
-- 版本：x/crypto v0.53.0、x/term v0.44.0
+- 版本：v0.0.0-20240417053706-3d75831295e8
+- 许可：BSD-3-Clause
+- 用途：读取本地音频的 ID3v2 / FLAC / MP4 / Ogg 标签与内嵌歌词（本地音乐库扫描与本地歌词识别）。
+- 项目：https://github.com/dhowden/tag
+
+## golang.org/x/crypto、golang.org/x/term、golang.org/x/text
+
+- 版本：x/crypto v0.53.0、x/term v0.44.0、x/text v0.38.0
 - 许可：BSD-3-Clause（Go Authors）
-- 用途：同步口令的 Argon2id / HKDF / XChaCha20-Poly1305，以及 CLI 无回显读取口令。
-- 项目：https://pkg.go.dev/golang.org/x/crypto 、https://pkg.go.dev/golang.org/x/term
+- 用途：同步口令的 Argon2id / HKDF / XChaCha20-Poly1305，CLI 无回显读取口令，以及本地歌词文本的 Unicode 归一化与 GB18030 解码。
+- 项目：https://pkg.go.dev/golang.org/x/crypto 、https://pkg.go.dev/golang.org/x/term 、https://pkg.go.dev/golang.org/x/text
 
 ## 其他
 

@@ -4,7 +4,7 @@ layout: home
 hero:
   name: zero-beat · 零拍
   text: B 站 + 网易云音乐终端播放器
-  tagline: v0.6.1 已发布：登录态过期自动冻结歌单，单曲音量补偿与自动响度均衡；在同一个终端里搜索、收藏、排队、播放两个平台的音频，带逐行歌词。
+  tagline: 在同一个终端里搜索、收藏、排队、播放 B 站与网易云；本机文件夹、逐行歌词与手动歌词来源也在同一个界面。
   image:
     src: /assets/icons/appicon-round.svg
     alt: zero-beat 应用图标
@@ -25,9 +25,13 @@ features:
     title: 双源登录与搜索
     details: B 站与网易云各自扫码登录，单源或合并搜索，混源队列，本地歌单可混装两平台曲目。
   - icon: >-
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 17v-5.5m0 2a1.75 1.75 0 1 0 0 .01"/><path d="M14 16v-5a1 1 0 0 1 1-1h1"/></g></svg>
+    title: 本地音乐库
+    details: 手动添加一个文件夹就是一个只读歌单：只扫当前层、可重扫、不监听；下载目录也能直接当文件夹歌单，不会重复。
+  - icon: >-
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><rect width="18" height="14" x="3" y="5" rx="2" ry="2"/><path d="M7 15h4m4 0h2M7 11h2m4 0h4"/></g></svg>
-    title: 逐行歌词
-    details: 平台歌词优先、LRCLIB 兜底，底部常驻当前句并渐变高亮，偏移可调并记住。
+    title: 逐行歌词与歌词来源
+    details: 平台歌词、本地 .lrc 与内嵌歌词、LRCLIB 依次兜底；匹配不准按 B 手动指定来源，偏移跟着当前来源走。
   - icon: >-
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></g></svg>
     title: 混合歌单
@@ -39,11 +43,7 @@ features:
   - icon: >-
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M15 6a9 9 0 0 0-9 9V3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/></g></svg>
     title: 跨设备同步
-    details: 歌单、键位、注释与加密登录态同步到你自己的 git 仓库，冲突时逐项选保留哪边，自动同步默认开启。
-  - icon: >-
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 5H3m9 14H3M14 3v4m2 10v4m5-9h-9m9 7h-5m5-14h-7m-6 5v4m0-2H3"/></svg>
-    title: 系统媒体集成
-    details: Linux 下接入系统媒体面板与媒体键；封面只在面板里显示，不占终端。
+    details: 歌单、键位、注释与加密登录态同步到你自己的 git 仓库；文件夹歌单、仅本机歌单与本地歌词绑定留在本机，冲突逐项选择。
   - icon: >-
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"><path d="M12 22a1 1 0 0 1 0-20a10 9 0 0 1 10 9a5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/></g></svg>
     title: 多彩主题
@@ -55,13 +55,13 @@ features:
   - icon: >-
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19h8M4 17l6-6l-6-6"/></svg>
     title: 为终端而生
-    details: 为终端打造，支持鼠标和命令面板。
+    details: Linux 下接入系统媒体面板与媒体键，封面只在面板里显示、不占终端；支持鼠标与命令面板。
 ---
 
 <div class="release-note">
-  <strong>v0.6.1 已发布</strong>
-  <span>登录态过期冻结、单曲音量补偿与自动响度均衡</span>
-  <a href="./changelog/v0.6.1.html">发布说明 →</a>
+  <strong>v0.7.0 已发布</strong>
+  <span>本地音乐库、本地歌词与歌词来源绑定；同步仓库升级到 v2</span>
+  <a href="./changelog/v0.7.0.html">发布说明 →</a>
 </div>
 
 <img src="/assets/readme/hero.svg" alt="zero-beat 零拍：两个平台，为你同频" style="width:100%;border-radius:12px" />
@@ -82,7 +82,7 @@ sh install.sh && zero
 ## 文档地图
 
 - 用户先看：[安装](/guide/install) → [快速上手](/guide/quickstart) → [按键速查](/reference/keys)
-- 功能专题：[曲库与歌单](/guide/library)、[播放与歌词](/guide/playback)、[下载](/guide/download)、[跨设备同步](/guide/sync)、[系统媒体](/guide/sysmedia)、[主题与配色](/guide/theme)
+- 功能专题：[曲库与歌单](/guide/library)（含本地音乐库）、[播放与歌词](/guide/playback)（含歌词来源绑定）、[下载](/guide/download)、[跨设备同步](/guide/sync)、[系统媒体](/guide/sysmedia)、[主题与配色](/guide/theme)
 - 配置参考：[自定义快捷键](/reference/keymap)、[CLI 子命令](/reference/cli)
 - 上手前建议读：[已知限制](/guide/limitations)、[数据与隐私](/guide/privacy)
 

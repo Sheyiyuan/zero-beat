@@ -159,7 +159,7 @@ func TestMetaStrictDecode(t *testing.T) {
 	}
 	data, _ := meta.Encode()
 	var expectFail = [][]byte{
-		bytes.Replace(data, []byte(`"v": 1`), []byte(`"v": 2`), 1),
+		bytes.Replace(data, []byte(`"v": 2`), []byte(`"v": 3`), 1),
 		[]byte(`{"v":1}`),
 		bytes.Replace(data, []byte(`"salt": "`), []byte(`"extra": 1, "salt": "`), 1),
 	}
@@ -167,6 +167,11 @@ func TestMetaStrictDecode(t *testing.T) {
 		if _, err := DecodeMeta(bad); err == nil {
 			t.Fatalf("第 %d 个非法 meta 应被拒绝", i)
 		}
+	}
+	// v1 仓库仍然可读：升级发生在同步客户端，不在解码器里。
+	v1 := bytes.Replace(data, []byte(`"v": 2`), []byte(`"v": 1`), 1)
+	if _, err := DecodeMeta(v1); err != nil {
+		t.Fatalf("v1 meta 应该仍可读取: %v", err)
 	}
 }
 

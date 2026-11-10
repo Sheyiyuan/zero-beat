@@ -37,6 +37,8 @@ const (
 	actPlaylistMix
 	actPlaylistUnlock
 	actPlaylistDelete
+	actPlaylistSetRoot
+	actAddFolder
 	actOpenPalette
 	actPlayPause
 	actPrevious
@@ -314,10 +316,19 @@ func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd
 	case actPlaylistRename:
 		m.libraryFocus = focusPlaylists
 		m.playlistIdx = menu.playlistIdx
-		if menu.playlist.Kind == "local" || menu.playlist.Kind == "mixin" {
+		if store.IsEditableKind(menu.playlist.Kind) {
 			m.beginPrompt(promptRenamePlaylist)
 		} else {
-			m.setNotice("只有本地或混合歌单可以重命名", true)
+			m.setNotice("只有本地、混合或文件夹歌单可以重命名", true)
+		}
+		return m, nil
+	case actPlaylistSetRoot:
+		m.libraryFocus = focusPlaylists
+		m.playlistIdx = menu.playlistIdx
+		if menu.playlist.Kind == store.PlaylistKindFolder {
+			m.beginPrompt(promptSetFolderRoot)
+		} else {
+			m.setNotice("只有文件夹歌单可以更换目录", true)
 		}
 		return m, nil
 	case actPlaylistMix:
@@ -339,6 +350,9 @@ func (m *Model) runMenuAction(menu menuState, item menuItem) (tea.Model, tea.Cmd
 			return m, nil
 		}
 		m.beginPrompt(promptDeletePlaylist)
+		return m, nil
+	case actAddFolder:
+		m.beginPrompt(promptAddFolder)
 		return m, nil
 	case actOpenPalette:
 		// 右键里的新建/导入和键盘 N 走同一个入口，不另开一套直接建单流程。

@@ -12,7 +12,6 @@ import (
 
 	"github.com/sheyiyuan/zero-beat/internal/cover"
 	"github.com/sheyiyuan/zero-beat/internal/lrclib"
-	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
 )
@@ -276,50 +275,6 @@ func (s *Service) DeleteDownload(songID string) error {
 	return s.store.DeleteDownload(songID)
 }
 
-// LyricsResult 是平台歌词或 LRCLIB 兜底的结果。
-type LyricsResult struct {
-	Lines    []lyrics.Line
-	OffsetMS int
-	Source   string
-}
-
-// Lyrics 读取歌词；这是增强信息，失败不返回错误，由调用方决定如何提示。
-func (s *Service) Lyrics(ctx context.Context, song store.Song) LyricsResult {
-	song = store.NormalizeSong(song)
-	out := LyricsResult{}
-	if s.store != nil {
-		if v, err := s.store.SettingInt("lyric_offset:"+song.ID, 0); err == nil {
-			out.OffsetMS = v
-		}
-	}
-	if src := s.sources.GetString(song.Source); src != nil {
-		got, label, err := src.Lyrics(ctx, RefFromSong(song))
-		if err != nil {
-			out.Source = src.Name() + "歌词不可用"
-		} else {
-			out.Lines = got
-			out.Source = label
-		}
-	}
-	if len(out.Lines) == 0 && s.lrclib != nil && song.Title != "" {
-		res, ok, err := s.lrclib.Lookup(ctx, lrclib.Track{
-			Title:    song.Title,
-			Artist:   song.Artist,
-			Duration: time.Duration(song.Duration) * time.Second,
-		})
-		switch {
-		case err != nil:
-			out.Source = "LRCLIB 暂不可用"
-		case ok:
-			out.Lines = lyrics.ParseLRC(res.SyncedLyrics)
-			if len(out.Lines) > 0 {
-				out.Source = "LRCLIB"
-			}
-		}
-	}
-	return out
-}
-
 // Users 读取所有已登录音源的账号信息；同时返回登录态已经不可用的音源
 // （平台判定过期，或库里有账号但装不进音源）。这里只做判定，不直接清理：
 // 由调用方决定冻结歌单与提示时机，避免读接口带副作用。
@@ -330,6 +285,10 @@ func (s *Service) Users(ctx context.Context) (map[source.ID]source.User, []sourc
 		return users, nil
 	}
 	for _, src := range s.sources.All() {
+		// 本地源没有登录态，不该出现在账号摘要里。
+		if !src.Caps().Has(source.CapAccount) {
+			continue
+		}
 		if !src.LoggedIn() {
 			users[src.ID()] = source.User{}
 			// 库里有账号却装不进音源，说明本地登录态已经不可用：
@@ -342,6 +301,23 @@ func (s *Service) Users(ctx context.Context) (map[source.ID]source.User, []sourc
 			continue
 		}
 		got, err := src.Account(ctx)
+		if errors.Is(err, source.ErrSessionExpired) {
+			// 本地存的是旧 token、或平台刚刚换发过 token 时，先续期再判死刑；
+			// 续期失败说明平台确实不认这份登录态，保持原错误交给下面处理。
+			if refresher, ok := src.(source.SessionRefresher); ok {
+				if rerr := refresher.RefreshSession(ctx); rerr == nil {
+					again, aerr := src.Account(ctx)
+					switch {
+					case aerr == nil:
+						got, err = again, nil
+						s.persistSession(src)
+					case !errors.Is(aerr, source.ErrSessionExpired):
+						// 续期成功但账号接口网络异常：保留「已登录」，不要冻结。
+						err = aerr
+					}
+				}
+			}
+		}
 		switch {
 		case errors.Is(err, source.ErrSessionExpired):
 			users[src.ID()] = source.User{}

@@ -79,6 +79,8 @@ type Result struct {
 	Warnings        []string
 	AccountsApplied []string
 	KeyIssue        error
+	// MetaUpgraded 表示本轮把仓库格式从 v1 升到了 v2；旧客户端从此刻起无法同步。
+	MetaUpgraded bool
 }
 
 // Status 返回当前配置与上次同步结果。
@@ -636,6 +638,17 @@ func (c *Client) round(ctx context.Context, g *Git, cfg Config, state *State, ke
 			return err
 		}
 	}
+	// v1 仓库在成功同步的这一轮原地升到 v2：提交后旧客户端读到的是版本不匹配，
+	// 而不是带着不认识的字段继续导出。升级不可回退。
+	upgraded, err := c.upgradeMeta()
+	if err != nil {
+		return err
+	}
+	if upgraded {
+		result.MetaUpgraded = true
+		result.Warnings = append(result.Warnings,
+			"仓库已升级到 v2，旧版本客户端将无法同步；请先升级所有设备")
+	}
 	committed, err := g.CommitAll(ctx, c.commitMessage(state.Device))
 	if err != nil {
 		return err
@@ -802,6 +815,35 @@ func pruneAccountFiles(repoDir string, keep map[string][]byte) {
 		}
 		_ = os.Remove(filepath.Join(dir, entry.Name()))
 	}
+}
+
+// upgradeMeta 把工作区里的 meta.json 升到当前版本；已经是当前版本或还没初始化时
+// 返回 false。只改版本号，不重新派生密钥，所以升级对其它设备是纯格式变更。
+func (c *Client) upgradeMeta() (bool, error) {
+	path := filepath.Join(c.repoPath(), MetaFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	meta, err := DecodeMeta(data)
+	if err != nil {
+		return false, err
+	}
+	if meta.V >= MetaVersion {
+		return false, nil
+	}
+	meta.V = MetaVersion
+	encoded, err := meta.Encode()
+	if err != nil {
+		return false, err
+	}
+	if err := writeFileAtomic(path, encoded, 0o600); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *Client) ensureMetaFile(key *KeyState, keyVersion int) error {

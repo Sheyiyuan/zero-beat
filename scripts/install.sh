@@ -3,7 +3,7 @@
 #
 # 用法:
 #   sh install.sh
-#   sh install.sh --version v0.6.1
+#   sh install.sh --version v0.7.0
 #   sh install.sh --prefix /usr/local
 #   sh install.sh --bin-dir "$HOME/bin"
 #   sh install.sh --no-path          # 不自动修改 shell 配置
@@ -277,7 +277,7 @@ command -v tar >/dev/null 2>&1 || fail "需要 tar"
 
 if [ -z "$VERSION" ]; then
 	if ! VERSION=$(latest_version); then
-		fail "无法获取最新版本；请显式指定，例如 sh install.sh --version v0.6.1"
+		fail "无法获取最新版本；请显式指定，例如 sh install.sh --version v0.7.0"
 	fi
 fi
 VERSION=${VERSION#v}

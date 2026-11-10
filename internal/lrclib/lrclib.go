@@ -1,7 +1,8 @@
 // Package lrclib 从 LRCLIB 拉取带时间轴的歌词，作为 B 站字幕缺失时的兜底。
 //
-// LRCLIB 是开放的歌词库（https://lrclib.net），接口不需要登录。这里只做两件事：
-// 把视频标题清洗成歌名、在候选结果里挑与视频时长最接近的一条。
+// LRCLIB 是开放的歌词库（https://lrclib.net），接口不需要登录。这里做三件事：
+// 把视频标题清洗成歌名、在候选结果里挑与视频时长最接近的一条，以及给「选一个
+// 歌词源」的界面提供自由文本搜索和按 id 取回。
 package lrclib
 
 import (
@@ -26,6 +27,9 @@ type Track struct {
 
 // Result 是一条歌词候选。
 type Result struct {
+	// ID 是 LRCLIB 内部的记录 id，用于之后按 id 精确取回同一条歌词，
+	// 也让「选一个歌词源」这类 UI 有稳定的标识可以做 key。
+	ID           int64
 	TrackName    string
 	ArtistName   string
 	Duration     time.Duration
@@ -58,12 +62,26 @@ func NewWithBaseURL(base string) *Client {
 }
 
 type apiItem struct {
+	ID           int64   `json:"id"`
 	TrackName    string  `json:"trackName"`
 	ArtistName   string  `json:"artistName"`
 	Duration     float64 `json:"duration"`
 	SyncedLyrics string  `json:"syncedLyrics"`
 	PlainLyrics  string  `json:"plainLyrics"`
 	Instrumental bool    `json:"instrumental"`
+}
+
+// result 把接口条目转成对外结果。Search 与 choose 共用，避免以后加字段时漏拷。
+func (it apiItem) result() Result {
+	return Result{
+		ID:           it.ID,
+		TrackName:    it.TrackName,
+		ArtistName:   it.ArtistName,
+		Duration:     time.Duration(it.Duration * float64(time.Second)),
+		SyncedLyrics: it.SyncedLyrics,
+		PlainLyrics:  it.PlainLyrics,
+		Instrumental: it.Instrumental,
+	}
 }
 
 // Lookup 查询歌词。第二个返回值表示是否找到带时间轴的歌词。
@@ -76,12 +94,7 @@ func (c *Client) Lookup(ctx context.Context, track Track) (Result, bool, error) 
 	if title == "" {
 		return Result{}, false, nil
 	}
-	if c.BaseURL == "" {
-		c.BaseURL = defaultBaseURL
-	}
-	if c.HTTP == nil {
-		c.HTTP = &http.Client{Timeout: 10 * time.Second}
-	}
+	c.normalize()
 
 	items, err := c.search(ctx, title, track.Artist)
 	if err != nil {
@@ -101,13 +114,20 @@ func (c *Client) Lookup(ctx context.Context, track Track) (Result, bool, error) 
 	return best, true, nil
 }
 
-func (c *Client) search(ctx context.Context, title, artist string) ([]apiItem, error) {
-	q := url.Values{}
-	q.Set("track_name", title)
-	if artist != "" {
-		q.Set("artist_name", artist)
+// normalize 补齐零值，调用方直接构造 Client{} 或只填 BaseURL 也能用。
+// 放在需要发请求的地方调用，保持原先 Lookup 在空标题时不碰默认值的语义。
+func (c *Client) normalize() {
+	if c.BaseURL == "" {
+		c.BaseURL = defaultBaseURL
 	}
-	endpoint := c.BaseURL + "/api/search?" + q.Encode()
+	if c.HTTP == nil {
+		c.HTTP = &http.Client{Timeout: 10 * time.Second}
+	}
+}
+
+// fetch 发一次 GET，统一带 User-Agent / Accept。状态码交给调用方判断，
+// 因为 Get 需要把 404 当成「没找到」而不是错误。
+func (c *Client) fetch(ctx context.Context, endpoint string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("lrclib: 构造请求: %w", err)
@@ -120,15 +140,84 @@ func (c *Client) search(ctx context.Context, title, artist string) ([]apiItem, e
 	if err != nil {
 		return nil, fmt.Errorf("lrclib: 请求失败: %w", err)
 	}
+	return resp, nil
+}
+
+// getJSON 请求 pathAndQuery 并把 200 的响应体解析到 out。
+func (c *Client) getJSON(ctx context.Context, pathAndQuery string, out any) error {
+	resp, err := c.fetch(ctx, c.BaseURL+pathAndQuery)
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("lrclib: 接口返回 %s", resp.Status)
+		return fmt.Errorf("lrclib: 接口返回 %s", resp.Status)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("lrclib: 解析响应: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) search(ctx context.Context, title, artist string) ([]apiItem, error) {
+	q := url.Values{}
+	q.Set("track_name", title)
+	if artist != "" {
+		q.Set("artist_name", artist)
 	}
 	var items []apiItem
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return nil, fmt.Errorf("lrclib: 解析响应: %w", err)
+	if err := c.getJSON(ctx, "/api/search?"+q.Encode(), &items); err != nil {
+		return nil, err
 	}
 	return items, nil
+}
+
+// Search 用自由文本查 LRCLIB，返回全部候选，顺序与接口返回一致。
+// 给「选一个歌词源」的界面用：调用方拿到多条结果自己展示、再由用户决定。
+func (c *Client) Search(ctx context.Context, q string) ([]Result, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return nil, nil
+	}
+	c.normalize()
+
+	params := url.Values{}
+	params.Set("q", q)
+	var items []apiItem
+	if err := c.getJSON(ctx, "/api/search?"+params.Encode(), &items); err != nil {
+		return nil, err
+	}
+	out := make([]Result, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.result())
+	}
+	return out, nil
+}
+
+// Get 按 id 精确取回一条歌词。第二个返回值为 false 表示 LRCLIB 没有这条记录
+// （例如记录已被删除），此时不算错误。
+func (c *Client) Get(ctx context.Context, id int64) (Result, bool, error) {
+	if id <= 0 {
+		return Result{}, false, nil
+	}
+	c.normalize()
+
+	resp, err := c.fetch(ctx, fmt.Sprintf("%s/api/get/%d", c.BaseURL, id))
+	if err != nil {
+		return Result{}, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return Result{}, false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return Result{}, false, fmt.Errorf("lrclib: 接口返回 %s", resp.Status)
+	}
+	var it apiItem
+	if err := json.NewDecoder(resp.Body).Decode(&it); err != nil {
+		return Result{}, false, fmt.Errorf("lrclib: 解析响应: %w", err)
+	}
+	return it.result(), true, nil
 }
 
 // choose 在候选里挑一条：必须有 syncedLyrics，时长越接近越好，歌名/歌手匹配加分。
@@ -168,14 +257,7 @@ func choose(items []apiItem, title string, track Track) (Result, bool) {
 		}
 		if score > bestScore {
 			bestScore = score
-			best = Result{
-				TrackName:    it.TrackName,
-				ArtistName:   it.ArtistName,
-				Duration:     time.Duration(it.Duration * float64(time.Second)),
-				SyncedLyrics: it.SyncedLyrics,
-				PlainLyrics:  it.PlainLyrics,
-				Instrumental: it.Instrumental,
-			}
+			best = it.result()
 		}
 	}
 	return best, bestScore >= 0

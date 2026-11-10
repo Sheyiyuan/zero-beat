@@ -134,7 +134,8 @@ func TestLyricsFocusUsesPlayBackground(t *testing.T) {
 	m = updated.(*Model)
 
 	lines := strings.Split(m.View().Content, "\n")
-	center := 2 + m.bodyHeight()/2
+	// 歌词页最后一行留给来源/偏移，正文高度比整页少一行。
+	center := 2 + (m.bodyHeight()-1)/2
 	focusLine := lines[center]
 	if !strings.Contains(focusLine, bgSeq(zeroDark.playBg)) {
 		t.Fatalf("焦点行应使用播放行底色：%q", focusLine)

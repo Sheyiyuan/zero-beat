@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sheyiyuan/zero-beat/internal/source"
 	"github.com/sheyiyuan/zero-beat/internal/store"
@@ -131,6 +132,24 @@ func (s *Service) PlaylistSongs(ctx context.Context, p store.Playlist, force boo
 	}
 	if p.Kind == "mixin" {
 		warn = s.refreshMixinRefs(ctx, p)
+		items, err = s.store.PlaylistSongs(p.ID)
+		return items, warn, err
+	}
+	if p.Kind == store.PlaylistKindFolder {
+		// 文件夹歌单的内容随磁盘变化；打开时若距上次扫描超过 60 秒才重扫，
+		// 避免每次切歌单都做一次全量扫描。
+		stale := force || time.Since(time.Unix(p.ScannedAt, 0)) > 60*time.Second
+		if stale {
+			scan, serr := s.RescanLibrary(p.ID)
+			if serr != nil {
+				warn = serr
+			} else {
+				p = scan.Playlist
+				if scan.Subdirs > 0 {
+					warn = fmt.Errorf("发现 %d 个子文件夹，本地库只扫描当前层", scan.Subdirs)
+				}
+			}
+		}
 		items, err = s.store.PlaylistSongs(p.ID)
 		return items, warn, err
 	}

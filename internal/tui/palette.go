@@ -20,17 +20,21 @@ const (
 type paletteAction string
 
 const (
-	palBlank      paletteAction = "blank"
-	palImport     paletteAction = "import"
-	palMix        paletteAction = "mix"
-	palNewMix     paletteAction = "new-mix"
-	palEditMix    paletteAction = "edit-mix"
-	palUnlock     paletteAction = "unlock"
-	palAddCurrent paletteAction = "add-current"
-	palLocalFirst paletteAction = "local-first"
-	palAutoGain   paletteAction = "auto-gain"
-	palAbout      paletteAction = "about"
-	palSync       paletteAction = "sync"
+	palBlank         paletteAction = "blank"
+	palLocalOnly     paletteAction = "local-only"
+	palAddFolder     paletteAction = "add-folder"
+	palRescanFolder  paletteAction = "rescan-folder"
+	palSetFolderRoot paletteAction = "set-folder-root"
+	palImport        paletteAction = "import"
+	palMix           paletteAction = "mix"
+	palNewMix        paletteAction = "new-mix"
+	palEditMix       paletteAction = "edit-mix"
+	palUnlock        paletteAction = "unlock"
+	palAddCurrent    paletteAction = "add-current"
+	palLocalFirst    paletteAction = "local-first"
+	palAutoGain      paletteAction = "auto-gain"
+	palAbout         paletteAction = "about"
+	palSync          paletteAction = "sync"
 )
 
 type paletteItem struct {
@@ -65,7 +69,9 @@ func (m *Model) paletteItems() []paletteItem {
 		autoDesc = "当前 ffmpeg 缺少 loudnorm 滤镜"
 	}
 	items := []paletteItem{
-		{palBlank, "新建本地歌单", "创建一个只存在于本机的歌单"},
+		{palBlank, "新建本地歌单", "创建参与同步的歌单"},
+		{palLocalOnly, "新建仅本机歌单", "不进同步仓库，只在本机存在"},
+		{palAddFolder, "添加本地文件夹", "目录即只读歌单，只扫描当前层"},
 		{palMix, "新建混合歌单", "引用多个歌单，自己加歌不影响源歌单"},
 		{palAddCurrent, "将正在播放加入歌单", "选择本地、混合或同源云端歌单"},
 		{palLocalFirst, "本地优先：" + localState, "已下载歌曲优先播放本地文件"},
@@ -94,6 +100,10 @@ func (m *Model) paletteItems() []paletteItem {
 			}
 		case "mixin":
 			items = append(items, paletteItem{palEditMix, "编辑当前混合歌单", "增删引用的歌单"})
+		case "folder":
+			items = append(items,
+				paletteItem{palRescanFolder, "重新扫描当前文件夹", "磁盘变化后手动刷新"},
+				paletteItem{palSetFolderRoot, "更换当前文件夹", "换一个目录并重新扫描"})
 		}
 	}
 	return items
@@ -186,8 +196,8 @@ func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 		return m.openFolders(source.ID(strings.TrimPrefix(string(action), string(palImport)+":")))
 	}
 	switch action {
-	case palBlank:
-		m.palette = &paletteState{mode: paletteName, action: palBlank}
+	case palBlank, palLocalOnly, palAddFolder, palSetFolderRoot:
+		m.palette = &paletteState{mode: paletteName, action: action}
 		return nil
 	case palMix:
 		return m.openMixEditor("")
@@ -199,6 +209,11 @@ func (m *Model) runPaletteAction(action paletteAction) tea.Cmd {
 	case palUnlock:
 		if p, ok := m.currentPlaylist(); ok && p.Kind == "remote" {
 			m.beginPrompt(promptUnlockPlaylist)
+		}
+		return nil
+	case palRescanFolder:
+		if p, ok := m.currentPlaylist(); ok && p.Kind == "folder" {
+			return m.rescanFolderCmd(p.ID)
 		}
 		return nil
 	case palAddCurrent:
@@ -236,10 +251,32 @@ func (m *Model) commitPaletteName() tea.Cmd {
 	action := m.palette.action
 	m.palette = nil
 	if title == "" {
-		m.setNotice("歌单名不能为空", true)
+		if action == palAddFolder {
+			m.setNotice("路径不能为空", true)
+		} else {
+			m.setNotice("歌单名不能为空", true)
+		}
 		return nil
 	}
 	switch action {
+	case palAddFolder:
+		m.pendingPlaylistID = ""
+		return m.addFolderCmd(title)
+	case palSetFolderRoot:
+		if p, ok := m.currentPlaylist(); ok && p.Kind == "folder" {
+			return m.setFolderRootCmd(p.ID, title)
+		}
+		return nil
+	case palLocalOnly:
+		p, err := m.service().CreateLocalOnlyPlaylist(title)
+		if err != nil {
+			m.setError(err)
+			return nil
+		}
+		m.pendingPlaylistID = p.ID
+		m.view = viewLibrary
+		m.setNotice("已新建仅本机歌单："+p.Title, false)
+		return m.loadLocalPlaylistsCmd()
 	case palBlank:
 		p, err := m.service().CreatePlaylist(title)
 		if err != nil {
@@ -291,8 +328,15 @@ func (m *Model) paletteLines() []string {
 	title := "命令"
 	if p.mode == paletteName {
 		title = "歌单名称"
-		if p.action == palNewMix {
+		switch p.action {
+		case palNewMix:
 			title = "混合歌单名称"
+		case palLocalOnly:
+			title = "仅本机歌单名称"
+		case palAddFolder:
+			title = "本地文件夹路径"
+		case palSetFolderRoot:
+			title = "新文件夹路径"
 		}
 	}
 	out := []string{boxTop(title, width)}

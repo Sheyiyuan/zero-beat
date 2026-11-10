@@ -82,8 +82,8 @@ zero-beat-sync/
 ├── playlists/
 │   ├── local-<id>.json
 │   └── mix-<id>.json
-├── annotations/                 # P2
-│   └── <url-escaped-song-id>.json
+├── annotations/
+│   └── <url-escaped-song-id>.json   # 歌词偏移/绑定、补偿与片段
 ├── accounts/
 │   ├── bilibili.age
 │   └── netease.age
@@ -106,9 +106,11 @@ accounts/*.age        merge=binary
 
 ### 6.1 `meta.json`
 
+当前格式为 `v=2`（v0.7.0 起）。`v=1` 仓库仍可读取，客户端会在首次成功同步后原地升级，升级不可回退。
+
 ```json
 {
-  "v": 1,
+  "v": 2,
   "key_version": 1,
   "kdf": {"alg": "argon2id", "m": 65536, "t": 3, "p": 1, "key_len": 32},
   "salt": "base64-16-bytes",
@@ -121,6 +123,7 @@ accounts/*.age        merge=binary
 - `keycheck = SHA-256(HKDF-SHA256(主密钥, info="zero-beat:keycheck:v1"))`，用独立派生值校验口令，不复用 AEAD 密钥；它用于在新设备输入口令后先判断对错，不能反推主密钥（任何校验值都允许离线猜口令，这是 KDF 成本参数要足够高的原因）。
 - 不记录每次同步时间、App 版本、设备名，避免无意义 diff。
 - 版本高于客户端支持时拒绝同步；字段缺失时拒绝，不猜测。
+- v1→v2 只改版本号，不重新派生密钥：新增「仅本机」边界与注释里的 `lyric_bind` 字段。旧客户端读到 v2 会要求升级，不允许降级写回。
 - 仓库已有 `meta.json` 时，`init` 必须转为“加入已有仓库”流程，绝不重写盐或密钥；否则所有设备会立刻无法解密。
 
 ### 6.2 歌单文件
@@ -172,6 +175,8 @@ accounts/*.age        merge=binary
 - `kind=remote` 的被引用歌单不在仓库中；导入时按 `id/source/remote_id` 调用 `EnsurePlaylist` 建占位，打开时照常刷新。远端镜像 ID 在适配器里是稳定的（`bili-fav-<mediaID>`、`netease-pl-<id>`）。
 - `excludes` 保存歌曲 ID，顺序无关，导出时排序。
 - `items` 的数组顺序就是 `position`，不单独写 position。
+- 只有 `sync_excluded=0` 的歌单会被导出；文件夹歌单（`kind=folder`）与仅本机歌单不在仓库里，导入时遇到 `kind=folder` 直接跳过并告警。
+- 引用文件夹歌单的混合歌单必须从创建时就是仅本机，因此仓库里不会出现指向 `folder` 的 `refs`。
 
 ### 6.3 确定性导出（硬性要求）
 

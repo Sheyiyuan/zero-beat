@@ -32,7 +32,12 @@ const routeOf = new Map(pages.map((p) => [p.src, p.route]))
 const blobs = ['README.md', 'ROADMAP.md', 'THIRD_PARTY_NOTICES.md', 'LICENSE']
 const blobBase = 'https://github.com/Sheyiyuan/zero-beat/blob/main/'
 // 站点不展示的开发者文档：用户手册里还引用着它们，改指 GitHub。
-const devDocs = new Set(['ARCHITECTURE.md', 'docs/sync-design.md', 'docs/guide/development.md'])
+const devDocs = new Set([
+  'ARCHITECTURE.md',
+  'docs/sync-design.md',
+  'docs/guide/development.md',
+  'docs/feature-local-library-and-lyrics.md',
+])
 
 function rewrite(link, fromSrc) {
   if (/^(https?:|mailto:|#)/.test(link)) return link

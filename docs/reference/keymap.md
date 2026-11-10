@@ -7,7 +7,7 @@ zero keymap --init
 zero keymap --check
 ```
 
-全部动作共 59 个，生成配置后即可看到完整列表。
+全部动作都在生成的配置里，生成后即可看到完整列表（含本期新增的 `bind_lyrics`）。
 
 ## 示例
 

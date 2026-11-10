@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,10 +29,12 @@ type baseFake struct {
 	accountErr error
 }
 
-func (f *baseFake) ID() source.ID           { return f.id }
-func (f *baseFake) Name() string            { return string(f.id) }
-func (f *baseFake) Mark() string            { return "F" }
-func (f *baseFake) Caps() source.Capability { return f.caps }
+func (f *baseFake) ID() source.ID { return f.id }
+func (f *baseFake) Name() string  { return string(f.id) }
+func (f *baseFake) Mark() string  { return "F" }
+
+// baseFake 代表一个平台音源：账号类测试都需要 CapAccount 才会被遍历。
+func (f *baseFake) Caps() source.Capability { return f.caps | source.CapAccount }
 func (f *baseFake) LoggedIn() bool          { return f.logged }
 func (f *baseFake) User() source.User       { return source.User{LoggedIn: f.logged} }
 func (f *baseFake) Account(context.Context) (source.User, error) {
@@ -72,6 +75,33 @@ type dailyFake struct {
 
 func (f *dailyFake) DailyRecommendations(context.Context) ([]source.Track, error) {
 	return f.daily, nil
+}
+
+// refreshFake 在 baseFake 上补一个可配置的续期实现，用来验证启动续期、
+// 过期前救援和续期后的登录态落盘。
+type refreshFake struct {
+	*baseFake
+	session    map[string]string
+	refreshErr error
+	refreshes  int
+	accounts   int
+	accountFns []error
+}
+
+func (f *refreshFake) Session() map[string]string { return f.session }
+
+func (f *refreshFake) RefreshSession(context.Context) error {
+	f.refreshes++
+	return f.refreshErr
+}
+
+func (f *refreshFake) Account(context.Context) (source.User, error) {
+	idx := f.accounts
+	f.accounts++
+	if idx < len(f.accountFns) && f.accountFns[idx] != nil {
+		return source.User{}, f.accountFns[idx]
+	}
+	return source.User{LoggedIn: true}, nil
 }
 
 func openTestStore(t *testing.T) *store.Store {
@@ -272,6 +302,94 @@ func TestUsersDetectsExpiredSessionAndLogoutFreezes(t *testing.T) {
 	refs, err := st.MixinRefs(mix.ID)
 	if err != nil || len(refs) != 1 || refs[0].ID != remote.ID {
 		t.Fatalf("登出后混合歌单引用不应丢失: %+v err=%v", refs, err)
+	}
+}
+
+func TestRefreshSessionsPersistsRotatedSession(t *testing.T) {
+	st := openTestStore(t)
+	old := time.Now().Add(-24 * time.Hour).Unix()
+	if err := st.SaveAccountAt("fake", []byte(`{"MUSIC_U":"old"}`), old); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &refreshFake{
+		baseFake: &baseFake{id: "fake", logged: true},
+		session:  map[string]string{"MUSIC_U": "new"},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	refreshed := svc.RefreshSessions(context.Background())
+	if len(refreshed) != 1 || refreshed[0] != "fake" {
+		t.Fatalf("应续期并记录 fake: %+v", refreshed)
+	}
+	if src.refreshes != 1 {
+		t.Fatalf("应调用一次续期: %d", src.refreshes)
+	}
+	payload, err := st.LoadAccount("fake")
+	if err != nil || !strings.Contains(string(payload), "new") {
+		t.Fatalf("续期后的登录态应落盘: %s err=%v", payload, err)
+	}
+}
+
+func TestRefreshSessionsSkipsFreshSession(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.SaveAccount("fake", []byte(`{"MUSIC_U":"old"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &refreshFake{
+		baseFake: &baseFake{id: "fake", logged: true},
+		session:  map[string]string{"MUSIC_U": "new"},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	if got := svc.RefreshSessions(context.Background()); len(got) != 0 {
+		t.Fatalf("刚存过的登录态不应立刻续期: %+v", got)
+	}
+	if src.refreshes != 0 {
+		t.Fatalf("刚存过的登录态不应调用续期: %d", src.refreshes)
+	}
+}
+
+func TestUsersRefreshesBeforeDeclaringSessionExpired(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.SaveAccount("fake", []byte(`{"MUSIC_U":"old"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &refreshFake{
+		baseFake:   &baseFake{id: "fake", logged: true},
+		session:    map[string]string{"MUSIC_U": "new"},
+		accountFns: []error{source.ErrSessionExpired, nil},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	users, expired := svc.Users(context.Background())
+	if len(expired) != 0 {
+		t.Fatalf("续期成功后不应判定过期: %+v", expired)
+	}
+	if !users["fake"].LoggedIn {
+		t.Fatalf("续期成功后应保持已登录: %+v", users)
+	}
+	if src.refreshes != 1 {
+		t.Fatalf("过期判定前应先续期一次: %d", src.refreshes)
+	}
+	payload, err := st.LoadAccount("fake")
+	if err != nil || !strings.Contains(string(payload), "new") {
+		t.Fatalf("救援后的登录态应落盘: %s err=%v", payload, err)
+	}
+}
+
+func TestUsersKeepsExpiredWhenRefreshRejected(t *testing.T) {
+	st := openTestStore(t)
+	src := &refreshFake{
+		baseFake:   &baseFake{id: "fake", logged: true},
+		session:    map[string]string{"MUSIC_U": "new"},
+		refreshErr: source.ErrSessionExpired,
+		accountFns: []error{source.ErrSessionExpired, source.ErrSessionExpired},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	_, expired := svc.Users(context.Background())
+	if len(expired) != 1 || expired[0] != "fake" {
+		t.Fatalf("续期被拒时应判定过期: %+v", expired)
 	}
 }
 

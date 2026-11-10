@@ -11,6 +11,7 @@ import (
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
 	"github.com/sheyiyuan/zero-beat/internal/lyrics"
 	"github.com/sheyiyuan/zero-beat/internal/source"
+	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
 // View 渲染整屏。
@@ -32,6 +33,9 @@ func (m *Model) View() tea.View {
 	}
 	if m.picker != nil {
 		frame = overlayBox(frame, m.targetPickerLines(), m.width, m.height)
+	}
+	if m.lyricBind != nil {
+		frame = overlayBox(frame, m.lyricBindLines(), m.width, m.height)
 	}
 	if m.clip != nil {
 		frame = overlayBox(frame, m.clipLines(), m.width, m.height)
@@ -505,6 +509,15 @@ func (m *Model) renderLibrary(h int) []string {
 		if cur.Frozen && cur.Kind == "remote" {
 			header += " · 已冻结"
 		}
+		if cur.Kind == store.PlaylistKindFolder {
+			header += " · 文件夹 · 只读"
+			if cur.ScanStatus == "missing" || cur.ScanStatus == "error" {
+				header += " · 不可用"
+			}
+		}
+		if cur.SyncExcluded && cur.Kind != store.PlaylistKindFolder {
+			header += " · 仅本机"
+		}
 	}
 	if n := m.selectionCount(); n > 0 {
 		header += fmt.Sprintf(" · 已选 %d 首", n)
@@ -521,6 +534,9 @@ func (m *Model) renderLibrary(h int) []string {
 	if len(m.songs) == 0 && !m.songsBusy {
 		main = append(main, "")
 		switch {
+		case hasCur && cur.Kind == store.PlaylistKindFolder:
+			main = append(main, st.dim.Render(" 文件夹里没有可用的音频文件"))
+			main = append(main, st.dim.Render(" 按 r 重新扫描；子文件夹不会被扫描"))
 		case hasCur && cur.Kind == "remote" && cur.Frozen:
 			main = append(main, st.dim.Render(" 登录失效或已退出，这个歌单已冻结"))
 			main = append(main, st.dim.Render(" 缓存曲目仍保留；重新登录后自动恢复同步"))
@@ -898,18 +914,23 @@ func (m *Model) renderLyricsView(h int) []string {
 		}
 		out = append(out, "", "", centerText(st.dim.Render("暂无歌词"), m.width), "",
 			centerText(st.dim.Render(hint), m.width), "",
-			centerText(st.dim.Render("< > 可在有歌词时调整偏移，0 归零"), m.width))
+			centerText(st.dim.Render(m.firstKey(keymap.BindLyrics)+" 可手动指定歌词来源，< > 可调整偏移"), m.width))
 		return out
 	}
 
-	rows, start := m.lyricWindow(h)
+	// 最后一行留给来源/偏移；歌词本身少显示一行。
+	contentH := h - 1
+	if contentH < 1 {
+		contentH = 1
+	}
+	rows, start := m.lyricWindow(contentH)
 	progress := lyricProgress(m.lyricLines, m.lyricIdx,
 		int(m.position/time.Millisecond), int(m.duration/time.Millisecond))
 	focusLine := m.lyricFocusLine()
 	// 左侧留 2 列 gutter：▶ 标记正在播放的行，焦点行用蓝底。
 	const gutterW = 2
 	textW := max(1, m.width-gutterW)
-	for i := 0; i < h; i++ {
+	for i := 0; i < contentH; i++ {
 		idx := start + i
 		if idx < 0 || idx >= len(rows) {
 			out = append(out, "")
@@ -939,7 +960,33 @@ func (m *Model) renderLyricsView(h int) []string {
 			out = append(out, gutter+centerText(st.muted.Render(text), textW))
 		}
 	}
+	out = append(out, m.lyricSourceLine())
 	return out
+}
+
+// lyricSourceLine 是歌词页底部的来源与偏移状态行。
+func (m *Model) lyricSourceLine() string {
+	label := m.lyricSource
+	if label == "" {
+		label = "未找到歌词"
+	}
+	if m.lyricBound {
+		label = "已绑定 · " + strings.TrimPrefix(label, "绑定 · ")
+	}
+	offset := ""
+	if m.lyricOffsetMS != 0 {
+		offset = " · 偏移 " + signedSeconds(m.lyricOffsetMS)
+	}
+	if m.lyricDegraded {
+		label += "（已回退）"
+	}
+	left := st.dim.Render(" " + label + offset)
+	right := st.dim.Render(m.firstKey(keymap.BindLyrics) + " 歌词来源 ")
+	gap := m.width - visWidth(left) - visWidth(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return truncate(left+strings.Repeat(" ", gap)+right, m.width)
 }
 
 // ---- 帮助 ----
@@ -1139,7 +1186,7 @@ func (m *Model) renderLoggedIn(h int, u source.User, sourceName string) []string
 func (m *Model) accountStatusLines() []string {
 	var ids []source.ID
 	if m.sources != nil {
-		ids = m.sources.IDs()
+		ids = m.sources.AccountIDs()
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {

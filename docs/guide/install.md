@@ -3,7 +3,7 @@
 ## 依赖
 
 - **Go 1.26.10+**（仅源码构建需要）
-- **ffmpeg**（负责音频解码）
+- **ffmpeg**（负责音频解码；ffprobe 随 ffmpeg 一起安装，本地音乐库缺时长时用它补一次）
 - 音频输出：Linux 用 PulseAudio / PipeWire，macOS 用 CoreAudio
 - 可选：系统 `git`（跨设备同步需要）；Linux 会话 D-Bus（系统媒体面板需要）
 - 网易云协议层随程序内置，无需额外安装
@@ -22,7 +22,7 @@ sh install.sh
 默认安装到 `~/.local/bin`。如果该目录不在 `PATH` 里，脚本会识别登录 shell（bash / zsh / fish / sh）并写入对应的配置文件，免去手动改环境变量；不想改动配置文件可加 `--no-path`。也可指定版本/前缀：
 
 ```bash
-VERSION=v0.6.1 sh install.sh
+VERSION=v0.7.0 sh install.sh
 sudo sh install.sh --prefix /usr/local
 ```
 

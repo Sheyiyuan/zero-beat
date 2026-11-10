@@ -56,6 +56,10 @@ const qrCacheTTL = 150 * time.Second
 // 下一轮检查就会自动登出并冻结该音源的远端歌单。
 const sessionCheckInterval = 15 * time.Minute
 
+// sessionRefreshInterval 是主动续期登录态的间隔。网易云官方客户端在启动和
+// 长时间在线时会换发 token；一天两次足够，过频反而容易被风控。
+const sessionRefreshInterval = 12 * time.Hour
+
 type qrCacheEntry struct {
 	qr           *source.QRCode
 	ascii        string
@@ -162,6 +166,9 @@ const (
 	promptUnlockPlaylist
 	promptRemoveDownload
 	promptDeleteDownload
+	promptAddFolder
+	promptNewLocalOnly
+	promptSetFolderRoot
 )
 
 type notice struct {
@@ -187,6 +194,8 @@ type Model struct {
 	users map[source.ID]source.User
 	// nextSessionCheck 是下一次后台校验登录态的时间。
 	nextSessionCheck time.Time
+	// nextSessionRefresh 是下一次主动续期登录态的时间。
+	nextSessionRefresh time.Time
 
 	playlists         []store.Playlist
 	playlistIdx       int
@@ -223,9 +232,12 @@ type Model struct {
 	modeBeforeShuffle playMode
 
 	// 同步：页面状态、输入缓冲与冲突选择。口令只在本机内存里短暂停留。
-	syncMgr         *syncpkg.Manager
-	syncStatus      syncpkg.Status
-	syncBusy        bool
+	syncMgr    *syncpkg.Manager
+	syncStatus syncpkg.Status
+	syncBusy   bool
+	// 仅本机数据计数：同步页用来提示「换设备不会丢」。
+	localOnly       int
+	localAnnotation int
 	syncRev         uint64
 	syncEdit        string
 	syncInput       string
@@ -261,7 +273,17 @@ type Model struct {
 	lyricOffsetMS int
 	lyricSource   string
 	lyricLoaded   bool
-	lrclib        *lrclib.Client
+	// lyricOffsetKey 是当前这版歌词的来源层级（auto/portable/local），
+	// offset 按它读写，换源不会把偏移写到别的来源上。
+	lyricOffsetKey store.BindingScope
+	// lyricGen 是歌词请求代号：切歌/绑定后丢弃迟到的旧响应。
+	lyricGen      int
+	lyricDegraded bool
+	lyricWarning  string
+	lyricBound    bool
+	// lyricConfigWarned 保证 lyrics.toml 的降级提示只显示一次，不随切歌反复刷。
+	lyricConfigWarned bool
+	lrclib            *lrclib.Client
 
 	searchEditing bool
 	searchInput   string
@@ -301,6 +323,9 @@ type Model struct {
 	folderBusy   bool
 
 	mix *mixState
+
+	// lyricBind 是歌词来源浮层；打开期间独占按键。
+	lyricBind *lyricBindState
 
 	clip       *clipState
 	clipCache  store.Clip
@@ -382,11 +407,15 @@ func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMg
 	}
 	if sources != nil {
 		for _, src := range sources.All() {
+			// 本地源没有登录态，账号摘要只看有 CapAccount 的音源。
+			if !src.Caps().Has(source.CapAccount) {
+				continue
+			}
 			if u := src.User(); u.LoggedIn {
 				m.users[src.ID()] = u
 			}
 		}
-		if ids := sources.IDs(); len(ids) > 0 {
+		if ids := sources.AccountIDs(); len(ids) > 0 {
 			m.loginSource = ids[0]
 		}
 	}
@@ -438,10 +467,11 @@ func (m *Model) keyLabel(a keymap.Action) string {
 // Init 启动定时器、事件监听与首批数据加载。
 func (m *Model) Init() tea.Cmd {
 	m.nextSessionCheck = time.Now().Add(sessionCheckInterval)
+	m.nextSessionRefresh = time.Now().Add(sessionRefreshInterval)
 	cmds := []tea.Cmd{
 		tickCmd(),
 		waitEngineCmd(m.engine.Events()),
-		m.loadUsersCmd(),
+		m.startupUsersCmd(),
 		m.loadPlaylistsCmd(),
 		m.restoreQueueCmd(),
 	}
@@ -476,7 +506,40 @@ func (m *Model) startSysmedia() bool {
 
 // Update 处理消息。
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// 歌词来源浮层的异步结果先归它，其余消息继续走常规分支。
+	if cmd, handled := m.handleLyricBindMsg(msg); handled {
+		return m, cmd
+	}
 	switch msg := msg.(type) {
+	case folderAddedMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+		}
+		if msg.playlist.ID != "" {
+			m.pendingPlaylistID = msg.playlist.ID
+			notice := fmt.Sprintf("本地文件夹：%s · %d 首", msg.playlist.Title, msg.scan.Scanned)
+			if msg.scan.Subdirs > 0 {
+				notice += fmt.Sprintf(" · 未扫描 %d 个子文件夹", msg.scan.Subdirs)
+			}
+			if len(msg.scan.Warnings) > 0 {
+				m.setWarn(notice + " · " + msg.scan.Warnings[0])
+			} else if msg.err == nil {
+				m.setNotice(notice, false)
+			}
+		}
+		return m, m.loadLocalPlaylistsCmd()
+
+	case bindLocalSongsMsg:
+		if m.lyricBind == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.lyricBind.err = msg.err.Error()
+		}
+		m.lyricBind.localSongs = msg.songs
+		m.lyricBind.localIdx = 0
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
@@ -526,6 +589,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.loadUsersCmd())
 			}
 		}
+		if !m.nextSessionRefresh.IsZero() && time.Now().After(m.nextSessionRefresh) {
+			m.nextSessionRefresh = time.Now().Add(sessionRefreshInterval)
+			if m.sources != nil {
+				cmds = append(cmds, m.refreshSessionsCmd())
+			}
+		}
 		if cmd := m.syncArtwork(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -549,6 +618,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case syncStatusMsg:
 		m.syncStatus = msg.status
+		m.localOnly = msg.localOnly
+		m.localAnnotation = msg.localAnnotation
 		return m, nil
 
 	case syncConflictsMsg:
@@ -602,6 +673,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.expired) > 0 {
 			return m, m.handleExpiredSessions(msg.expired)
 		}
+		return m, nil
+
+	case sessionsRefreshedMsg:
+		// 续期是静默的：失败留给下一轮账号校验和定时重试，
+		// 不在这里弹提示打断播放。
 		return m, nil
 
 	case playlistsMsg:
@@ -823,18 +899,34 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case lyricMsg:
+		// 绑定切换/切歌后，慢请求的旧结果不能覆盖新绑定。
+		if msg.gen != 0 && msg.gen != m.lyricGen {
+			return m, nil
+		}
 		if m.current == nil || msg.songID != m.current.ID {
 			return m, nil
 		}
 		m.lyricBase = msg.lines
 		m.lyricOffsetMS = msg.offsetMS
+		m.lyricOffsetKey = msg.offsetKey
+		if m.lyricOffsetKey == "" {
+			m.lyricOffsetKey = store.BindingAuto
+		}
 		m.lyricLines = lyrics.Clone(msg.lines, msg.offsetMS)
 		m.lyricSource = msg.source
+		m.lyricBound = msg.bound
+		m.lyricDegraded = msg.degraded
+		m.lyricWarning = msg.warning
 		m.lyricLoaded = true
 		m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
 		m.followLyricLine()
 		if msg.err != nil && len(msg.lines) == 0 {
 			m.setNotice("歌词获取失败："+msg.err.Error(), true)
+		} else if msg.degraded && msg.warning != "" {
+			m.setWarn(msg.warning)
+		} else if msg.warning != "" && !m.lyricConfigWarned {
+			m.lyricConfigWarned = true
+			m.setWarn(msg.warning)
 		}
 		return m, nil
 
@@ -1052,6 +1144,10 @@ func (m *Model) startStream(song store.Song, stream source.Stream, startAt time.
 }
 
 func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Clip) tea.Cmd {
+	// 自动切歌（队列推进、预解析）也要收起上一首的歌词来源浮层。
+	if m.lyricBind != nil && m.lyricBind.song.ID != song.ID {
+		m.lyricBind = nil
+	}
 	m.setActiveClip(song.ID, clip)
 	m.lyricBase = nil
 	m.lyricLines = nil
@@ -1059,6 +1155,10 @@ func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Cl
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
+	m.lyricOffsetKey = store.BindingAuto
+	m.lyricBound = false
+	m.lyricDegraded = false
+	m.lyricWarning = ""
 	m.followLyricLine()
 	quality := stream.Quality
 	if quality == "" {
@@ -1077,6 +1177,9 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 	}
 	if m.prompt != promptNone {
 		return m.handlePromptKey(key)
+	}
+	if m.lyricBind != nil {
+		return m.handleLyricBindKey(key)
 	}
 	if m.clip != nil {
 		return m.handleClipKey(key)
@@ -1210,6 +1313,8 @@ func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
 			break
 		}
 		return m, m.startSelectedDownload()
+	case m.match(keymap.BindLyrics, key):
+		return m, m.openLyricBind()
 	case m.match(keymap.EditClip, key):
 		if m.view == viewHelp || m.view == viewLogin {
 			break
@@ -1557,8 +1662,8 @@ func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
 			return m, m.needPlaylistFocus()
 		}
 		p, ok := m.currentPlaylist()
-		if !ok || (p.Kind != "local" && p.Kind != "mixin") {
-			m.setNotice("只有本地或混合歌单可以重命名", true)
+		if !ok || !store.IsEditableKind(p.Kind) {
+			m.setNotice("只有本地、混合或文件夹歌单可以重命名", true)
 			return m, nil
 		}
 		m.beginPrompt(promptRenamePlaylist)
@@ -2143,6 +2248,10 @@ func (m *Model) playSearchResult(idx int) tea.Cmd {
 
 func (m *Model) playSong(song store.Song) tea.Cmd {
 	song = store.NormalizeSong(song)
+	// 绑定浮层只服务打开时那首歌；切歌后关掉，避免误绑。
+	if m.lyricBind != nil && m.lyricBind.song.ID != song.ID {
+		m.lyricBind = nil
+	}
 	m.clip = nil
 	m.clipSongID = ""
 	m.clipCache = store.Clip{}
@@ -2152,6 +2261,10 @@ func (m *Model) playSong(song store.Song) tea.Cmd {
 	m.lyricSource = ""
 	m.lyricLoaded = false
 	m.lyricOffsetMS = 0
+	m.lyricOffsetKey = store.BindingAuto
+	m.lyricBound = false
+	m.lyricDegraded = false
+	m.lyricWarning = ""
 	m.followLyricLine()
 	cmd := m.playSongCmdAt(song, 0, 0)
 	m.persistQueue()
@@ -2789,6 +2902,11 @@ func (m *Model) beginPrompt(kind promptKind) {
 			m.promptInput = p.Title
 		}
 	}
+	if kind == promptSetFolderRoot {
+		if p, ok := m.currentPlaylist(); ok {
+			m.promptInput = p.RootPath
+		}
+	}
 }
 
 func (m *Model) handlePromptKey(key tea.Key) (tea.Model, tea.Cmd) {
@@ -2832,7 +2950,7 @@ func (m *Model) commitPrompt() tea.Cmd {
 		return nil
 	}
 	switch kind {
-	case promptNewPlaylist:
+	case promptNewPlaylist, promptNewLocalOnly:
 		if input == "" {
 			m.setNotice("歌单名不能为空", true)
 			return nil
@@ -2840,9 +2958,16 @@ func (m *Model) commitPrompt() tea.Cmd {
 		var p store.Playlist
 		var err error
 		pending := m.pendingAddSongs
-		if len(pending) > 0 {
+		// 有本地曲目时必须落到仅本机歌单，否则同步会把它当成可导出的条目。
+		localOnly := kind == promptNewLocalOnly || requiresLocalOnly(pending)
+		switch {
+		case len(pending) > 0 && localOnly:
+			p, err = m.service().CreateLocalOnlyPlaylistWithSongs(input, pending)
+		case len(pending) > 0:
 			p, err = m.service().CreatePlaylistWithSongs(input, pending)
-		} else {
+		case localOnly:
+			p, err = m.service().CreateLocalOnlyPlaylist(input)
+		default:
 			p, err = m.service().CreatePlaylist(input)
 		}
 		if err != nil {
@@ -2850,17 +2975,37 @@ func (m *Model) commitPrompt() tea.Cmd {
 			return nil
 		}
 		m.pendingPlaylistID = p.ID
+		playlistName := "本地歌单"
+		if localOnly {
+			playlistName = "仅本机歌单"
+		}
 		if len(pending) > 0 {
 			m.pendingAddSongs = nil
 			if len(pending) == 1 {
-				m.setNotice("已新建本地歌单并加入："+p.Title, false)
+				m.setNotice("已新建"+playlistName+"并加入："+p.Title, false)
 			} else {
-				m.setNotice(fmt.Sprintf("已新建本地歌单并加入：%s（%d 首）", p.Title, len(pending)), false)
+				m.setNotice(fmt.Sprintf("已新建%s并加入：%s（%d 首）", playlistName, p.Title, len(pending)), false)
 			}
 		} else {
-			m.setNotice("已新建本地歌单："+p.Title, false)
+			m.setNotice("已新建"+playlistName+"："+p.Title, false)
 		}
 		return m.loadLocalPlaylistsCmd()
+	case promptAddFolder:
+		if input == "" {
+			m.setNotice("路径不能为空", true)
+			return nil
+		}
+		return m.addFolderCmd(input)
+	case promptSetFolderRoot:
+		p, ok := m.currentPlaylist()
+		if !ok {
+			return nil
+		}
+		if input == "" {
+			m.setNotice("路径不能为空", true)
+			return nil
+		}
+		return m.setFolderRootCmd(p.ID, input)
 	case promptRenamePlaylist:
 		p, ok := m.currentPlaylist()
 		if !ok {
@@ -2935,7 +3080,11 @@ func (m *Model) shiftLyrics(deltaMS int) tea.Cmd {
 		m.lyricFocus = m.lyricIdx
 	}
 	if m.current != nil {
-		m.service().SaveLyricOffset(m.current.ID, offset)
+		key := m.lyricOffsetKey
+		if key == "" {
+			key = store.BindingAuto
+		}
+		m.service().SaveLyricOffset(m.current.ID, key, offset)
 	}
 	m.setNotice(fmt.Sprintf("歌词偏移 %+.1f 秒", float64(offset)/1000), false)
 	return nil
@@ -2946,6 +3095,33 @@ func (m *Model) resetLyricOffset() tea.Cmd {
 		return nil
 	}
 	return m.shiftLyrics(-m.lyricOffsetMS)
+}
+
+// addFolderCmd 在后台完成建歌单 + 首次扫描，避免阻塞界面。
+func (m *Model) addFolderCmd(path string) tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		playlist, scan, err := svc.AddLocalFolder(path)
+		return folderAddedMsg{playlist: playlist, scan: scan, err: err}
+	}
+}
+
+// setFolderRootCmd 更换文件夹并重扫。
+func (m *Model) setFolderRootCmd(playlistID, path string) tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		scan, err := svc.SetLibraryRoot(playlistID, path)
+		return folderAddedMsg{playlist: scan.Playlist, scan: scan, err: err}
+	}
+}
+
+// rescanFolderCmd 重新扫描当前文件夹歌单。
+func (m *Model) rescanFolderCmd(playlistID string) tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		scan, err := svc.RescanLibrary(playlistID)
+		return folderAddedMsg{playlist: scan.Playlist, scan: scan, err: err}
+	}
 }
 
 // buildQRArt 生成终端二维码与图片路径，不修改 Model，便于按音源缓存。
@@ -3073,6 +3249,12 @@ func (m *Model) promptLine() string {
 	switch m.prompt {
 	case promptNewPlaylist:
 		return "新建本地歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
+	case promptAddFolder:
+		return "添加本地文件夹：" + m.promptInput + "▏  enter 扫描 · esc 取消"
+	case promptNewLocalOnly:
+		return "新建仅本机歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
+	case promptSetFolderRoot:
+		return "更换文件夹：" + m.promptInput + "▏  enter 重扫 · esc 取消"
 	case promptRenamePlaylist:
 		return "重命名歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
 	case promptDeletePlaylist:
@@ -3230,7 +3412,8 @@ func (m *Model) userFor(srcID source.ID) (source.User, bool) {
 func (m *Model) accountSummary() string {
 	var ids []source.ID
 	if m.sources != nil {
-		ids = m.sources.IDs()
+		// 本地源没有登录态，不出现在账户摘要里。
+		ids = m.sources.AccountIDs()
 	}
 	parts := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -3373,7 +3556,7 @@ func (m *Model) switchLoginSource(delta int) tea.Cmd {
 	if m.sources == nil {
 		return nil
 	}
-	ids := m.sources.IDs()
+	ids := m.sources.AccountIDs()
 	if len(ids) == 0 {
 		return nil
 	}

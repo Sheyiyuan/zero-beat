@@ -69,10 +69,12 @@ internal/instance        TUI 单实例锁（flock / 独占文件），锁文件�
 internal/desktop         Linux 应用菜单入口（.desktop + hicolor 图标）安装与卸载
 internal/source          多音源契约、能力位、注册表、平台元数据
 internal/source/bilibili B 站适配器：搜索、多 P、收藏夹、字幕、播放
+internal/source/local    本地音源：本机文件取流、本地旁挂/内嵌歌词（无登录、无搜索）
+internal/library         本地目录扫描、音频标签、曲目身份与内容指纹
 internal/netease         网易云客户端：基于 go-musicfox/netease-music 的 Source 适配
 internal/bili            B 站 API 客户端
 internal/audio           播放引擎：ffmpeg 解码 → 增益链 → oto 输出，事件通道
-internal/lyrics          LRC 解析与时间轴定位
+internal/lyrics          LRC 解析、时间轴定位、本地编码/翻译合并、lyrics.toml
 internal/lrclib          LRCLIB 歌词查询与标题清洗
 internal/download        音频落盘：Range 续传、ffmpeg 封装、标签
 internal/store           SQLite：歌曲、歌单、队列、设置、登录态
@@ -259,17 +261,27 @@ macOS/Windows 是空实现（`sysmedia.New` 返回 nil）。
 
 ```sql
 songs(id, source, remote_id, bvid, page, cid, title, artist, album, duration, cover, added_at)
-  UNIQUE(source, remote_id, page)     -- B 站 remote_id=BV 号，网易云=song id
-playlists(id, source, title, kind, remote_id, frozen, created_at)  -- kind: local / remote / mixin
+  UNIQUE(source, remote_id, page)     -- B 站 remote_id=BV 号，网易云=song id，本地=meta_key
+playlists(id, source, title, kind, remote_id, frozen, sync_excluded, root_path,
+          scan_status, scan_error, scanned_at, created_at)  -- kind: local / remote / mixin / folder
   -- frozen=1：该源登录失效或已退出，远端镜像暂停刷新；曲目、混合歌单引用与隐藏项保留
+  -- sync_excluded=1：仅本机，不导出也不同步删除；root_path 仅 folder 歌单有值
 playlist_items(playlist_id, song_id, position, added_at)    -- 本地曲目/混合歌单自己加的曲目
 playlist_refs(playlist_id, ref_id, position)                -- 混合歌单引用哪些歌单
 playlist_excludes(playlist_id, song_id)                     -- 混合歌单里隐藏的继承曲目
 queue(id=1, data, position, queue_index, updated)   -- 单行：队列 ID JSON + 进度
-settings(key, value)                                -- volume / comp_db / auto_gain / song_comp:<songID> / mode / quality / lyric_offset:<songID> / clip:<songID> / last_add_playlist
+settings(key, value)                                -- volume / comp_db / auto_gain / song_comp:<songID> / mode / quality /
+                                                    -- lyric_offset:<songID>（自动 offset）/ clip:<songID> / last_add_playlist /
+                                                    -- lyric_bind:<songID>（可同步绑定）/ lyric_bind_local:<songID>（本机绑定）
 accounts(source, payload, updated_at)               -- 登录 cookie（JSON）
-downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载文件索引
+downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载文件索引；path 建索引供本地扫描复用身份
+library_files(playlist_id, path, song_id, size, mtime, content_hash, present)
+  PRIMARY KEY(playlist_id, path)                    -- 文件夹歌单的路径索引；present=0 表示文件缺失但保留行
 ```
+
+本地曲目复用 `songs`：`source=local`、`remote_id` 由音频标签生成的身份键，
+`id=local:<meta_key>:1`。身份查找顺序是「同歌单路径 → 内容指纹 → 下载映射 →
+标签身份键 → 新建」，所以改名/移动不换身份、改标签不换身份。
 
 同步是可选的外挂数据，不写进 SQLite；封面缓存与实例锁同样只在文件系统：
 
@@ -281,7 +293,8 @@ downloads(song_id PK, path, size, codec, duration_ms, created_at)  -- 已下载�
 └── cache/covers/                            # 系统媒体面板封面缓存（64 MiB 上限）
 仓库布局：meta.json + playlists/<id>.json + annotations/<song>.json
         + keymap.toml + accounts/<source>.age + .gitattributes
-注释文件包含歌词偏移、单曲音量补偿与播放片段。
+注释文件包含歌词偏移、歌词绑定（仅 portable）、单曲音量补偿与播放片段。
+仓库格式 meta.v=2：v1 仓库可读，首次成功同步后原地升级；旧客户端读到 v2 会要求升级。
 ```
 
 歌单与注释是明文 JSON（一实体一文件，`merge=binary`）；登录态是 XChaCha20-Poly1305

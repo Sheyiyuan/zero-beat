@@ -53,7 +53,8 @@ func (f *fakeSource) Mark() string {
 	}
 }
 func (f *fakeSource) Caps() source.Capability {
-	caps := source.CapSearch | source.CapRemotePlaylists | source.CapOfficialLyrics | source.CapPlaylistWrite
+	caps := source.CapSearch | source.CapRemotePlaylists | source.CapOfficialLyrics |
+		source.CapPlaylistWrite | source.CapAccount
 	if len(f.daily) > 0 {
 		caps |= source.CapDailyRecommendations
 	}

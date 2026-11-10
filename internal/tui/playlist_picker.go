@@ -177,6 +177,24 @@ func (m *Model) openMergePicker() tea.Cmd {
 }
 
 // localTargets 构造本地目标列表。mergeOnly 时只保留混合歌单。
+// pickerSongs 返回当前选择器里的歌曲，用于判断是否只能进仅本机歌单。
+func (m *Model) pickerSongs() []store.Song {
+	if m.picker == nil {
+		return nil
+	}
+	return m.picker.songsForAdd()
+}
+
+// requiresLocalOnly 判断这批歌里是否有本地曲目。
+func requiresLocalOnly(songs []store.Song) bool {
+	for _, song := range songs {
+		if song.Source == "local" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Model) localTargets(mergeOnly bool, excludeID string) []playlistTarget {
 	out := make([]playlistTarget, 0, len(m.playlists))
 	for _, p := range m.playlists {
@@ -188,6 +206,11 @@ func (m *Model) localTargets(mergeOnly bool, excludeID string) []playlistTarget 
 				continue
 			}
 		} else if p.Kind != "local" && p.Kind != "mixin" {
+			// 文件夹歌单只读，不能作为加歌目标；它能被混合歌单引用，但引用走 merge 路径。
+			continue
+		}
+		// 本地曲目只能在仅本机歌单里存在，否则同步仓库会出现别的设备没有的条目。
+		if !mergeOnly && requiresLocalOnly(m.pickerSongs()) && !p.SyncExcluded {
 			continue
 		}
 		out = append(out, playlistTarget{
@@ -201,7 +224,11 @@ func (m *Model) localTargets(mergeOnly bool, excludeID string) []playlistTarget 
 	if mergeOnly {
 		return out
 	}
-	out = append(out, playlistTarget{Title: "＋ 新建本地歌单并加入", Create: true})
+	createLabel := "＋ 新建本地歌单并加入"
+	if requiresLocalOnly(m.pickerSongs()) {
+		createLabel = "＋ 新建仅本机歌单并加入"
+	}
+	out = append(out, playlistTarget{Title: createLabel, Create: true})
 	// 已导入的远端歌单也能直接写云端，先放进来；未导入的等异步列表补齐。
 	songSource := m.pickerSongSource()
 	src := m.sources.GetString(songSource)
@@ -356,7 +383,11 @@ func (m *Model) chooseTarget() tea.Cmd {
 		if target.Create {
 			m.picker = nil
 			m.pendingAddSongs = append([]store.Song(nil), songs...)
-			m.beginPrompt(promptNewPlaylist)
+			if requiresLocalOnly(songs) {
+				m.beginPrompt(promptNewLocalOnly)
+			} else {
+				m.beginPrompt(promptNewPlaylist)
+			}
 			return nil
 		}
 		if target.Cloud {

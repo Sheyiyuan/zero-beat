@@ -55,6 +55,8 @@ func RenderDemo(name string, width, height int) string {
 		{ID: "bili-fav-1", Source: "bilibili", Title: "我喜欢的音乐", Kind: "remote", Count: 128},
 		{ID: "netease-pl-9", Source: "netease", Title: "云村收藏", Kind: "remote", Count: 42},
 		{ID: "local-default", Title: "本地歌单", Kind: "local", Count: 7},
+		{ID: "folder-1", Title: "本地音乐库", Kind: "folder", RootPath: "/home/user/Music", SyncExcluded: true, ScanStatus: "ok", Count: 64},
+		{ID: "local-only-1", Title: "这里只有本机", Kind: "local", SyncExcluded: true, Count: 12},
 	}
 	m.songs = songs
 	m.queue = append([]store.Song(nil), songs...)
@@ -120,6 +122,18 @@ func RenderDemo(name string, width, height int) string {
 	case "downloads":
 		m.view = viewDownloads
 		m.downloadIdx = 1
+	case "lyricbind":
+		m.view = viewLyrics
+		m.lyricSource = "B 站字幕"
+		m.lyricBind = &lyricBindState{
+			song:  *m.current,
+			query: "夜航星 不才",
+			cands: []app.LyricCandidate{
+				{Kind: store.BindingKindSource, Source: source.NetEase, ExternalID: "1431292823", Page: 1, Title: "夜航星 (Night Voyager)", Artist: "蔡明希（不才） / 三体宇宙", Duration: 304, Mark: "netease"},
+				{Kind: store.BindingKindLRCLIB, LRCLIBID: 771, Title: "夜航星", Artist: "不才", Duration: 287, HasSynced: true, Known: true, Mark: "lrclib"},
+				{Kind: store.BindingKindLRCLIB, LRCLIBID: 772, Title: "夜航星（纯文本）", Artist: "不才", Duration: 287, Known: true, Mark: "lrclib"},
+			},
+		}
 	case "picker":
 		m.picker = &targetPickerState{
 			mode: targetPickerAddSong,

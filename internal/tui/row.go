@@ -356,7 +356,13 @@ func (m *Model) playlistTag(p store.Playlist) string {
 	if p.Frozen && p.Kind == "remote" {
 		return "冻"
 	}
+	// 「仅本机」优先于类型标记：它决定这个歌单会不会出现在别的设备上。
+	if p.SyncExcluded && p.Kind != store.PlaylistKindFolder {
+		return "仅"
+	}
 	switch p.Kind {
+	case store.PlaylistKindFolder:
+		return "夹"
 	case "mixin":
 		return "混"
 	case "local":

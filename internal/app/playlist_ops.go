@@ -16,6 +16,27 @@ func (s *Service) CreatePlaylist(title string) (store.Playlist, error) {
 	return s.store.CreatePlaylist(title)
 }
 
+// CreateLocalOnlyPlaylist 新建「仅本机」歌单：内容不进同步仓库。
+func (s *Service) CreateLocalOnlyPlaylist(title string) (store.Playlist, error) {
+	if s.store == nil {
+		return store.Playlist{}, fmt.Errorf("没有可用的存储")
+	}
+	defer bumpLibraryRevision()
+	return s.store.CreatePlaylistEx(title, true)
+}
+
+// CreateLocalOnlyPlaylistWithSongs 新建仅本机歌单并批量放入歌曲。
+func (s *Service) CreateLocalOnlyPlaylistWithSongs(title string, songs []store.Song) (store.Playlist, error) {
+	p, err := s.CreateLocalOnlyPlaylist(title)
+	if err != nil {
+		return store.Playlist{}, err
+	}
+	if _, err := s.AddSongsToPlaylist(p.ID, songs); err != nil {
+		return store.Playlist{}, err
+	}
+	return p, nil
+}
+
 // CreatePlaylistWithSong 新建本地歌单并把一首歌放进去。
 func (s *Service) CreatePlaylistWithSong(title string, song store.Song) (store.Playlist, error) {
 	return s.CreatePlaylistWithSongs(title, []store.Song{song})

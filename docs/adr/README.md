@@ -21,5 +21,8 @@
 | [0015](0015-player-controller-and-downloader.md) | 播放状态机抽到 `player.Controller`，下载队列抽到 `downloader.Manager`，TUI 只留视图 | 已接受 |
 | [0016](0016-git-sync.md) | 跨设备同步用 git + 明文歌单快照 + 加密登录态，冲突按实体整版选择 | 已接受 |
 | [0017](0017-system-media.md) | 系统媒体用 Linux MPRIS 桥接，封面只服务系统面板 | 已接受 |
+| [0018](0018-local-library.md) | 本地音乐库：本地源 + 只读文件夹歌单 + 下载映射 + 双向同步边界 | 已接受 |
+| [0019](0019-lyric-binding.md) | 歌词来源绑定：用户指定优先，offset 随当前来源 | 已接受 |
+| [0020](0020-sync-format-v2.md) | 同步格式 v2：仅本机边界与歌词绑定字段，切断旧客户端 | 已接受 |
 
 新增 ADR 的格式：标题、状态、背景、决策、理由、后果、替代方案。

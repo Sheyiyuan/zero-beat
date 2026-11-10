@@ -32,6 +32,13 @@ import (
 const (
 	musicHost = "https://music.163.com"
 	defaultUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+	// 网易云按 cookie 里的 os/appver 判定客户端身份。扫码登录走的是网页流程，
+	// 统一按 PC 客户端发请求，避免登录态被当成「身份不一致」提前失效。
+	sessionOS     = "pc"
+	sessionAppVer = "8.10.35"
+
+	refreshAPI = musicHost + "/weapi/login/token/refresh"
 )
 
 var (
@@ -73,6 +80,7 @@ func apiError(code int, message, path string) error {
 // Client 是网易云客户端。协议细节由 go-musicfox/netease-music 处理。
 var _ source.DailyRecommender = (*Client)(nil)
 var _ source.PlaylistWriter = (*Client)(nil)
+var _ source.SessionRefresher = (*Client)(nil)
 
 type Client struct {
 	// opMu 串行化协议层调用：go-musicfox/netease-music 使用全局 cookie jar，
@@ -155,7 +163,7 @@ func (c *Client) ParseTarget(input string, _ int) (source.Ref, bool, error) {
 func (c *Client) Caps() source.Capability {
 	return source.CapSearch | source.CapRemotePlaylists | source.CapOfficialLyrics |
 		source.CapQualitySelect | source.CapLossless | source.CapDailyRecommendations |
-		source.CapPlaylistWrite
+		source.CapPlaylistWrite | source.CapAccount
 }
 
 // LoggedIn 实现 source.Source。
@@ -200,9 +208,13 @@ func (c *Client) Session() map[string]string {
 func (c *Client) SetSession(cookies map[string]string) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
-	jar, _ := cookiejar.New(nil)
+	session := map[string]string{}
 	if len(cookies) > 0 {
-		neautil.AddCookiesToJar(jar, cookies, musicHost)
+		session = withSessionIdentity(cookies)
+	}
+	jar, _ := cookiejar.New(nil)
+	if len(session) > 0 {
+		neautil.AddCookiesToJar(jar, session, musicHost)
 	}
 	if neautil.CheckSDeviceId(jar) == "" {
 		jar.SetCookies(musicURL, []*http.Cookie{{
@@ -213,19 +225,69 @@ func (c *Client) SetSession(cookies map[string]string) {
 
 	c.mu.Lock()
 	c.jar = jar
-	c.cookies = make(map[string]string, len(cookies))
-	for k, v := range cookies {
-		if k != "" && v != "" {
-			c.cookies[k] = v
-		}
+	c.cookies = make(map[string]string, len(session))
+	for k, v := range session {
+		c.cookies[k] = v
 	}
 	c.user = source.User{}
 	c.mu.Unlock()
 }
 
+// withSessionIdentity 给登录态补上请求身份 cookie，并纠正库默认的 iOS 身份。
+// 只在确实有登录态时调用：退出登录后不应留下 os/appver 之类的残留。
+func withSessionIdentity(cookies map[string]string) map[string]string {
+	out := make(map[string]string, len(cookies)+3)
+	for k, v := range cookies {
+		if k != "" && v != "" {
+			out[k] = v
+		}
+	}
+	out["os"] = sessionOS
+	out["appver"] = sessionAppVer
+	if out["__remember_me"] == "" {
+		out["__remember_me"] = "true"
+	}
+	return out
+}
+
 // Logout 实现 source.Source。
 func (c *Client) Logout() {
 	c.SetSession(nil)
+}
+
+// RefreshSession 实现 source.SessionRefresher。
+//
+// MUSIC_U 有服务端有效期，官方客户端在启动和长时间在线时会调用
+// /weapi/login/token/refresh 换发新 token。库里的 LoginRefreshService 会先
+// 写入固定的 NMTID 反风控 cookie，这里直接走 CallWeapi，只带当前会话的
+// __csrf，避免污染登录态。
+func (c *Client) RefreshSession(ctx context.Context) error {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !c.LoggedIn() {
+		return nil
+	}
+	c.ensureCsrf()
+	jar := neautil.GetGlobalCookieJar()
+	code, _, err := neautil.CallWeapi(refreshAPI, map[string]interface{}{
+		"csrf_token": neautil.GetCsrfToken(jar),
+	}, jar)
+	if err != nil {
+		return fmt.Errorf("netease: 续期登录态: %w", err)
+	}
+	return refreshError(int(code))
+}
+
+// refreshError 把续期接口的业务码归一成错误：200 表示换发成功，
+// 301/302/401 表示平台不再认这份登录态，其余业务码按普通 API 错误处理。
+func refreshError(code int) error {
+	if code == 200 {
+		return nil
+	}
+	return apiError(code, "续期登录态失败", "login/token/refresh")
 }
 
 func (c *Client) cookieHeader() string {

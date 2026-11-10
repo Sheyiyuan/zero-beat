@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,6 +25,10 @@ type DownloadResult struct {
 // progress 可为 nil。
 func (s *Service) DownloadSong(ctx context.Context, song store.Song, quality source.Quality, force bool, progress func(done, total int64)) DownloadResult {
 	song = store.NormalizeSong(song)
+	if song.Source == "local" {
+		// 本地曲目本来就是本地文件；下载一份副本只会制造重复身份。
+		return DownloadResult{Song: song, Err: fmt.Errorf("本地曲目不需要下载")}
+	}
 	track, stream, err := s.Stream(ctx, song, quality)
 	if err != nil {
 		return DownloadResult{Song: song, Err: err}

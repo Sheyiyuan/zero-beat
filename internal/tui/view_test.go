@@ -140,7 +140,8 @@ func TestLyricsHighlightFollowsIndex(t *testing.T) {
 	}
 	lines := strings.Split(frame, "\n")
 	bodyH := 30 - 6
-	centerIdx := 2 + bodyH/2 // header + 分隔线之后是正文
+	// 歌词页最后一行是来源/偏移状态行，正文比整页少一行。
+	centerIdx := 2 + (bodyH-1)/2 // header + 分隔线之后是正文
 	if !strings.Contains(lines[centerIdx], "乙") {
 		t.Fatalf("当前行应在正文中间，实际中心行：%q", ansi.Strip(lines[centerIdx]))
 	}
@@ -160,22 +161,23 @@ func TestLyricsViewShowsTranslationUnderOriginal(t *testing.T) {
 	m.lyricIdx = 1
 	lines := assertFrame(t, m.View().Content, 100, 30)
 
-	// 当前原文固定在正文中心（行 14），译文紧接在下一行（行 15）。
-	if got := ansi.Strip(lines[14]); !strings.Contains(got, "第二句") {
+	// 当前原文固定在正文中心（行 13），译文紧接在下一行（行 14）；
+	// 最后一行留给来源/偏移状态行。
+	if got := ansi.Strip(lines[13]); !strings.Contains(got, "第二句") {
 		t.Fatalf("当前原文应在中心：%q", got)
 	}
-	if got := ansi.Strip(lines[15]); !strings.Contains(got, "second") {
+	if got := ansi.Strip(lines[14]); !strings.Contains(got, "second") {
 		t.Fatalf("当前译文应在原文下一行：%q", got)
 	}
 	// 上一行的译文同样紧跟原文。
-	if got := ansi.Strip(lines[12]); !strings.Contains(got, "第一句") {
+	if got := ansi.Strip(lines[11]); !strings.Contains(got, "第一句") {
 		t.Fatalf("上一句原文位置不符：%q", got)
 	}
-	if got := ansi.Strip(lines[13]); !strings.Contains(got, "first") {
+	if got := ansi.Strip(lines[12]); !strings.Contains(got, "first") {
 		t.Fatalf("上一句译文位置不符：%q", got)
 	}
 	// 没有译文的行不生成空行。
-	if got := ansi.Strip(lines[16]); !strings.Contains(got, "第三句") {
+	if got := ansi.Strip(lines[15]); !strings.Contains(got, "第三句") {
 		t.Fatalf("下一句原文位置不符：%q", got)
 	}
 }

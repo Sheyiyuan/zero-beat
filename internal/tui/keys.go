@@ -8,6 +8,7 @@ import (
 
 	"github.com/sheyiyuan/zero-beat/internal/audio"
 	"github.com/sheyiyuan/zero-beat/internal/keymap"
+	"github.com/sheyiyuan/zero-beat/internal/store"
 )
 
 // isKey 判断按键是否为某个可打印字符。
@@ -97,7 +98,8 @@ func (m *Model) helpLines(width int) []string {
 	add(m.helpKeys(keymap.New), "命令面板 → 自动响度均衡（-16 LUFS）")
 	add(joinKeys(m.helpKeys(keymap.Mode), m.helpKeys(keymap.Mute)), "播放模式 / 静音")
 	add(joinKeys(m.helpKeys(keymap.Quality), m.helpKeys(keymap.Sleep)), "音质偏好 / 睡眠定时")
-	add(joinKeys(m.helpKeys(keymap.OffsetDown), m.helpKeys(keymap.OffsetUp), m.helpKeys(keymap.OffsetReset)), "歌词偏移 0.5 秒 / 归零（任意视图）")
+	add(joinKeys(m.helpKeys(keymap.OffsetDown), m.helpKeys(keymap.OffsetUp), m.helpKeys(keymap.OffsetReset)), "歌词偏移 0.5 秒 / 归零（任意视图；偏移随当前歌词来源）")
+	add(m.helpKeys(keymap.BindLyrics), "歌词来源：绑定平台歌曲 / LRCLIB / 本地 LRC / 本机曲目，x 解除")
 
 	section("浏览")
 	add("Tab / Shift+Tab", "正向 / 反向轮转全部视图（也可点页头页面名打开菜单）")
@@ -108,7 +110,8 @@ func (m *Model) helpLines(width int) []string {
 	add(joinKeys(m.helpKeys(keymap.Left), m.helpKeys(keymap.Right)), "切换歌单 / 歌曲操作焦点（曲库）")
 	add(m.helpKeys(keymap.QueueView), "打开播放列表")
 	add(m.helpKeys(keymap.LyricsView), "打开歌词")
-	add(m.helpKeys(keymap.New), "打开命令面板（新建本地/混合歌单、自动响度均衡、跨设备同步、解锁、关于）")
+	add(m.helpKeys(keymap.New), "打开命令面板（新建本地/仅本机/混合歌单、添加本地文件夹、自动响度均衡、跨设备同步、解锁、关于）")
+	add("文件夹歌单", "只读：只扫描当前层，子文件夹不进入；r 重新扫描，R 改名，D 移除（不删音频）；仅本机歌单不进同步")
 	add(m.helpKeys(keymap.Folders), "浏览并导入远端歌单")
 	add(m.helpKeys(keymap.Downloads), "打开下载管理（播放/重新下载/取消/删除/查看缺失文件）")
 	add(joinKeys(m.helpKeys(keymap.MixEdit), m.helpKeys(keymap.Unlock)), "编辑混合歌单引用 / 解锁同步歌单（歌单焦点）")
@@ -242,6 +245,9 @@ func (m *Model) hintLine() string {
 			return "space 继续 · enter 播放 · H 帮助"
 		}
 		if m.libraryFocus == focusPlaylists {
+			if p, ok := m.currentPlaylist(); ok && p.Kind == store.PlaylistKindFolder {
+				return "↑/↓ 选歌单 · → 切到歌曲 · enter 播放 · " + m.firstKey(keymap.Refresh) + " 重新扫描 · " + m.firstKey(keymap.Rename) + " 改名 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
+			}
 			return "↑/↓ 选歌单 · " + m.firstKey(keymap.New) + " 新建歌单 · → 切到歌曲 · enter 播放歌单 · " + m.firstKey(keymap.DownloadSelected) + " 下载歌单 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
 		}
 		return "↑/↓ 选歌曲 · " + m.firstKey(keymap.Select) + " 标记 · " + m.firstKey(keymap.SelectAll) + " 全选 · ← 切到歌单 · enter 播放 · " + m.firstKey(keymap.Download) + " 下载当前 · " + m.firstKey(keymap.HelpPopup) + " 帮助"
@@ -250,7 +256,7 @@ func (m *Model) hintLine() string {
 		if m.lyricOffsetMS != 0 {
 			source = " · 偏移 " + signedSeconds(m.lyricOffsetMS)
 		}
-		return "↑/↓ 选句 · enter 跳转 · esc 回播放 · " + m.firstKey(keymap.Download) + " 下载 · " + m.firstKey(keymap.PlayPause) + " 暂停 · " + m.firstKey(keymap.HelpPopup) + " 帮助" + source
+		return "↑/↓ 选句 · enter 跳转 · " + m.firstKey(keymap.BindLyrics) + " 歌词来源 · esc 回播放 · " + m.firstKey(keymap.PlayPause) + " 暂停 · " + m.firstKey(keymap.HelpPopup) + " 帮助" + source
 	case viewHelp:
 		return m.firstKey(keymap.HelpPopup) + " 弹窗 · esc 返回"
 	case viewSync:

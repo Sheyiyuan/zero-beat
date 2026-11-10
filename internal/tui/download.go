@@ -107,6 +107,10 @@ func (m *Model) enqueueDownload(raw store.Song, verb string) tea.Cmd {
 
 func (m *Model) enqueueDownloadJob(raw store.Song, verb string, job downloader.Job) tea.Cmd {
 	song := store.NormalizeSong(raw)
+	if song.Source == "local" {
+		m.setNotice("本地曲目已经是本地文件，不需要下载："+song.Title, false)
+		return nil
+	}
 	if song.ExternalID() == "" {
 		m.setNotice("这首缺少音源 ID，无法下载", true)
 		return nil
@@ -157,7 +161,8 @@ func (m *Model) queueSongsForDownload(songs []store.Song) (mgr *downloader.Manag
 		if title == "" {
 			title = song.ExternalID()
 		}
-		if song.ExternalID() == "" {
+		if song.Source == "local" || song.ExternalID() == "" {
+			// 本地曲目本来就是本地文件；下载页也不该出现 source=local 的记录。
 			skipped++
 			continue
 		}

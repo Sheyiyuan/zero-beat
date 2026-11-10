@@ -131,6 +131,8 @@ func (m *Model) openPlaylistMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 		}
 	case "mixin":
 		items = append(items, menuItem{label: "同步刷新引用", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
+	case "folder":
+		items = append(items, menuItem{label: "重新扫描文件夹", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
 	default:
 		items = append(items, menuItem{label: "刷新", hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
 	}
@@ -146,6 +148,12 @@ func (m *Model) openPlaylistMenu(zone hitZone, x, y int) (tea.Model, tea.Cmd) {
 		items = append(items,
 			menuItem{label: "重命名", hint: m.firstKey(keymap.Rename), act: actPlaylistRename},
 			menuItem{label: "删除歌单", hint: m.firstKey(keymap.Delete), act: actPlaylistDelete},
+		)
+	case "folder":
+		items = append(items,
+			menuItem{label: "更换文件夹", act: actPlaylistSetRoot},
+			menuItem{label: "重命名", hint: m.firstKey(keymap.Rename), act: actPlaylistRename},
+			menuItem{label: "移除文件夹歌单", hint: m.firstKey(keymap.Delete), act: actPlaylistDelete},
 		)
 	case "remote":
 		if !app.IsDailyPlaylist(p) {
@@ -170,12 +178,18 @@ func (m *Model) openPlaylistListMenu(x, y int) (tea.Model, tea.Cmd) {
 	items := make([]menuItem, 0, 2)
 	if hasCurrent {
 		label := "刷新当前歌单"
-		if current.Kind == "remote" || current.Kind == "mixin" {
+		switch current.Kind {
+		case "remote", "mixin":
 			label = "同步刷新当前歌单"
+		case "folder":
+			label = "重新扫描当前文件夹"
 		}
 		items = append(items, menuItem{label: label, hint: m.firstKey(keymap.Refresh), act: actPlaylistRefresh})
 	}
-	items = append(items, menuItem{label: "新建 / 导入歌单…", hint: m.firstKey(keymap.New), act: actOpenPalette})
+	items = append(items,
+		menuItem{label: "添加本地文件夹…", hint: m.firstKey(keymap.New), act: actAddFolder},
+		menuItem{label: "新建 / 导入歌单…", hint: m.firstKey(keymap.New), act: actOpenPalette},
+	)
 	menu := newMenu(menuPlaylist, "歌单列表", items, x, y, m.width)
 	if hasCurrent {
 		menu.playlist = current

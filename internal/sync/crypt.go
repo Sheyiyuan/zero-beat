@@ -17,7 +17,13 @@ import (
 
 // 格式常量。改动任何一个都会让旧仓库无法读取，必须同步升 meta.v。
 const (
-	MetaVersion        = 1
+	// MetaVersion 是当前写出的仓库格式版本。v2 增加了「仅本机」歌单边界与
+	// 歌词绑定字段：旧客户端会忽略不认识的字段，进而在下一轮导出里丢数据，
+	// 所以必须靠版本号切断，而不是赌兼容。
+	MetaVersion = 2
+	// MetaVersionMin 是仍然可以读取的最低版本；读到 v1 会在首次成功同步后
+	// 原地升级为 v2，升级不可回退。
+	MetaVersionMin     = 1
 	KeyFileVersion     = 1
 	EnvelopeVersion    = 1
 	SaltSize           = 16

@@ -8,7 +8,7 @@
 
 ```bash
 zero demo            # 打印一帧示例界面
-zero demo lyrics     # 指定视图：library/search/queue/lyrics/help/login/clip/picker/downloads/menu/about/selection/sync/conflicts
+zero demo lyrics     # 指定视图：library/search/queue/lyrics/lyricbind/help/login/clip/picker/downloads/menu/about/selection/sync/conflicts
 ```
 
 ## 登录
@@ -41,6 +41,15 @@ zero demo lyrics     # 指定视图：library/search/queue/lyrics/help/login/cli
 4. `space` 暂停 / 继续，`[` / `]` 上一首 / 下一首，`c` 打开队列。
 
 曲库里蓝色底是当前焦点项，灰色底是正在播放歌曲所属的歌单或当前歌曲；歌单左侧的 `▶` 表示正在播放的来源歌单。
+
+## 听本机音乐
+
+- `zero library add ~/Music`，或在命令面板（`N`）里选「添加本地文件夹」。目录本身就是一个**只读歌单**，只扫描当前层，子文件夹不进入。
+- 打开歌单超过 60 秒或按 `r` 会重新扫描；`R` 改名，`D` 移除（只删索引，不删音频），`N` →「更换当前文件夹」换目录。
+- 本地曲目可以播放、seek、进队列，也能混进歌单。加入普通歌单会被拒绝，只能进文件夹歌单或「仅本机歌单」（`N` →「新建仅本机歌单」）；后者不进同步。
+- 歌词会先找同目录 `.lrc`、`lyrics/` 子目录与内嵌歌词，再兜底 LRCLIB。匹配不准时按 `B` 手动指定平台、LRCLIB、本地文件或另一首本机曲目。
+
+详见[曲库、歌单与搜索](library.md#本地文件夹歌单与本地音乐库)与[播放、队列与歌词](playback.md#本地歌词)。
 
 ## 断点恢复
 
