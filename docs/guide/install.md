@@ -30,7 +30,12 @@ sudo sh install.sh --prefix /usr/local
 
 ## Arch Linux（AUR）
 
-仓库内 `.aur/aur-repo` 维护 AUR 打包，包名 `zero-beat-git`（跟随 main 分支源码构建），可用常见 AUR 助手安装。
+仓库内 `.aur/` 维护 AUR 打包，提供两个包（互相冲突，装一个即可）：
+
+- `zero-beat-bin`：直接安装 GitHub Release 的预编译二进制，不依赖 Go 工具链。
+- `zero-beat-git`：跟随 main 分支源码构建，装到的是最新提交。
+
+可用 yay、paru 等 AUR 助手安装，例如 `yay -S zero-beat-bin`。
 
 ## 从源码
 

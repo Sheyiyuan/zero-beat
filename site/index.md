@@ -73,7 +73,7 @@ curl -fsSLO https://github.com/Sheyiyuan/zero-beat/releases/latest/download/inst
 sh install.sh && zero
 ```
 
-还需要系统 `ffmpeg` 负责音频解码。官方支持 Linux 和 macOS，Arch 有 AUR 包 `zero-beat-git`；Windows 提供了 zip 包，需要自己准备好 ffmpeg 和终端环境。
+还需要系统 `ffmpeg` 负责音频解码。官方支持 Linux 和 macOS，Arch 有 AUR 包 `zero-beat-bin`（预编译）与 `zero-beat-git`（源码）；Windows 提供了 zip 包，需要自己准备好 ffmpeg 和终端环境。
 
 ## 界面
 

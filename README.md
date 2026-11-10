@@ -58,7 +58,7 @@ zero
 
 装完还需要系统 `ffmpeg` 负责音频解码。进界面后按 `L` 扫码登录，`f` 导入歌单，`enter` 播放；想先看看界面长什么样，跑 `zero demo` 就行。
 
-官方支持 Linux 和 macOS，Arch 有 AUR 包 `zero-beat-git`；Windows 提供了 zip 包，需要自己准备好 ffmpeg 和终端环境。
+官方支持 Linux 和 macOS，Arch 有 AUR 包 `zero-beat-bin`（预编译二进制）与 `zero-beat-git`（跟随 main 源码构建）；Windows 提供了 zip 包，需要自己准备好 ffmpeg 和终端环境。
 
 ## 文档
 

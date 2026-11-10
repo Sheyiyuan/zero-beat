@@ -35,7 +35,7 @@ GitHub Actions 的 `Release` 工作流会用 GoReleaser 构建：
 - `checksums.txt`
 - 带 `scripts/install.sh` 的压缩包
 
-产物上传到 GitHub Release；Homebrew tap 暂未自动发布。AUR 打包在 `.aur/aur-repo`（包名 `zero-beat-git`），由 `update-srcinfo.sh` 维护。
+产物上传到 GitHub Release；Homebrew tap 暂未自动发布。AUR 打包在 `.aur/aur-repo`（包名 `zero-beat-git`，跟随源码）与 `.aur/bin-repo`（包名 `zero-beat-bin`，直接打包 Release 产物）；前者由 `update-srcinfo.sh` 维护，后者发版时同步 `pkgver` 与两个架构的 `sha256sums`。
 
 ## 分层与契约
 
