@@ -360,3 +360,39 @@ func writeLE16(buf *bytes.Buffer, v uint16) {
 	binary.LittleEndian.PutUint16(b, v)
 	buf.Write(b)
 }
+
+// TestQuickHashGolden 锁定内容指纹的已知答案。指纹只覆盖文件字节与大小，
+// 不包含路径、mtime 或任何平台信息，因此同一份文件在 macOS/Linux 结果相同。
+// 期望值由 Python hashlib 独立算出。
+func TestQuickHashGolden(t *testing.T) {
+	dir := t.TempDir()
+	smallPath := filepath.Join(dir, "small.bin")
+	small := []byte("hello zero-beat")
+	writeFile(t, smallPath, small)
+	if got, err := QuickHash(smallPath, int64(len(small))); err != nil || got != "6d7c7a9847bb780ceff6b52052dec4eb" {
+		t.Fatalf("小文件指纹不符: %q err=%v", got, err)
+	}
+
+	bigPath := filepath.Join(dir, "big.bin")
+	big := make([]byte, 200000)
+	for i := range big {
+		big[i] = byte(i % 251)
+	}
+	writeFile(t, bigPath, big)
+	if got, err := QuickHash(bigPath, int64(len(big))); err != nil || got != "8670cb32c5b951419639d18de63bfa79" {
+		t.Fatalf("大文件指纹不符: %q err=%v", got, err)
+	}
+}
+
+// TestMetaKeyGolden 锁定标签归一的已知答案：NFKC + casefold + 空白折叠后，
+// 再对「艺术家/标题/专辑/碟号/轨号」做 SHA-256。期望值由 Python
+// unicodedata + casefold + hashlib 独立算出。
+func TestMetaKeyGolden(t *testing.T) {
+	f := File{Title: "  ＡＢＣ 晴天  ", Artist: "周杰伦", Album: "叶惠美", Disc: 1, Track: 3}
+	if got := Normalize(f.Title); got != "abc 晴天" {
+		t.Fatalf("归一化结果不符: %q", got)
+	}
+	if got := MetaKey(f); got != "m:17a7ea3e05f5af9686ef80e357464c68" {
+		t.Fatalf("曲目身份键不符: %s", got)
+	}
+}

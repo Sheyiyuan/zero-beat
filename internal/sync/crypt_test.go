@@ -2,6 +2,7 @@ package sync
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -208,4 +209,44 @@ func decodeEnvelope(data []byte) (Envelope, error) {
 	var envelope Envelope
 	err := decodeJSONStrict(data, &envelope)
 	return envelope, err
+}
+
+// TestDeriveGolden 锁定 Argon2id 的已知答案，防止参数或实现悄悄变化。
+//
+// 期望值由 PHC 参考实现的 C 版 argon2id_hash_raw(3, 65536, 1, ...) 独立算出；
+// macOS 与 Linux 使用同一份纯 Go x/crypto/argon2 与同一组参数（盐来自仓库
+// meta.json），所以两端派生出的密钥只取决于口令和盐。
+func TestDeriveGolden(t *testing.T) {
+	salt := make([]byte, SaltSize)
+	for i := range salt {
+		salt[i] = byte(i)
+	}
+	key, err := DefaultKDF().Derive("test-passphrase-123", salt)
+	if err != nil {
+		t.Fatalf("派生密钥失败: %v", err)
+	}
+	const wantKey = "edad53e4321066e363cb0daa95aa5bec7e217ddeed1cb9a6f47c0eebe7d2c476"
+	if got := hex.EncodeToString(key); got != wantKey {
+		t.Fatalf("Argon2id 结果不符:\n got %s\nwant %s", got, wantKey)
+	}
+	// keycheck 期望值由独立实现核对：HKDF-SHA256 + SHA-256。
+	const wantCheck = "347494f554af44d9c216b7a9198ab9cf3e3da411349e774b491d322810489083"
+	if got := hex.EncodeToString(Keycheck(key)); got != wantCheck {
+		t.Fatalf("keycheck 不符:\n got %s\nwant %s", got, wantCheck)
+	}
+}
+
+// TestRemoteHashGolden 验证同一仓库的 SSH/HTTPS 写法得到同一个哈希，
+// 且结果与独立的 SHA-256 计算一致（host 归一化为小写）。
+func TestRemoteHashGolden(t *testing.T) {
+	const want = "e1ee845dd0a63fd1d20eff11e887196c4e21434aa6a9e3860e2d00f34693e94a"
+	for _, remote := range []string{
+		"git@github.com:Sheyiyuan/zero-beat.git",
+		"https://github.com/Sheyiyuan/zero-beat",
+		"https://github.com/Sheyiyuan/zero-beat.git/",
+	} {
+		if got := RemoteHash(remote); got != want {
+			t.Fatalf("RemoteHash(%q) = %s，期望 %s", remote, got, want)
+		}
+	}
 }
