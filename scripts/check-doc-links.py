@@ -8,6 +8,9 @@ root = Path(__file__).resolve().parent.parent
 documents = list(root.glob('*.md'))
 documents += list((root / 'docs').rglob('*.md'))
 documents += list((root / 'zero-beat-gui').rglob('*.md'))
+documents += list((root / 'zero-beat-tui/docs/guide').glob('*.md'))
+documents += list((root / 'zero-beat-tui/docs/reference').glob('*.md'))
+documents += list((root / 'zero-beat-tui/docs').glob('release-notes-*.md'))
 documents += [root / name / 'README.md' for name in
               ('zero-beat-core', 'zero-beat-tui', 'zero-beat-site')]
 errors = []

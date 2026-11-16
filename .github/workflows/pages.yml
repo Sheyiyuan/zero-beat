@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - "zero-beat-site/**"
+      - "zero-beat-tui"
+      - "zero-beat-gui"
+      - "zero-beat-core"
+      - ".gitmodules"
       - "docs/**"
       - "assets/**"
       - ".github/workflows/pages.yml"
@@ -42,6 +46,9 @@ jobs:
       - name: Install
         working-directory: zero-beat-site
         run: pnpm install --frozen-lockfile
+
+      - name: Check documentation sources
+        run: python3 scripts/check-doc-links.py
 
       - name: Build
         working-directory: zero-beat-site

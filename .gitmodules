@@ -7,6 +7,3 @@
 [submodule "zero-beat-gui"]
 	path = zero-beat-gui
 	url = https://github.com/Sheyiyuan/zero-beat-gui.git
-[submodule "zero-beat-site"]
-	path = zero-beat-site
-	url = https://github.com/Sheyiyuan/zero-beat-site.git

@@ -1,6 +1,6 @@
 # zero-beat 伞仓 Makefile（仓库根目录）
 #
-# 子模块：zero-beat-core / zero-beat-tui / zero-beat-gui / zero-beat-site
+# 子模块：zero-beat-core / zero-beat-tui / zero-beat-gui；网站在主仓库 zero-beat-site。
 # 所有目标从本目录执行；TUI 通过 Go module 依赖 core，本地由 go.work 联调。
 
 SHELL := /bin/bash
@@ -45,7 +45,7 @@ help:
 		'  make check-deps       四平台 core 依赖边界与编译' \
 		'  make check-docs       Markdown 链接 + 空白检查' \
 		'  make site-install     安装站点依赖' \
-		'  make site-build       同步 docs/ 并构建站点' \
+		'  make site-build       读取 TUI/GUI 文档并构建站点' \
 		'  make verify           check + check-modules + check-deps + check-site' \
 		'  make release-check    goreleaser check' \
 		'  make release          goreleaser release --clean' \

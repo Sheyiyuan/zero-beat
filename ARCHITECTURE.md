@@ -16,9 +16,10 @@ zero-beat-tui (Go 应用模块)
   zero-beat-core/keymap -> core/keymap + Bubble Tea
   zero-beat-tui/internal/sysmedia / desktop / control
 
-zero-beat-gui (当前为设计文档；未来独立应用包)
-zero-beat-site (VitePress 网站；Pages 独立发布)
+zero-beat-gui (Git 子模块；当前为设计文档，未来独立应用包)
   Flutter + RPC/RemoteEngine -> zero-beat-core
+zero-beat-site (主仓库普通目录；Pages 发布)
+  读取 TUI 用户文档 + GUI 设计文档，生成页面不提交
 ```
 
 模块迁移、发布与同步后端约定见[迁移指南](docs/monorepo-and-sync.md)。

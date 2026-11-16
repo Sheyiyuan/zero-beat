@@ -2,7 +2,7 @@
 
 - 状态：已实现（代码与单测完成；KDE 展开视图手工验收待做一次）
 - 日期：2026-11-03
-- 关联：[ADR 0017](adr/0017-system-media.md)、[系统媒体与封面](guide/sysmedia.md)
+- 关联：[ADR 0017](adr/0017-system-media.md)、[系统媒体与封面](https://github.com/Sheyiyuan/zero-beat-tui/blob/main/docs/guide/sysmedia.md)
 - 预估：1.5–2 人天（含测试与 KDE 手工验证）
 
 ## 目标

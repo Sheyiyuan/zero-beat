@@ -1,0 +1,14 @@
+node_modules/
+.vitepress/cache/
+.vitepress/dist/
+.vitepress/manifest.json
+guide/
+reference/
+adr/
+architecture/
+design/
+changelog/
+gui/
+public/images/
+public/logo.png
+public/assets/
