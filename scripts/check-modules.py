@@ -35,7 +35,8 @@ def make_proxy(destination):
                 if any(p.startswith('.') for p in rel.parts) or path.suffix in ('.exe', '.test'):
                     continue
                 archive.write(path, f'{module}@{version}/{rel.as_posix()}')
-            archive.write(ROOT / 'LICENSE', f'{module}@{version}/LICENSE')
+            if not (source / 'LICENSE').exists():
+                archive.write(ROOT / 'LICENSE', f'{module}@{version}/LICENSE')
 
 
 def main():
