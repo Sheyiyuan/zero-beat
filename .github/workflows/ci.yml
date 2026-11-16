@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: zero-beat-core/go.mod
+          cache-dependency-path: |
+            zero-beat-core/go.sum
+            zero-beat-tui/go.sum
+          cache: true
+      - name: gofmt
+        run: |
+          files="$(git ls-files --cached --others --exclude-standard '*.go')"
+          test -z "$(gofmt -l $files)" || { gofmt -l $files; exit 1; }
+      - name: vet
+        run: make vet
+      - name: test
+        run: make test
+      - name: build (CGO disabled, release mode)
+        env:
+          CGO_ENABLED: "0"
+        run: make build
+
+      - name: isolated module consumers
+        run: make check-modules
+      - name: core dependency boundary
+        run: python3 scripts/check-core-deps.py
+      - name: embedded sync backend
+        run: ZERO_SYNC_BACKEND=gogit go -C zero-beat-core test ./sync
+
+      - name: validate install script
+        run: sh -n scripts/install.sh
+
+      - name: documentation links
+        run: python3 scripts/check-doc-links.py
+
+      - name: validate GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
