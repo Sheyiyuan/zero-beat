@@ -4,7 +4,7 @@
 
 ## 当前结构
 
-现有 zero-beat Git 仓库是唯一代码主线，仓库根目录就是 monorepo 根（`/home/syy/Code/zero-beat`）。仓库内包括：
+现有 zero-beat Git 仓库是唯一代码主线，仓库根目录（含 `go.work`）就是 monorepo 根。仓库内包括：
 
 | 目录 | 职责 |
 | --- | --- |
