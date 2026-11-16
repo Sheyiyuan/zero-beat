@@ -28,7 +28,7 @@ MODULES := $(CORE) $(TUI)
 
 .PHONY: all help version build run demo test vet fmt fmt-check tidy \
 	check check-modules check-deps check-docs check-site \
-	site-install site-sync site-build site-dev \
+	site-install site-sync site-build site-dev publish-mirrors \
 	clean distclean
 
 all: check build
@@ -55,6 +55,7 @@ help:
 		'  make site-sync       把 docs/ 同步进站点' \
 		'  make site-build      安装依赖并构建站点' \
 		'  make site-dev        启动站点开发服务器' \
+		'  make publish-mirrors 用 git subtree 推送 core/gui/site 镜像仓库' \
 		'  make verify          check + check-modules + check-deps + check-site' \
 		'  make version         打印 zero 版本' \
 		'  make clean           删除 bin/ 与站点 dist' \
@@ -120,6 +121,9 @@ site-dev: site-install
 	$(PNPM) -C $(SITE) run dev
 
 check-site: site-build
+
+publish-mirrors:
+	./scripts/publish-mirrors.sh
 
 verify: check check-modules check-deps check-site
 
