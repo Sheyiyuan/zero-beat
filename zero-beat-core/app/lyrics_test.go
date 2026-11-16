@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lrclib"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	localsource "github.com/sheyiyuan/zero-beat/zero-beat-core/source/local"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/lrclib"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	localsource "github.com/sheyiyuan/zero-beat-core/source/local"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // lyricFake 按 ref 返回不同歌词，用来区分「自动来源」和「绑定来源」。

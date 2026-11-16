@@ -3,8 +3,8 @@ package app
 import (
 	"fmt"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // CreatePlaylist 新建一个本地歌单。

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/keymap"
+	"github.com/sheyiyuan/zero-beat-core/keymap"
 )
 
 // Backend selects transport and object storage; merge policy belongs to Client.

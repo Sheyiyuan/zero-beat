@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // 歌词页交互：中央一行固定为焦点行。

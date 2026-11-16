@@ -3,7 +3,7 @@ package player
 import (
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 // Prefetch 只缓存一首下一曲的解析结果；队列变化或过期即作废。

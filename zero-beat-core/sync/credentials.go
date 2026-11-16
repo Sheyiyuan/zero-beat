@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // accountSourceFromPath 从 accounts/<source>.age 提取音源；非法路径返回空字符串。

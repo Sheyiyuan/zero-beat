@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
+	syncpkg "github.com/sheyiyuan/zero-beat-core/sync"
 )
 
 func TestSyncBackendArgument(t *testing.T) {

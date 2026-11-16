@@ -9,7 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
+	syncpkg "github.com/sheyiyuan/zero-beat-core/sync"
 )
 
 func testSyncManager(t *testing.T, remote string) *syncpkg.Manager {

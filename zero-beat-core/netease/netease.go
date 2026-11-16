@@ -25,8 +25,8 @@ import (
 	neaservice "github.com/go-musicfox/netease-music/service"
 	neautil "github.com/go-musicfox/netease-music/util"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 const (

@@ -8,11 +8,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/config"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat-core/config"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	syncpkg "github.com/sheyiyuan/zero-beat-core/sync"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // 同步相关的 tea.Msg。

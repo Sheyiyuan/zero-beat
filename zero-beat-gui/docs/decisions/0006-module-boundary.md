@@ -5,7 +5,7 @@
 
 ## 当前边界
 
-共享业务已经位于 `github.com/sheyiyuan/zero-beat/zero-beat-core`，公开 app、store、source、player、sync、media、keymap 等包。TUI 依赖这些公开接口；不跨 module 引用 internal，不复制业务实现到 GUI。
+共享业务已经位于 `github.com/sheyiyuan/zero-beat-core`，公开 app、store、source、player、sync、media、keymap 等包。TUI 依赖这些公开接口；不跨 module 引用 internal，不复制业务实现到 GUI。
 
 媒体类型不依赖 oto，键位校验不依赖 Bubble Tea。GUI 文档、未来 Flutter 和平台入口位于 zero-beat-gui，未来 Go module 同名。core 中只保留通用业务，RPC、RemoteEngine 和 c-shared/sidecar 组装属于 GUI。
 

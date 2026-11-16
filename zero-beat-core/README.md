@@ -1,6 +1,6 @@
 # zero-beat-core
 
-共享 Go 业务模块，路径 `github.com/sheyiyuan/zero-beat/zero-beat-core`。
+共享 Go 业务模块，路径 `github.com/sheyiyuan/zero-beat-core`。
 
 - 公开 `app`、`store`、`source`、`player`、`sync`、`media`、`keymap` 等业务包；TUI 直接使用这些包，不跨模块引用 internal。
 - `media` 只提供引擎输入、状态与事件；音频输出实现由调用方提供。

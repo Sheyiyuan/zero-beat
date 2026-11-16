@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // seedLocalLibrary 在同一个库里放：可同步歌单、文件夹歌单、仅本机歌单、

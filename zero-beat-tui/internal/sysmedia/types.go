@@ -5,7 +5,7 @@ package sysmedia
 import (
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio"
 )
 
 // LoopStatus 是 MPRIS 的循环语义，与播放模式一一对应。

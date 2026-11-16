@@ -6,7 +6,7 @@ import (
 	"math"
 	"sync/atomic"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio/dsp"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio/dsp"
 )
 
 // gainReader 在 PCM（交错 s16le）上应用音量与补偿，并做软限幅。

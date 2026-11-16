@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/bili"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/bili"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 func TestMetadataAndQualityMapping(t *testing.T) {

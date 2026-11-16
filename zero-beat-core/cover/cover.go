@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/config"
+	"github.com/sheyiyuan/zero-beat-core/config"
 )
 
 const (

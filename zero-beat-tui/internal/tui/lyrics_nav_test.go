@@ -8,7 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
 )
 
 // lyricFocusModel 构造 40 句歌词、正在播放第 21 句（idx=20）的歌词页模型。

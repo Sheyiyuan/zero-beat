@@ -10,9 +10,9 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/downloader"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/downloader"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // testDownloads 返回一个不会真正下载、但会保持 Running 的管理器，便于断言队列状态。

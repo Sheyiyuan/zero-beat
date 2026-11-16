@@ -1,4 +1,4 @@
-module github.com/sheyiyuan/zero-beat/zero-beat-tui
+module github.com/sheyiyuan/zero-beat-tui
 
 go 1.26.10
 
@@ -9,7 +9,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.9
 	github.com/ebitengine/oto/v3 v3.5.1
 	github.com/godbus/dbus/v5 v5.1.0
-	github.com/sheyiyuan/zero-beat/zero-beat-core v0.8.0
+	github.com/sheyiyuan/zero-beat-core v0.8.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/term v0.44.0
 )

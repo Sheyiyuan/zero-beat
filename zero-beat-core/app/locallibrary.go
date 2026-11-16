@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/library"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/library"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // ExpandPath 把用户输入的路径补成绝对路径：支持 ~ 与相对路径。

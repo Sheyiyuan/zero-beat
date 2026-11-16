@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/bili"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/netease"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	bilibilisource "github.com/sheyiyuan/zero-beat/zero-beat-core/source/bilibili"
+	"github.com/sheyiyuan/zero-beat-core/bili"
+	"github.com/sheyiyuan/zero-beat-core/netease"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	bilibilisource "github.com/sheyiyuan/zero-beat-core/source/bilibili"
 )
 
 func TestParseDownloadArgs(t *testing.T) {

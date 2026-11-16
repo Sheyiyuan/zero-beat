@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	audio "github.com/sheyiyuan/zero-beat/zero-beat-core/media"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	audio "github.com/sheyiyuan/zero-beat-core/media"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // Mode 是播放模式。

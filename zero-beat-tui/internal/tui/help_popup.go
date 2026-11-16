@@ -3,7 +3,7 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // helpPopupBoxWidth 返回快捷键弹窗的整框宽度（含左右边框）。

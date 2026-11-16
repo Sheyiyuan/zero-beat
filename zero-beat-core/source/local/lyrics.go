@@ -11,10 +11,10 @@ import (
 	"sync"
 	"unicode"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/library"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/library"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // dirCache 缓存目录列表，键是目录的 mtime：同一首歌反复进歌词页时不用重复 ReadDir。

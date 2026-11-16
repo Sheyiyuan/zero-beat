@@ -3,7 +3,7 @@ package player
 import (
 	"testing"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 func songs(ids ...string) []store.Song {

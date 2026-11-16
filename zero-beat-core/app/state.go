@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // CreateMixin 新建一个混合歌单并写入引用。

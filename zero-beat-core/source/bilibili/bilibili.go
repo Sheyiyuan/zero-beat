@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/bili"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/bili"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 // Source 是 B 站音源。

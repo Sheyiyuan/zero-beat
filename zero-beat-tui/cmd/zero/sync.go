@@ -11,9 +11,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
+	"github.com/sheyiyuan/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	syncpkg "github.com/sheyiyuan/zero-beat-core/sync"
 )
 
 var syncBackendOverride syncpkg.Backend

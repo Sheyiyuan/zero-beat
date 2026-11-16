@@ -30,7 +30,7 @@ core 不依赖 TUI、Bubble Tea、oto 或 DBus。完整 Session 门面和 Androi
 - 网易云依赖的第三方 replace 必须出现在每个消费模块，不能仅依赖 core 的 replace。
 - 首次模块版本配套使用 v0.8.0。先发布 `zero-beat-core/v0.8.0`，再发布 `zero-beat-tui/v0.8.0`；`v0.8.0` 触发现有应用发布流水线。后续版本同样先 core 后 TUI，最后应用标签。
 - 保持 zero 命令、zero_<version>_<os>_<arch> 安装资产和 releases/latest 入口。未来 GUI 发布须设为非 latest，不抢占 TUI 安装入口。
-- 源码安装路径改为 `github.com/sheyiyuan/zero-beat/zero-beat-tui/cmd/zero@版本`；旧根模块路径仅对应历史版本。
+- 源码安装路径改为 `github.com/sheyiyuan/zero-beat-tui/cmd/zero@版本`；旧根模块路径仅对应历史版本。
 - 当前检出没有 .aur 目录；外部 AUR 源码包维护者需更新构建工作目录，二进制包继续使用原资产名。
 
 ## 同步配置

@@ -10,13 +10,13 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/config"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/library"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lrclib"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	localsource "github.com/sheyiyuan/zero-beat/zero-beat-core/source/local"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/config"
+	"github.com/sheyiyuan/zero-beat-core/library"
+	"github.com/sheyiyuan/zero-beat-core/lrclib"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	localsource "github.com/sheyiyuan/zero-beat-core/source/local"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // LyricsResult 是一次歌词解析的结果。

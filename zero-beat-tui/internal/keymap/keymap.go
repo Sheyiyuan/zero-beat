@@ -2,7 +2,7 @@ package keymap
 
 import (
 	tea "charm.land/bubbletea/v2"
-	core "github.com/sheyiyuan/zero-beat/zero-beat-core/keymap"
+	core "github.com/sheyiyuan/zero-beat-core/keymap"
 )
 
 type Action = core.Action

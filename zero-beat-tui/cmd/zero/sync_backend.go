@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
+	syncpkg "github.com/sheyiyuan/zero-beat-core/sync"
 )
 
 func parseSyncBackend(args []string) ([]string, syncpkg.Backend, error) {

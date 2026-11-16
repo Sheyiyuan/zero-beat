@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 func openTestStore(t *testing.T) *store.Store {

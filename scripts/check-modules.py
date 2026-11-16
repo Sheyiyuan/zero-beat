@@ -12,11 +12,11 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 MODULES = ('zero-beat-core', 'zero-beat-tui')
-PREFIX = 'github.com/sheyiyuan/zero-beat/'
+PREFIX = 'github.com/sheyiyuan/zero-beat-'
 
 
 def make_proxy(destination):
-    version = re.search(r'github.com/sheyiyuan/zero-beat/zero-beat-core (v\S+)',
+    version = re.search(r'github.com/sheyiyuan/zero-beat-core (v\S+)',
                         (ROOT / 'zero-beat-tui/go.mod').read_text())[1]
     for name in MODULES:
         source = ROOT / name

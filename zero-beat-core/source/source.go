@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
 )
 
 // ErrSessionExpired 表示本地保存的登录态仍存在，但平台已判定失效。

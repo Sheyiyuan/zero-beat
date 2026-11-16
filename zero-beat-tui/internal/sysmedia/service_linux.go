@@ -16,7 +16,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio"
 )
 
 const (

@@ -1,8 +1,8 @@
 package sync
 
 import (
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/config"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/config"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // DefaultOptions 用应用数据目录构造同步选项；revision 由 app.Service 提供。

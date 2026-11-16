@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/keymap"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/keymap"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // PlaylistFile 是仓库里的歌单快照；字段顺序固定，保证连续导出逐字节一致。

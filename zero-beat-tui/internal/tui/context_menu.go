@@ -5,9 +5,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 func (m *Model) selectHit(zone hitZone) tea.Cmd {

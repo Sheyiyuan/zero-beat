@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/desktop"
+	"github.com/sheyiyuan/zero-beat-tui/internal/desktop"
 )
 
 // runDesktop 管理 Linux 应用菜单入口：菜单里能不能显示图标取决于这个入口。

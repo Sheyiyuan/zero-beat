@@ -6,9 +6,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/control"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-tui/internal/control"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // controlDenied 是控制通道默认拒绝的动作：会删文件、改歌单或动远端仓库。

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // ErrRevision 表示导入期间本地库又被修改；本轮放弃导入，下一轮重试。

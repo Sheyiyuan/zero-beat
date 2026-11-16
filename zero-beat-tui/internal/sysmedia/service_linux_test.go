@@ -11,7 +11,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio"
 )
 
 func TestMPRISExportsStateAndCommands(t *testing.T) {

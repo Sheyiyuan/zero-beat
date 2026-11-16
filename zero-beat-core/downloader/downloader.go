@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // State 是任务状态。

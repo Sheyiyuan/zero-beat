@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/download"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat-core/download"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 var errDownloadHelp = errors.New("download help")

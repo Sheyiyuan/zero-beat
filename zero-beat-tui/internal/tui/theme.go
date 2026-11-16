@@ -9,8 +9,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/config"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/config"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // ThemeModeKey / ThemePaletteKey 是 settings 表里的键名，CLI 与 TUI 共用。

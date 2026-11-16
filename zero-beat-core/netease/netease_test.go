@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 func TestAPIErrorMarksExpiredSession(t *testing.T) {

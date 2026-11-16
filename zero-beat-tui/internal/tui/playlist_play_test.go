@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // TestPlaylistPlayInShuffleStartsRandom 验证随机模式下播放歌单会先整体洗牌，

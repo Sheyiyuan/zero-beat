@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	audio "github.com/sheyiyuan/zero-beat/zero-beat-core/media"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	audio "github.com/sheyiyuan/zero-beat-core/media"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // PlayResult 是一次异步解析完成后的处理结果。

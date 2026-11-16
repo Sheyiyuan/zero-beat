@@ -1,4 +1,4 @@
-module github.com/sheyiyuan/zero-beat/zero-beat-core
+module github.com/sheyiyuan/zero-beat-core
 
 go 1.26.10
 

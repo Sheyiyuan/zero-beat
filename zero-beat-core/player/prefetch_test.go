@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 func TestPrefetchTakeAndExpiry(t *testing.T) {

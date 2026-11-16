@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // Version 是界面显示的软件版本，由 cmd/zero 在启动时注入。

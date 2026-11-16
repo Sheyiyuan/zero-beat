@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/control"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-tui/internal/control"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // sendControl 走一遍真实的 Update 路径，返回回应和更新后的模型。

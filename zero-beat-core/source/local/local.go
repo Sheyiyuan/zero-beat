@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/library"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/library"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // Mark 是列表行里的短标记，与平台源的 Mark 语义一致。

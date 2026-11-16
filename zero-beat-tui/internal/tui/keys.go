@@ -6,9 +6,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // isKey 判断按键是否为某个可打印字符。

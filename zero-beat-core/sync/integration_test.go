@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 type testDevice struct {

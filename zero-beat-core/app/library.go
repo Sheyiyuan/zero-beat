@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // defaultPlaylistMarker 标记默认本地歌单已经创建过；删掉后不再自动重建。

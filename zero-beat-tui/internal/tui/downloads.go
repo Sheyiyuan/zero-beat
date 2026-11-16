@@ -7,10 +7,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/download"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/player"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-core/download"
+	"github.com/sheyiyuan/zero-beat-core/player"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
 )
 
 // downloadItem 是下载管理页的一行；missing 表示索引里有记录但文件已失效。

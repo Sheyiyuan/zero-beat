@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio/dsp"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio/dsp"
 )
 
 func int16Bytes(samples ...int16) []byte {

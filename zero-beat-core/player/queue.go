@@ -7,7 +7,7 @@ package player
 import (
 	"math/rand"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // InsertNext 把 song 插到当前曲目之后；已存在时先移走旧位置，避免重复。

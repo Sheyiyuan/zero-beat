@@ -3,7 +3,7 @@ package app
 import (
 	"strconv"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 // Preferences 是跨会话保存的播放偏好。

@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
 )
 
 func TestGradientTextKeepsContentAndWidth(t *testing.T) {

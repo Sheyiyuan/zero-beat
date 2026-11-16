@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
 )
 
 type stub struct {

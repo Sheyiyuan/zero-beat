@@ -11,19 +11,19 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/config"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/downloader"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lrclib"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/player"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/control"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/sysmedia"
+	"github.com/sheyiyuan/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat-core/config"
+	"github.com/sheyiyuan/zero-beat-core/downloader"
+	"github.com/sheyiyuan/zero-beat-core/lrclib"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/player"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	syncpkg "github.com/sheyiyuan/zero-beat-core/sync"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio"
+	"github.com/sheyiyuan/zero-beat-tui/internal/control"
+	"github.com/sheyiyuan/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat-tui/internal/sysmedia"
 )
 
 type view int

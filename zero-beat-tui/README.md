@@ -1,6 +1,6 @@
 # zero-beat-tui
 
-终端应用模块，路径 `github.com/sheyiyuan/zero-beat/zero-beat-tui`，可执行命令仍为 `zero`。
+终端应用模块，路径 `github.com/sheyiyuan/zero-beat-tui`，可执行命令仍为 `zero`。
 
 在仓库根运行 `make build`、`make run` 或 `make demo`。安装与使用文档见[项目 README](../README.md)。
 

@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/cover"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lrclib"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	"github.com/sheyiyuan/zero-beat-core/cover"
+	"github.com/sheyiyuan/zero-beat-core/lrclib"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
 )
 
 // Service 是一组无界面依赖的业务操作。它是轻量的，可以在每个 tea.Cmd 里新建。

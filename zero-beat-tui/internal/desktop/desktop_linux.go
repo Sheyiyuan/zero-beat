@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/assets/icons"
+	"github.com/sheyiyuan/zero-beat-tui/assets/icons"
 )
 
 // appID 同时用作 .desktop 文件名与图标主题里的图标名。

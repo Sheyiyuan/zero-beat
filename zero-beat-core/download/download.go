@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/source"
 )
 
 // ErrExists 表示目标文件已经存在，且没有要求覆盖。

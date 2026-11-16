@@ -4,12 +4,12 @@ import (
 	"context"
 	"time"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
-	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio"
+	"github.com/sheyiyuan/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat-core/store"
+	syncpkg "github.com/sheyiyuan/zero-beat-core/sync"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio"
 )
 
 // RenderDemo 用示例数据渲染一帧界面，供 `zero demo` 与文档截图使用。

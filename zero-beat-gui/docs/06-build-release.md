@@ -33,7 +33,7 @@ zero-beat/
     └── docs/
 ```
 
-GUI 的 Go module 创建在 zero-beat-gui 根，路径为 github.com/sheyiyuan/zero-beat/zero-beat-gui；require 固定版本的 zero-beat-core，开发时加入根 go.work。**不在 go.mod 提交兄弟模块相对路径 replace**；core/v0.8.0 打 tag 前，go.work 用版本精确的 `replace` 指向本地 core，tag 后移除。第三方网易云依赖替换必须同步到消费模块，不能依赖其自动传递。
+GUI 的 Go module 创建在 zero-beat-gui 根，路径为 github.com/sheyiyuan/zero-beat-gui；require 固定版本的 zero-beat-core，开发时加入根 go.work。**不在 go.mod 提交兄弟模块相对路径 replace**；core/v0.8.0 打 tag 前，go.work 用版本精确的 `replace` 指向本地 core，tag 后移除。第三方网易云依赖替换必须同步到消费模块，不能依赖其自动传递。
 
 核心目前公开业务包；GUI Session 门面在 P0 实现。同步直接调用 zero-beat-core/sync，不复制快照、加密或合并实现。平台实现用 build tag 区分，Linux 专用 DBus 代码需排除 android。
 

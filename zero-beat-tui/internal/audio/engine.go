@@ -10,7 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/sheyiyuan/zero-beat/zero-beat-core/media"
+	"github.com/sheyiyuan/zero-beat-core/media"
 	"io"
 	"os/exec"
 	"strconv"
@@ -20,7 +20,7 @@ import (
 
 	"github.com/ebitengine/oto/v3"
 
-	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio/dsp"
+	"github.com/sheyiyuan/zero-beat-tui/internal/audio/dsp"
 )
 
 const (
