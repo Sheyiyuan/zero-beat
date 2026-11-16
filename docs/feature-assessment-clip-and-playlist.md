@@ -23,19 +23,19 @@
 ### 1.1 裁剪片段：完全没有
 
 - 播放引擎的输入 `audio.Stream` 只有 URL、请求头、编码、总时长、过期时间、音质，没有起止点：
-  [`internal/audio/stream.go:8`](../internal/audio/stream.go#L8)。
+  [`zero-beat-tui/internal/audio/stream.go:8`](../zero-beat-tui/internal/audio/stream.go#L8)。
 - `startLocked` 只会因为「从中间起播」加 `-ss`，没有任何 `-t` / `-to` 输出时长限制：
-  [`internal/audio/engine.go:211`](../internal/audio/engine.go#L211)。
+  [`zero-beat-tui/internal/audio/engine.go:211`](../zero-beat-tui/internal/audio/engine.go#L211)。
 - `PlayAt`、`Seek`、`Position` 都以整首歌的绝对时间为准：
-  [`internal/audio/engine.go:190`](../internal/audio/engine.go#L190)、
-  [`internal/audio/engine.go:428`](../internal/audio/engine.go#L428)、
-  [`internal/audio/engine.go:447`](../internal/audio/engine.go#L447)。
+  [`zero-beat-tui/internal/audio/engine.go:190`](../zero-beat-tui/internal/audio/engine.go#L190)、
+  [`zero-beat-tui/internal/audio/engine.go:428`](../zero-beat-tui/internal/audio/engine.go#L428)、
+  [`zero-beat-tui/internal/audio/engine.go:447`](../zero-beat-tui/internal/audio/engine.go#L447)。
 - 数据层没有每首歌的区间字段；`songs` 表只有标题、歌手、时长等元数据：
-  [`internal/store/store.go:64`](../internal/store/store.go#L64)。
+  [`zero-beat-core/store/store.go:64`](../zero-beat-core/store/store.go#L64)。
 - 唯一接近「每首歌的本地偏好」的先例是歌词偏移，存在 `settings` 表里：
-  [`internal/tui/cmds.go:553`](../internal/tui/cmds.go#L553)。
+  [`zero-beat-tui/internal/tui/cmds.go:553`](../zero-beat-tui/internal/tui/cmds.go#L553)。
 - UI 的进度条只画全曲进度，没有区间标记：
-  [`internal/tui/view.go:291`](../internal/tui/view.go#L291)。
+  [`zero-beat-tui/internal/tui/view.go:291`](../zero-beat-tui/internal/tui/view.go#L291)。
 
 **half-beat 的对应实现不是导出音频，而是「播放区间」：**
 
@@ -48,17 +48,17 @@
 
 ### 1.2 加歌到歌单：有，但入口和目标都受限
 
-- `a` 的按键动作本身存在：[`internal/keymap/keymap.go:56`](../internal/keymap/keymap.go#L56)。
+- `a` 的按键动作本身存在：[`zero-beat-core/keymap/keymap.go:56`](../zero-beat-tui/internal/keymap/keymap.go#L56)。
 - 但它只在两个地方被处理：
-  - 曲库歌曲焦点：[`internal/tui/model.go:1117`](../internal/tui/model.go#L1117)
-  - 搜索结果：[`internal/tui/model.go:1233`](../internal/tui/model.go#L1233)
-- 队列页没有处理 `a`：[`internal/tui/model.go:1480`](../internal/tui/model.go#L1480)。
+  - 曲库歌曲焦点：[`zero-beat-tui/internal/tui/model.go:1117`](../zero-beat-tui/internal/tui/model.go#L1117)
+  - 搜索结果：[`zero-beat-tui/internal/tui/model.go:1233`](../zero-beat-tui/internal/tui/model.go#L1233)
+- 队列页没有处理 `a`：[`zero-beat-tui/internal/tui/model.go:1480`](../zero-beat-tui/internal/tui/model.go#L1480)。
 - 歌词页走公共播放键，也没有处理 `a`。
 - 更关键的是目标不可选。`addTarget()` 的规则是：
   1. 当前本地/混合歌单；
   2. 否则第一个本地/混合歌单；
   3. 都没有就自动建一个「本地歌单」。
-  [`internal/tui/model.go:2160`](../internal/tui/model.go#L2160)
+  [`zero-beat-tui/internal/tui/model.go:2160`](../zero-beat-tui/internal/tui/model.go#L2160)
 - 因此用户只能「加入程序替你选的那个歌单」，不能选目标；也不能在听歌时把正在播放的歌加进另一个歌单。README 里写的「`a` 一键加入」没有说清目标规则：[`README.md:167`](../README.md#L167)。
 
 ### 1.3 歌单混入：只有混合歌单的「引用」间接路径
@@ -66,15 +66,15 @@
 - 混合歌单的模型是「引用」而不是「复制」：
   [`docs/adr/0011-mixin-playlists.md`](adr/0011-mixin-playlists.md)；
   数据层是 `playlist_refs`：
-  [`internal/store/store.go:456`](../internal/store/store.go#L456)。
+  [`zero-beat-core/store/store.go:456`](../zero-beat-core/store/store.go#L456)。
 - 新建混合歌单时，`N` → 新建混合歌单 → 勾选多个歌单 → 命名：
-  [`internal/tui/palette.go:53`](../internal/tui/palette.go#L53)、
-  [`internal/tui/mix.go:20`](../internal/tui/mix.go#L20)。
+  [`zero-beat-tui/internal/tui/palette.go:53`](../zero-beat-tui/internal/tui/palette.go#L53)、
+  [`zero-beat-tui/internal/tui/mix.go:20`](../zero-beat-tui/internal/tui/mix.go#L20)。
 - 已有的混合歌单可以按 `M` 编辑引用：
-  [`internal/tui/model.go:1140`](../internal/tui/model.go#L1140)、
-  [`internal/tui/mix.go:121`](../internal/tui/mix.go#L121)。
+  [`zero-beat-tui/internal/tui/model.go:1140`](../zero-beat-tui/internal/tui/model.go#L1140)、
+  [`zero-beat-tui/internal/tui/mix.go:121`](../zero-beat-tui/internal/tui/mix.go#L121)。
 - 限制：
-  - 混合歌单不能嵌套引用：[`internal/store/store.go:533`](../internal/store/store.go#L533)；
+  - 混合歌单不能嵌套引用：[`zero-beat-core/store/store.go:533`](../zero-beat-core/store/store.go#L533)；
   - 普通本地歌单不能「引用」别的歌单，只能逐首加；
   - 远端同步歌单是只读镜像，目前不支持写入远端（ROADMAP 第 7 项，约 6 人日）：
     [`ROADMAP.md:70`](../ROADMAP.md#L70)。
@@ -260,8 +260,8 @@ func (m *Model) songForPlaylistAdd() (store.Song, bool) {
 
 选中后打开目标浮层；`enter` 调现有的 `addSongToPlaylist(target, song)`（它已经会 Upsert、去重、取消 exclusion）：
 
-- [`internal/tui/model.go:2140`](../internal/tui/model.go#L2140)
-- [`internal/store/store.go:631`](../internal/store/store.go#L631)
+- [`zero-beat-tui/internal/tui/model.go:2140`](../zero-beat-tui/internal/tui/model.go#L2140)
+- [`zero-beat-core/store/store.go:631`](../zero-beat-core/store/store.go#L631)
 
 另外在命令面板加一条「将正在播放加入歌单」，覆盖「人在曲库、歌在后台播放、想加当前歌」这种场景；否则在曲库里只能加选中的歌。
 

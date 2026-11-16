@@ -22,7 +22,10 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: zero-beat-core/go.mod
+          cache-dependency-path: |
+            zero-beat-core/go.sum
+            zero-beat-tui/go.sum
           cache: true
 
       - name: Check

@@ -1,0 +1,10 @@
+go 1.26.10
+
+use (
+	./zero-beat-core
+	./zero-beat-tui
+)
+
+// 在 core/v0.8.0 正式打 tag 之前，让本地工作区把 TUI 的版本依赖解析到兄弟模块。
+// 发布后可以移除；go.mod 不提交兄弟路径 replace。
+replace github.com/sheyiyuan/zero-beat/zero-beat-core v0.8.0 => ./zero-beat-core

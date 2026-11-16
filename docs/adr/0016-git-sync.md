@@ -2,6 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-11-01
+- 修订：2026-11-16（双后端与固定提交合并，见[迁移说明](../monorepo-and-sync.md)）
 - 关联：ADR-0012（可配置快捷键）、ADR-0013（片段与云端写入）、ADR-0015（player/downloader 边界）
 - 设计：[docs/sync-design.md](../sync-design.md)
 
@@ -18,15 +19,14 @@
 
 ## 决策
 
-### 传输用系统 git，快照用文本 JSON
+### 传输可选 CLI/go-git，快照用文本 JSON
 
-调用系统 `git`，兼容 HTTPS/SSH 与任意托管（GitHub、Gitea、本地裸仓库）。认证、代理、
-SSH 都交给 git，项目不接各家 API，也不自动创建仓库。
+Git 后端只负责初始化、传输、对象、祖先与引用操作；快照、加密、导入、合并与恢复由 core 共用。`auto` 在 Linux/macOS 优先可用的 CLI，Windows/Android 优先 go-git；每轮固定后端，失败不切换。项目不接各家托管 API，也不自动创建仓库。
 
 仓库布局：
 
 ```
-meta.json                 # 仓库格式 v1、KDF 参数、全局盐、keycheck
+meta.json                 # 仓库格式 v2、KDF 参数、全局盐、keycheck
 keymap.toml               # 仅当本地存在时导出
 playlists/<id>.json       # 一个实体一个文件，kind=local/mixin
 annotations/<song>.json   # 单曲歌词偏移与片段，一歌一文件
@@ -38,8 +38,7 @@ accounts/<source>.age     # 认证加密后的登录态
 
 ### 连接方式由 URL 派生，可一键切换
 
-不单独保存 `auth` 字段：`http(s)://` 即 HTTPS（系统 credential helper 优先，
-`sync-token` 兜底），`git@host:path` / `ssh://` 即 SSH（ssh-agent 与 `~/.ssh/config`）。
+不单独保存 `auth` 字段：URL 决定 HTTPS 或 SSH。CLI 保留 credential helper、SSH 配置与自定义 SSH 命令；go-git 使用 HTTPS token 或 SSH agent/私钥并校验 known_hosts，不执行 credential helper 或 GIT_SSH_COMMAND。
 同步页提供「连接方式」的一键切换，只改写 `remote`；无法无歧义推导的地址（自定义
 端口、ssh 别名、`~/` 路径）不猜，直接让用户手填。
 
@@ -49,14 +48,9 @@ accounts/<source>.age     # 认证加密后的登录态
 
 ### 关闭 JSON 行级合并，同实体双改一律整版选择
 
-`.gitattributes` 对上述文件统一 `merge=binary`。这不是按字节合并，而是禁止行级合并：
-同一文件两端都改就进入冲突，不同文件互不影响。冲突按实体呈现「保留本地 / 保留远程 /
-保留两者（歌单）」，落选版本与本地当前版本都归档到
-`~/.config/zero-beat/sync/archive/`，零数据丢失。
+保留原有 `.gitattributes` 字节格式；两种后端均使用共享合并器比较固定 base/local/remote。相同修改合并，一侧未改取另一侧，两侧不同修改按实体整版选择。缺失文件不同于空文件；拒绝非空无关历史或多个最佳 merge-base。
 
-解决冲突时不直接 push 覆盖：重新 `git merge --no-commit` 制造同样的冲突现场，按选择写回
-工作区，提交 merge commit 保留双方历史，再导入、推送。「保留两者」生成
-`<原 ID>-copy-<n>`、标题加「（副本）」。冲突页是独立页面。
+选择绑定产生冲突时的固定版本。解决前检查本地摘要与远端头，提交前再次 fetch；输入变化则归档并重建，不能复用旧选择。分叉提交父节点为 `[local, remote]`。归档保留双方版本，「保留两者」生成 `<原 ID>-copy-<n>`、标题加「（副本）」。旧冲突档案只读，重建后才能继续解决。
 
 ### 凭据用 Argon2id + XChaCha20-Poly1305，按音源密封
 
@@ -82,27 +76,26 @@ accounts/<source>.age     # 认证加密后的登录态
 5s → 30s → 2m → 10m 退避，上限后暂停到手动重试；冲突时冻结自动同步。所有网络/磁盘
 操作在 `tea.Cmd` 或 `sync.Manager` goroutine 里，`Update` 内不跑长任务。
 
-并发保护：进程内 `Client` 互斥 + `Manager` 单飞；进程间 `flock` 文件锁；导出前记录
-`app.LibraryRevision()`、导入前比较，本轮期间用户改过库就丢弃本次合并（`git reset --hard`
-到本轮提交），下一轮重试，避免用旧快照覆盖用户刚做的修改。
+并发保护：进程内 `Client` 互斥 + `Manager` 单飞；进程间文件锁覆盖所有修改仓库的入口（Unix flock、Windows LockFileEx）；导出前记录 revision 和输入摘要、导入前比较。日志记录版本、固定提交与阶段，中断后先恢复；最多三轮非快进重试，不强制推送。
 
 ### 本地文件
 
 ```
 ~/.config/zero-beat/
-├── sync.toml          # remote/branch/auto，0600，不含 token
+├── sync.toml          # remote/branch/auto/backend/ssh_key/known_hosts，0600，不含 token
 ├── sync-key           # 派生密钥缓存，0600
 ├── sync-token         # 可选的 HTTPS token 兜底，0600
 └── sync/
     ├── repo/          # 受管工作克隆
     ├── state.json     # 设备 ID、上次同步、待处理冲突（不进仓库）
+    ├── transaction.json   # 固定提交、摘要与阶段
+    ├── rotation.json      # 换密钥恢复日志，0600
     ├── lock
     ├── conflicts/<txid>/   # index.json + 每个实体的 .local/.remote/.base
     └── archive/<time>/     # 删除与冲突解决后的归档
 ```
 
-token 优先使用系统 credential helper；允许把 token 存成 0600 文件作为兜底，经
-`GIT_ASKPASS` 注入，不进入 argv、不写进 git 配置、不在页面长期显示。
+CLI 优先使用系统 credential helper，也可通过 GIT_ASKPASS 读取 0600 token 文件；go-git 直接读取同一 token 文件。token 不进入 argv 或 Git 配置。
 
 ### 删除与导入
 
@@ -143,11 +136,11 @@ token 优先使用系统 credential helper；允许把 token 存成 0600 文件�
   无意义提交；明文变化才重新加密。
 - 换口令时先用旧密钥同步一轮并入远端最新登录态，再换盐换密钥重加密；无法解密的旧
   密文从当前树移除（仍在 git 历史里），避免 meta 版本与密文版本错位。
-- `LibraryRevision` 是 `internal/app` 的包级原子计数器：TUI 每个 `tea.Cmd` 都新建
+- `LibraryRevision` 是 `zero-beat-core/app` 的包级原子计数器：TUI 每个 `tea.Cmd` 都新建
   `app.Service`，字段级计数器无法跨命令比较。
 - CLI 的 `sync resolve` 可以逐实体选择，选择先写进冲突目录的 `choices.json`，全部选完
   才应用；TUI 的选择只存在内存里。
-- TUI 由 `internal/instance` 保证同一数据目录单实例；同步另有 `sync/lock`。
+- TUI 由 `zero-beat-core/instance` 保证同一数据目录单实例；同步另有 `sync/lock`。
   CLI 子命令不占 TUI 锁，多进程同时写库仍由同步锁与 revision 检查兜底。
 
 ## 替代方案

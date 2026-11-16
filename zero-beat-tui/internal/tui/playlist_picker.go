@@ -1,0 +1,600 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+)
+
+type targetPickerMode int
+
+const (
+	targetPickerAddSong targetPickerMode = iota
+	targetPickerMerge
+)
+
+// playlistTarget 是目标歌单浮层里的一行。Cloud 为 true 时写远端，
+// 否则写本地 SQLite（local/mixin）。
+type playlistTarget struct {
+	ID       string
+	Title    string
+	Source   string
+	RemoteID string
+	Kind     string
+	Count    int
+	Cloud    bool
+	Create   bool
+}
+
+type targetPickerState struct {
+	mode             targetPickerMode
+	song             store.Song
+	songs            []store.Song
+	sourcePlaylistID string
+	sourceTitle      string
+
+	items  []playlistTarget
+	idx    int
+	filter string
+
+	remoteBusy bool
+	remoteErr  string
+	err        string
+}
+
+type targetRemotesMsg struct {
+	source source.ID
+	items  []source.Playlist
+	err    error
+}
+
+type playlistAddMsg struct {
+	target playlistTarget
+	song   store.Song
+	count  int
+	err    error
+}
+
+// songsForAdd 返回这次要加入歌单的歌曲；兼容旧代码只填 song 的情况。
+func (p *targetPickerState) songsForAdd() []store.Song {
+	if p == nil {
+		return nil
+	}
+	if len(p.songs) > 0 {
+		return p.songs
+	}
+	if p.song.ID != "" {
+		return []store.Song{p.song}
+	}
+	return nil
+}
+
+// commonSource 返回所有待加入歌曲的共同音源；混源时返回空，避免把
+// 不同平台的歌写进同一个云端歌单。
+func (p *targetPickerState) commonSource() string {
+	songs := p.songsForAdd()
+	if len(songs) == 0 {
+		return ""
+	}
+	src := songs[0].Source
+	for _, song := range songs[1:] {
+		if song.Source != src {
+			return ""
+		}
+	}
+	return src
+}
+
+func (p *targetPickerState) displayTitle() string {
+	songs := p.songsForAdd()
+	if len(songs) > 1 {
+		return fmt.Sprintf("加入歌单 · 已选 %d 首", len(songs))
+	}
+	if len(songs) == 1 {
+		return "加入歌单 · " + songs[0].Title
+	}
+	return "加入歌单"
+}
+
+func (m *Model) openAddSongPicker(song store.Song) tea.Cmd {
+	return m.openAddSongsPicker([]store.Song{song})
+}
+
+// openAddSongsPicker 为一批歌曲选择目标歌单；单首与批量共用同一条路径。
+func (m *Model) openAddSongsPicker(songs []store.Song) tea.Cmd {
+	prepared := make([]store.Song, 0, len(songs))
+	seen := map[string]bool{}
+	for _, raw := range songs {
+		song := store.NormalizeSong(raw)
+		if song.ID == "" {
+			continue
+		}
+		if seen[song.ID] {
+			continue
+		}
+		seen[song.ID] = true
+		prepared = append(prepared, song)
+	}
+	if len(prepared) == 0 {
+		m.setNotice("这些歌缺少来源信息，无法加入歌单", true)
+		return nil
+	}
+	p := &targetPickerState{mode: targetPickerAddSong, songs: prepared, song: prepared[0]}
+	m.picker = p
+	p.items = m.localTargets(false, "")
+	p.items = m.preferCurrentTarget(p.items)
+	p.normalize()
+
+	var cmd tea.Cmd
+	if srcID := p.commonSource(); srcID != "" {
+		if src := m.sources.GetString(srcID); src != nil && src.LoggedIn() && src.Caps().Has(source.CapPlaylistWrite) {
+			p.remoteBusy = true
+			cmd = m.loadTargetRemotesCmd(src.ID())
+		}
+	}
+	return cmd
+}
+
+// openMergePicker 把当前选中的歌单以「引用」方式加入另一个混合歌单。
+func (m *Model) openMergePicker() tea.Cmd {
+	if m.store == nil {
+		return nil
+	}
+	sourcePlaylist, ok := m.currentPlaylist()
+	if !ok {
+		m.setNotice("先选一个源歌单", true)
+		return nil
+	}
+	if sourcePlaylist.Kind == "mixin" {
+		m.setNotice("混合歌单不能作为引用源（不支持嵌套）", true)
+		return nil
+	}
+	if app.IsDailyPlaylist(sourcePlaylist) {
+		m.setNotice("「每日推荐」是动态列表，不能作为引用源", true)
+		return nil
+	}
+	items := m.localTargets(true, sourcePlaylist.ID)
+	if len(items) == 0 {
+		m.setNotice("没有可混入的混合歌单，先按 N 新建一个", true)
+		return nil
+	}
+	m.picker = &targetPickerState{
+		mode:             targetPickerMerge,
+		sourcePlaylistID: sourcePlaylist.ID,
+		sourceTitle:      sourcePlaylist.Title,
+		items:            items,
+	}
+	m.picker.normalize()
+	return nil
+}
+
+// localTargets 构造本地目标列表。mergeOnly 时只保留混合歌单。
+// pickerSongs 返回当前选择器里的歌曲，用于判断是否只能进仅本机歌单。
+func (m *Model) pickerSongs() []store.Song {
+	if m.picker == nil {
+		return nil
+	}
+	return m.picker.songsForAdd()
+}
+
+// requiresLocalOnly 判断这批歌里是否有本地曲目。
+func requiresLocalOnly(songs []store.Song) bool {
+	for _, song := range songs {
+		if song.Source == "local" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) localTargets(mergeOnly bool, excludeID string) []playlistTarget {
+	out := make([]playlistTarget, 0, len(m.playlists))
+	for _, p := range m.playlists {
+		if p.ID == excludeID {
+			continue
+		}
+		if mergeOnly {
+			if p.Kind != "mixin" {
+				continue
+			}
+		} else if p.Kind != "local" && p.Kind != "mixin" {
+			// 文件夹歌单只读，不能作为加歌目标；它能被混合歌单引用，但引用走 merge 路径。
+			continue
+		}
+		// 本地曲目只能在仅本机歌单里存在，否则同步仓库会出现别的设备没有的条目。
+		if !mergeOnly && requiresLocalOnly(m.pickerSongs()) && !p.SyncExcluded {
+			continue
+		}
+		out = append(out, playlistTarget{
+			ID:     p.ID,
+			Title:  p.Title,
+			Source: p.Source,
+			Kind:   p.Kind,
+			Count:  p.Count,
+		})
+	}
+	if mergeOnly {
+		return out
+	}
+	createLabel := "＋ 新建本地歌单并加入"
+	if requiresLocalOnly(m.pickerSongs()) {
+		createLabel = "＋ 新建仅本机歌单并加入"
+	}
+	out = append(out, playlistTarget{Title: createLabel, Create: true})
+	// 已导入的远端歌单也能直接写云端，先放进来；未导入的等异步列表补齐。
+	songSource := m.pickerSongSource()
+	src := m.sources.GetString(songSource)
+	writableCloud := src != nil && src.LoggedIn() && src.Caps().Has(source.CapPlaylistWrite)
+	for _, p := range m.playlists {
+		if !writableCloud || p.Kind != "remote" || p.RemoteID == "" || app.IsDailyPlaylist(p) || p.Source != songSource {
+			continue
+		}
+		out = append(out, playlistTarget{
+			ID:       p.ID,
+			Title:    p.Title,
+			Source:   p.Source,
+			RemoteID: p.RemoteID,
+			Kind:     p.Kind,
+			Count:    p.Count,
+			Cloud:    true,
+		})
+	}
+	sortTargetsCreateLast(out)
+	return out
+}
+
+func (m *Model) pickerSongSource() string {
+	if m.picker != nil {
+		return m.picker.commonSource()
+	}
+	return ""
+}
+
+func (m *Model) preferCurrentTarget(items []playlistTarget) []playlistTarget {
+	id := m.currentPlaylistID()
+	if id == "" && m.store != nil {
+		id = m.service().LastAddPlaylist()
+	}
+	if id == "" {
+		return items
+	}
+	for i, item := range items {
+		if item.ID == id {
+			copy(items[1:i+1], items[0:i])
+			items[0] = item
+			return items
+		}
+	}
+	return items
+}
+
+func (m *Model) loadTargetRemotesCmd(srcID source.ID) tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		items, err := svc.CloudPlaylists(ctx, srcID)
+		return targetRemotesMsg{source: srcID, items: items, err: err}
+	}
+}
+
+func (m *Model) handlePickerKey(key tea.Key) (tea.Model, tea.Cmd) {
+	p := m.picker
+	if p == nil {
+		return m, nil
+	}
+	if isCtrl(key, 'c') {
+		m.shutdown()
+		return m, tea.Quit
+	}
+	switch key.Code {
+	case tea.KeyEscape:
+		m.picker = nil
+		return m, nil
+	case tea.KeyEnter:
+		return m, m.chooseTarget()
+	case tea.KeyUp:
+		if p.idx > 0 {
+			p.idx--
+		}
+		return m, nil
+	case tea.KeyDown:
+		if p.idx < len(m.filteredTargets())-1 {
+			p.idx++
+		}
+		return m, nil
+	case tea.KeyBackspace:
+		if r := []rune(p.filter); len(r) > 0 {
+			p.filter = string(r[:len(r)-1])
+			p.idx = 0
+		}
+		return m, nil
+	}
+	if isCtrl(key, 'u') {
+		p.filter = ""
+		p.idx = 0
+		return m, nil
+	}
+	if key.Text != "" && key.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModSuper) == 0 {
+		p.filter += key.Text
+		p.idx = 0
+	}
+	return m, nil
+}
+
+func (m *Model) filteredTargets() []playlistTarget {
+	if m.picker == nil {
+		return nil
+	}
+	q := strings.ToLower(strings.TrimSpace(m.picker.filter))
+	if q == "" {
+		return m.picker.items
+	}
+	out := make([]playlistTarget, 0, len(m.picker.items))
+	for _, item := range m.picker.items {
+		if strings.Contains(strings.ToLower(item.Title+" "+item.Kind+" "+item.Source), q) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func sortTargetsCreateLast(items []playlistTarget) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return !items[i].Create && items[j].Create
+	})
+}
+
+func (p *targetPickerState) normalize() {
+	if p.idx < 0 {
+		p.idx = 0
+	}
+	if p.idx >= len(p.items) {
+		p.idx = max(0, len(p.items)-1)
+	}
+}
+
+func (m *Model) chooseTarget() tea.Cmd {
+	items := m.filteredTargets()
+	if len(items) == 0 {
+		return nil
+	}
+	p := m.picker
+	if p == nil {
+		return nil
+	}
+	if p.idx < 0 || p.idx >= len(items) {
+		p.idx = clampInt(p.idx, 0, len(items)-1)
+	}
+	target := items[p.idx]
+	songs := p.songsForAdd()
+	switch p.mode {
+	case targetPickerMerge:
+		return m.commitMergeRef(target)
+	default:
+		if target.Create {
+			m.picker = nil
+			m.pendingAddSongs = append([]store.Song(nil), songs...)
+			if requiresLocalOnly(songs) {
+				m.beginPrompt(promptNewLocalOnly)
+			} else {
+				m.beginPrompt(promptNewPlaylist)
+			}
+			return nil
+		}
+		if target.Cloud {
+			return m.addSongsToCloudCmd(songs, target)
+		}
+		return m.commitLocalAdd(target, songs)
+	}
+}
+
+// commitLocalAdd 把一批歌曲写入本地/混合歌单，保持列表顺序。
+func (m *Model) commitLocalAdd(target playlistTarget, songs []store.Song) tea.Cmd {
+	if m.store == nil {
+		return nil
+	}
+	added, err := m.service().AddSongsToPlaylist(target.ID, songs)
+	if err != nil {
+		if m.picker != nil {
+			m.picker.err = err.Error()
+		}
+		m.setError(err)
+		return nil
+	}
+	m.picker = nil
+	if m.store != nil {
+		m.service().SaveLastAddPlaylist(target.ID)
+	}
+	if len(songs) == 1 {
+		m.setNotice(fmt.Sprintf("已加入歌单：%s", target.Title), false)
+	} else {
+		m.setNotice(fmt.Sprintf("已加入歌单：%s（%d 首）", target.Title, added), false)
+	}
+	return m.loadLocalPlaylistsCmd()
+}
+
+// addSongsToCloudCmd 逐首写入云端歌单。云端接口没有批量写入口，
+// 这里串行调用并统计成功数量；中途失败保留已写入的部分。
+func (m *Model) addSongsToCloudCmd(songs []store.Song, target playlistTarget) tea.Cmd {
+	sources := m.sources
+	prepared := make([]store.Song, 0, len(songs))
+	for _, raw := range songs {
+		song := store.NormalizeSong(raw)
+		if song.Source == target.Source {
+			prepared = append(prepared, song)
+		}
+	}
+	if len(prepared) == 0 {
+		m.setNotice("选中的歌与目标云端歌单不属于同一音源", true)
+		if m.picker != nil {
+			m.picker = nil
+		}
+		return nil
+	}
+	if m.picker != nil {
+		m.picker = nil
+	}
+	m.setNotice("正在加入云端歌单…", false)
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		svc := app.New(sources, nil, nil)
+		added := 0
+		var firstErr error
+		for _, song := range prepared {
+			if err := svc.AddToCloudPlaylist(ctx, song, target.RemoteID); err != nil {
+				firstErr = err
+				break
+			}
+			added++
+		}
+		return playlistAddMsg{target: target, song: prepared[0], count: added, err: firstErr}
+	}
+}
+
+func (m *Model) commitMergeRef(target playlistTarget) tea.Cmd {
+	if m.store == nil || m.picker == nil {
+		return nil
+	}
+	added, err := m.service().AddMixinRef(target.ID, m.picker.sourcePlaylistID)
+	if err != nil {
+		m.picker.err = err.Error()
+		m.setError(err)
+		return nil
+	}
+	sourceTitle := m.picker.sourceTitle
+	m.picker = nil
+	if added {
+		m.setNotice(fmt.Sprintf("已将「%s」引用到「%s」", sourceTitle, target.Title), false)
+	} else {
+		m.setNotice(fmt.Sprintf("「%s」已经引用了「%s」", target.Title, sourceTitle), false)
+	}
+	return m.loadLocalPlaylistsCmd()
+}
+
+func (m *Model) targetPickerLines() []string {
+	p := m.picker
+	if p == nil {
+		return nil
+	}
+	width := m.width - 6
+	if width > 72 {
+		width = 72
+	}
+	if width < 30 {
+		width = max(20, m.width-2)
+	}
+	inner := width - 2
+	title := p.displayTitle()
+	if p.mode == targetPickerMerge {
+		title = "混入混合歌单 · " + p.sourceTitle
+	}
+	out := []string{boxTop(truncate(title, width-2), width)}
+	input := "> " + p.filter + "▏"
+	out = append(out, boxLine(input, inner))
+
+	items := m.filteredTargets()
+	if p.idx >= len(items) {
+		p.idx = max(0, len(items)-1)
+	}
+	if len(items) == 0 {
+		if p.remoteBusy {
+			out = append(out, boxLine(st.dim.Render("正在读取云端歌单…"), inner))
+		} else {
+			out = append(out, boxLine(st.dim.Render("没有匹配的歌单"), inner))
+		}
+	} else {
+		maxRows := m.height - 8
+		if maxRows < 4 {
+			maxRows = 4
+		}
+		if maxRows > 12 {
+			maxRows = 12
+		}
+		start, end := windowRange(len(items), p.idx, maxRows)
+		for i := start; i < end; i++ {
+			item := items[i]
+			tag := "本"
+			switch {
+			case item.Create:
+				tag = "新"
+			case item.Cloud:
+				tag = m.sourceMark(source.ID(item.Source))
+			case item.Kind == "mixin":
+				tag = "混"
+			}
+			// 浮层里每行占 inner-1 列，再由 boxLine 补上左侧 1 列空白。
+			row := m.renderPlaylistRow(playlistRowSpec{
+				Selected: i == p.idx,
+				Tag:      tag,
+				Title:    item.Title,
+				Count:    item.Count,
+			}, inner-1)
+			out = append(out, boxLine(row, inner))
+		}
+	}
+
+	if p.remoteBusy {
+		out = append(out, boxLine(st.dim.Render("云端歌单加载中…"), inner))
+	}
+	if p.remoteErr != "" {
+		out = append(out, boxLine(st.warn.Render(truncate(p.remoteErr, inner-1)), inner))
+	}
+	if p.err != "" {
+		out = append(out, boxLine(st.err.Render(truncate(p.err, inner-1)), inner))
+	}
+	if p.mode == targetPickerMerge {
+		out = append(out, boxLine(st.dim.Render("enter 添加引用 · 源歌单内容会随源更新"), inner))
+	} else {
+		footer := "enter 加入 · ↑/↓ 选择 · esc 取消"
+		if n := len(p.songsForAdd()); n > 1 {
+			footer = fmt.Sprintf("enter 加入 %d 首 · ↑/↓ 选择 · esc 取消", n)
+		}
+		out = append(out, boxLine(st.dim.Render(footer), inner))
+	}
+	out = append(out, boxBottom(width))
+	return out
+}
+
+// songForPlaylistAdd 按当前视图取「要加入歌单」的那首歌：
+// 曲库/搜索取选中项，队列取光标项，歌词页取正在播放。
+func (m *Model) songForPlaylistAdd() (store.Song, bool) {
+	switch m.view {
+	case viewLibrary:
+		if m.libraryFocus != focusSongs || m.songIdx < 0 || m.songIdx >= len(m.songs) {
+			return store.Song{}, false
+		}
+		return m.songs[m.songIdx], true
+	case viewSearch:
+		if m.searchMode == searchSource {
+			if m.searchIdx < 0 || m.searchIdx >= len(m.searchResults) {
+				return store.Song{}, false
+			}
+			return m.searchResultSong(m.searchIdx), true
+		}
+		if m.searchIdx < 0 || m.searchIdx >= len(m.localResults) {
+			return store.Song{}, false
+		}
+		return m.localResults[m.searchIdx], true
+	case viewQueue:
+		if m.queueCursor < 0 || m.queueCursor >= len(m.queue) {
+			return store.Song{}, false
+		}
+		return m.queue[m.queueCursor], true
+	case viewLyrics:
+		if m.current == nil {
+			return store.Song{}, false
+		}
+		return *m.current, true
+	}
+	return store.Song{}, false
+}

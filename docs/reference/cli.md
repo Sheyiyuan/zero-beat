@@ -28,6 +28,7 @@ zero keymap --init          # 生成默认快捷键配置
 zero keymap --check         # 校验快捷键配置
 zero sync init --remote <url>   # 初始化/加入同步仓库（zero sync 查看全部子命令）
 zero sync status|pull|push|conflicts|resolve|key rotate
+zero sync --backend auto|cli|gogit pull # 本次调用覆盖同步后端
 zero --version              # 打印版本
 ```
 
@@ -73,6 +74,7 @@ zero +type "周杰伦"            # 需要先打开搜索框、命令面板等�
 | `ZERO_THEME_PALETTE` | 临时指定配色（`zero-red` / `hanpai-blue`），优先级高于数据库里的 `theme_palette` 设置 |
 | `ZERO_MOUSE` | 设为 `0` 关闭鼠标接管，终端自身的右键菜单与拖选恢复 |
 | `ZERO_SYSMEDIA` | 设为 `0` 关闭 Linux MPRIS 系统媒体注册 |
+| `ZERO_SYNC_BACKEND` | 同步后端 `auto` / `cli` / `gogit`；优先级低于命令行 `--backend`，高于 `sync.toml` |
 
 ## 数据位置
 

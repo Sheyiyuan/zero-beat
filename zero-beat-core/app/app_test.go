@@ -1,0 +1,555 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+)
+
+type baseFake struct {
+	id         source.ID
+	caps       source.Capability
+	logged     bool
+	search     source.SearchPage
+	searchErr  error
+	resolved   source.Resolved
+	resolveErr error
+	lyricLines []lyrics.Line
+	lyricName  string
+	playlists  []source.Playlist
+	tracks     []source.Track
+	accountErr error
+}
+
+func (f *baseFake) ID() source.ID { return f.id }
+func (f *baseFake) Name() string  { return string(f.id) }
+func (f *baseFake) Mark() string  { return "F" }
+
+// baseFake 代表一个平台音源：账号类测试都需要 CapAccount 才会被遍历。
+func (f *baseFake) Caps() source.Capability { return f.caps | source.CapAccount }
+func (f *baseFake) LoggedIn() bool          { return f.logged }
+func (f *baseFake) User() source.User       { return source.User{LoggedIn: f.logged} }
+func (f *baseFake) Account(context.Context) (source.User, error) {
+	if f.accountErr != nil {
+		return source.User{}, f.accountErr
+	}
+	return f.User(), nil
+}
+func (f *baseFake) StartQRLogin(context.Context) (source.QRCode, error) {
+	return source.QRCode{}, nil
+}
+func (f *baseFake) PollQRLogin(context.Context, string) (source.LoginStatus, error) {
+	return source.LoginStatus{}, nil
+}
+func (f *baseFake) Search(context.Context, string, int) (source.SearchPage, error) {
+	return f.search, f.searchErr
+}
+func (f *baseFake) Resolve(context.Context, source.Ref, source.Quality) (source.Resolved, error) {
+	return f.resolved, f.resolveErr
+}
+func (f *baseFake) Lyrics(context.Context, source.Ref) ([]lyrics.Line, string, error) {
+	return f.lyricLines, f.lyricName, nil
+}
+func (f *baseFake) RemotePlaylists(context.Context) ([]source.Playlist, error) {
+	return f.playlists, nil
+}
+func (f *baseFake) PlaylistTracks(context.Context, string) ([]source.Track, error) {
+	return f.tracks, nil
+}
+func (f *baseFake) Session() map[string]string   { return nil }
+func (f *baseFake) SetSession(map[string]string) {}
+func (f *baseFake) Logout()                      {}
+
+type dailyFake struct {
+	*baseFake
+	daily []source.Track
+}
+
+func (f *dailyFake) DailyRecommendations(context.Context) ([]source.Track, error) {
+	return f.daily, nil
+}
+
+// refreshFake 在 baseFake 上补一个可配置的续期实现，用来验证启动续期、
+// 过期前救援和续期后的登录态落盘。
+type refreshFake struct {
+	*baseFake
+	session    map[string]string
+	refreshErr error
+	refreshes  int
+	accounts   int
+	accountFns []error
+}
+
+func (f *refreshFake) Session() map[string]string { return f.session }
+
+func (f *refreshFake) RefreshSession(context.Context) error {
+	f.refreshes++
+	return f.refreshErr
+}
+
+func (f *refreshFake) Account(context.Context) (source.User, error) {
+	idx := f.accounts
+	f.accounts++
+	if idx < len(f.accountFns) && f.accountFns[idx] != nil {
+		return source.User{}, f.accountFns[idx]
+	}
+	return source.User{LoggedIn: true}, nil
+}
+
+func openTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+func TestPlaylistsCreatesDefaultAndDaily(t *testing.T) {
+	st := openTestStore(t)
+	src := &dailyFake{
+		baseFake: &baseFake{id: "fake", caps: source.CapDailyRecommendations, logged: true},
+		daily:    []source.Track{{Source: "fake", ExternalID: "1", Title: "日推"}},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	items, warn, err := svc.Playlists(context.Background())
+	if err != nil || warn != nil {
+		t.Fatalf("加载歌单失败: err=%v warn=%v", err, warn)
+	}
+	found := map[string]store.Playlist{}
+	for _, p := range items {
+		found[p.ID] = p
+	}
+	if _, ok := found["local-default"]; !ok {
+		t.Fatalf("默认本地歌单缺失: %+v", items)
+	}
+	daily, ok := found[DailyPlaylistID("fake")]
+	if !ok || daily.Source != "fake" || daily.RemoteID != "daily" {
+		t.Fatalf("每日推荐入口不符: %+v", daily)
+	}
+	if !IsDailyPlaylist(daily) {
+		t.Fatal("每日推荐歌单应被识别")
+	}
+
+	songs, warn, err := svc.PlaylistSongs(context.Background(), daily, false)
+	if err != nil || warn != nil || len(songs) != 1 || songs[0].Title != "日推" {
+		t.Fatalf("日推曲目不符: %+v err=%v warn=%v", songs, err, warn)
+	}
+}
+
+func TestSearchPartialFailureKeepsResults(t *testing.T) {
+	ok := &baseFake{
+		id:     "ok",
+		caps:   source.CapSearch,
+		search: source.SearchPage{Page: 1, Pages: 2, Candidates: []source.Candidate{{Track: source.Track{Source: "ok", ExternalID: "1", Title: "A"}}}},
+	}
+	bad := &baseFake{id: "bad", caps: source.CapSearch, searchErr: errors.New("boom")}
+	svc := New(source.NewRegistry(ok, bad), nil, nil)
+
+	res, err := svc.Search(context.Background(), "x", 1, "")
+	if err != nil || res.Warn == nil || len(res.Candidates) != 1 || res.Pages != 2 {
+		t.Fatalf("部分失败结果不符: %+v err=%v", res, err)
+	}
+	if _, err := svc.Search(context.Background(), "x", 1, "missing"); err == nil {
+		t.Fatal("未知音源应报错")
+	}
+}
+
+func TestResolveMergesAndPersists(t *testing.T) {
+	st := openTestStore(t)
+	src := &baseFake{
+		id:   "fake",
+		caps: source.CapSearch,
+		resolved: source.Resolved{
+			Track:  source.Track{Source: "fake", ExternalID: "42", Page: 1, Title: "标题", Artist: "歌手", Duration: 120},
+			Stream: source.Stream{URL: "https://example/a.mp3", Codec: "mp3", Duration: 2 * time.Minute},
+		},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	song, stream, err := svc.Resolve(context.Background(), store.Song{Source: "fake", RemoteID: "42", Page: 1}, source.QualityAuto)
+	if err != nil || stream.URL == "" || song.Title != "标题" || song.Artist != "歌手" {
+		t.Fatalf("解析结果不符: song=%+v stream=%+v err=%v", song, stream, err)
+	}
+	stored, err := st.Song(song.ID)
+	if err != nil || stored.Title != "标题" {
+		t.Fatalf("解析结果未落库: %+v err=%v", stored, err)
+	}
+}
+
+func TestPreferencesRoundTrip(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+	prefs := svc.Preferences()
+	if prefs.Volume != 0.8 || prefs.Quality != source.QualityAuto {
+		t.Fatalf("默认偏好不符: %+v", prefs)
+	}
+	svc.SaveVolume(0.5)
+	svc.SaveCompDB(2)
+	svc.SaveQuality(source.QualityLossless)
+	svc.SaveMode(2)
+	svc.SavePlayingPlaylist("local-default")
+
+	got := New(nil, st, nil).Preferences()
+	if got.Volume != 0.5 || got.CompDB != 2 || got.Quality != source.QualityLossless || got.Mode != 2 || got.PlayingPlaylist != "local-default" {
+		t.Fatalf("偏好回读不符: %+v", got)
+	}
+
+	// 顺序（播完即停）是第 4 个模式值；越界值忽略，旧版本读到它也能回落默认。
+	svc.SaveMode(3)
+	if got := New(nil, st, nil).Preferences(); got.Mode != 3 {
+		t.Fatalf("mode=3 应能读出，实际 %+v", got)
+	}
+	if err := st.SetSetting("mode", "4"); err != nil {
+		t.Fatalf("写入越界 mode: %v", err)
+	}
+	if got := New(nil, st, nil).Preferences(); got.Mode != 0 {
+		t.Fatalf("越界 mode 应回落到默认列表循环，实际 %d", got.Mode)
+	}
+}
+
+func TestPreferencesAutoGainAndSongComp(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+	if svc.Preferences().AutoGain {
+		t.Fatal("自动响度均衡默认应关闭")
+	}
+	svc.SaveAutoGain(true)
+	if !New(nil, st, nil).Preferences().AutoGain {
+		t.Fatal("自动响度均衡开关未持久化")
+	}
+	if got := svc.SongCompDB("song-1"); got != 0 {
+		t.Fatalf("单曲补偿默认应为 0，实际 %v", got)
+	}
+	svc.SaveSongCompDB("song-1", -1.5)
+	if got := New(nil, st, nil).SongCompDB("song-1"); got != -1.5 {
+		t.Fatalf("单曲补偿未持久化，实际 %v", got)
+	}
+}
+
+func TestPlaylistOpsAndQueueSave(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+	song := store.Song{Source: "fake", RemoteID: "1", Page: 1, Title: "A"}
+
+	p, err := svc.CreatePlaylistWithSong("测试歌单", song)
+	if err != nil {
+		t.Fatalf("新建歌单失败: %v", err)
+	}
+	items, err := st.PlaylistSongs(p.ID)
+	if err != nil || len(items) != 1 || items[0].Title != "A" {
+		t.Fatalf("歌单曲目不符: %+v err=%v", items, err)
+	}
+	if err := svc.RemoveSongFromPlaylist(p.ID, items[0].ID); err != nil {
+		t.Fatalf("移除歌曲失败: %v", err)
+	}
+	if err := svc.SaveQueue([]store.Song{song}, 0, 1234); err != nil {
+		t.Fatalf("保存队列失败: %v", err)
+	}
+	q, err := st.LoadQueue()
+	if err != nil || len(q.IDs) != 1 || q.Position != 1234 {
+		t.Fatalf("队列回读不符: %+v err=%v", q, err)
+	}
+}
+
+func TestUsersDetectsExpiredSessionAndLogoutFreezes(t *testing.T) {
+	st := openTestStore(t)
+	remote, err := st.EnsurePlaylist(store.Playlist{
+		ID: "fake-fav-1", Source: "fake", Title: "收藏", Kind: "remote", RemoteID: "1",
+	})
+	if err != nil {
+		t.Fatalf("建远端歌单失败: %v", err)
+	}
+	mix, err := st.CreateMixin("混合", []string{remote.ID})
+	if err != nil {
+		t.Fatalf("建混合歌单失败: %v", err)
+	}
+	if err := st.SaveAccount("fake", []byte(`{"token":"x"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &baseFake{id: "fake", logged: true, accountErr: source.ErrSessionExpired}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	users, expired := svc.Users(context.Background())
+	if len(expired) != 1 || expired[0] != "fake" {
+		t.Fatalf("应检测到登录过期: expired=%+v", expired)
+	}
+	if u := users["fake"]; u.LoggedIn {
+		t.Fatalf("过期音源不应继续显示已登录: %+v", u)
+	}
+	if _, err := st.LoadAccount("fake"); err != nil {
+		t.Fatalf("检测阶段不应清理账号: %v", err)
+	}
+
+	svc.Logout("fake")
+	if _, err := st.LoadAccount("fake"); err != store.ErrNotFound {
+		t.Fatalf("登出后应清除账号: %v", err)
+	}
+	got, err := st.Playlist(remote.ID)
+	if err != nil || !got.Frozen {
+		t.Fatalf("登出后应冻结远端歌单: %+v err=%v", got, err)
+	}
+	refs, err := st.MixinRefs(mix.ID)
+	if err != nil || len(refs) != 1 || refs[0].ID != remote.ID {
+		t.Fatalf("登出后混合歌单引用不应丢失: %+v err=%v", refs, err)
+	}
+}
+
+func TestRefreshSessionsPersistsRotatedSession(t *testing.T) {
+	st := openTestStore(t)
+	old := time.Now().Add(-24 * time.Hour).Unix()
+	if err := st.SaveAccountAt("fake", []byte(`{"MUSIC_U":"old"}`), old); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &refreshFake{
+		baseFake: &baseFake{id: "fake", logged: true},
+		session:  map[string]string{"MUSIC_U": "new"},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	refreshed := svc.RefreshSessions(context.Background())
+	if len(refreshed) != 1 || refreshed[0] != "fake" {
+		t.Fatalf("应续期并记录 fake: %+v", refreshed)
+	}
+	if src.refreshes != 1 {
+		t.Fatalf("应调用一次续期: %d", src.refreshes)
+	}
+	payload, err := st.LoadAccount("fake")
+	if err != nil || !strings.Contains(string(payload), "new") {
+		t.Fatalf("续期后的登录态应落盘: %s err=%v", payload, err)
+	}
+}
+
+func TestRefreshSessionsSkipsFreshSession(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.SaveAccount("fake", []byte(`{"MUSIC_U":"old"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &refreshFake{
+		baseFake: &baseFake{id: "fake", logged: true},
+		session:  map[string]string{"MUSIC_U": "new"},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	if got := svc.RefreshSessions(context.Background()); len(got) != 0 {
+		t.Fatalf("刚存过的登录态不应立刻续期: %+v", got)
+	}
+	if src.refreshes != 0 {
+		t.Fatalf("刚存过的登录态不应调用续期: %d", src.refreshes)
+	}
+}
+
+func TestUsersRefreshesBeforeDeclaringSessionExpired(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.SaveAccount("fake", []byte(`{"MUSIC_U":"old"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	src := &refreshFake{
+		baseFake:   &baseFake{id: "fake", logged: true},
+		session:    map[string]string{"MUSIC_U": "new"},
+		accountFns: []error{source.ErrSessionExpired, nil},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	users, expired := svc.Users(context.Background())
+	if len(expired) != 0 {
+		t.Fatalf("续期成功后不应判定过期: %+v", expired)
+	}
+	if !users["fake"].LoggedIn {
+		t.Fatalf("续期成功后应保持已登录: %+v", users)
+	}
+	if src.refreshes != 1 {
+		t.Fatalf("过期判定前应先续期一次: %d", src.refreshes)
+	}
+	payload, err := st.LoadAccount("fake")
+	if err != nil || !strings.Contains(string(payload), "new") {
+		t.Fatalf("救援后的登录态应落盘: %s err=%v", payload, err)
+	}
+}
+
+func TestUsersKeepsExpiredWhenRefreshRejected(t *testing.T) {
+	st := openTestStore(t)
+	src := &refreshFake{
+		baseFake:   &baseFake{id: "fake", logged: true},
+		session:    map[string]string{"MUSIC_U": "new"},
+		refreshErr: source.ErrSessionExpired,
+		accountFns: []error{source.ErrSessionExpired, source.ErrSessionExpired},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+
+	_, expired := svc.Users(context.Background())
+	if len(expired) != 1 || expired[0] != "fake" {
+		t.Fatalf("续期被拒时应判定过期: %+v", expired)
+	}
+}
+
+func TestUsersDetectsUnloadableStoredSession(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.SaveAccount("fake", []byte(`{"token":"x"}`)); err != nil {
+		t.Fatalf("保存登录态失败: %v", err)
+	}
+	svc := New(source.NewRegistry(
+		&baseFake{id: "fake", logged: false},
+		&baseFake{id: "other", logged: false},
+	), st, nil)
+
+	_, expired := svc.Users(context.Background())
+	if len(expired) != 1 || expired[0] != "fake" {
+		t.Fatalf("库里有账号但装不进音源时应判定过期: %+v", expired)
+	}
+}
+
+// TestDeletePlaylistCompletely 验证同步歌单可以删除本地副本（先解锁再删），
+// 每日推荐入口与被混合歌单引用的歌单则拒绝删除，且不能留下半套状态。
+func TestDeletePlaylistCompletely(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+
+	remote, err := st.EnsurePlaylist(store.Playlist{
+		ID: "fake-fav-1", Source: "fake", Title: "收藏", Kind: "remote", RemoteID: "1",
+	})
+	if err != nil {
+		t.Fatalf("建同步歌单失败: %v", err)
+	}
+	if err := svc.DeletePlaylistCompletely(remote.ID); err != nil {
+		t.Fatalf("删除同步歌单失败: %v", err)
+	}
+	if _, err := st.Playlist(remote.ID); err == nil {
+		t.Fatal("同步歌单删除后不应还能读到")
+	}
+
+	daily, err := st.EnsurePlaylist(store.Playlist{
+		ID: DailyPlaylistID("fake"), Source: "fake", Title: "每日推荐", Kind: "remote", RemoteID: "daily",
+	})
+	if err != nil {
+		t.Fatalf("建每日推荐失败: %v", err)
+	}
+	if err := svc.DeletePlaylistCompletely(daily.ID); err == nil {
+		t.Fatal("每日推荐入口不应允许删除")
+	}
+
+	remote, err = st.EnsurePlaylist(store.Playlist{
+		ID: "fake-fav-2", Source: "fake", Title: "收藏 2", Kind: "remote", RemoteID: "2",
+	})
+	if err != nil {
+		t.Fatalf("建同步歌单失败: %v", err)
+	}
+	if _, err := st.CreateMixin("混合", []string{remote.ID}); err != nil {
+		t.Fatalf("建混合歌单失败: %v", err)
+	}
+	if err := svc.DeletePlaylistCompletely(remote.ID); err == nil {
+		t.Fatal("被混合歌单引用的歌单应拒绝删除")
+	}
+	p, err := st.Playlist(remote.ID)
+	if err != nil || p.Kind != "remote" {
+		t.Fatalf("删除失败后不应把歌单解锁成半套状态: %+v err=%v", p, err)
+	}
+}
+
+func TestResolvePrefersLocalDownload(t *testing.T) {
+	st := openTestStore(t)
+	remote := source.Stream{URL: "https://example.invalid/remote.flac", Quality: "无损"}
+	src := &baseFake{
+		id: "fake",
+		resolved: source.Resolved{
+			Track:  source.Track{Source: "fake", ExternalID: "1", Title: "远程标题"},
+			Stream: remote,
+		},
+	}
+	svc := New(source.NewRegistry(src), st, nil)
+	song := SongFromTrack(source.Track{Source: "fake", ExternalID: "1", Title: "本地标题", Duration: 120})
+
+	path := filepath.Join(t.TempDir(), "song.flac")
+	if err := os.WriteFile(path, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("写入临时音频失败: %v", err)
+	}
+	if err := svc.RecordDownload(song, path, 5, "flac", 2*time.Minute); err != nil {
+		t.Fatalf("登记下载失败: %v", err)
+	}
+
+	got, stream, err := svc.Resolve(context.Background(), song, source.QualityAuto)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if stream.URL != path || stream.Quality != "本地" || stream.Duration != 2*time.Minute {
+		t.Fatalf("应优先本地流: %+v", stream)
+	}
+	if got.ID != song.ID {
+		t.Fatalf("本地解析不应改变歌曲 ID: %s", got.ID)
+	}
+
+	svc.SaveLocalFirst(false)
+	if _, stream, _ = svc.Resolve(context.Background(), song, source.QualityAuto); stream.URL != remote.URL {
+		t.Fatalf("关闭本地优先后应走远程: %+v", stream)
+	}
+
+	svc.SaveLocalFirst(true)
+	if _, stream, _ = svc.ResolveWithLocal(context.Background(), song, source.QualityAuto, false); stream.URL != remote.URL {
+		t.Fatalf("显式禁用本地后应走远程: %+v", stream)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("删除临时音频失败: %v", err)
+	}
+	if _, stream, _ = svc.Resolve(context.Background(), song, source.QualityAuto); stream.URL != remote.URL {
+		t.Fatalf("本地文件失效后应回落远程: %+v", stream)
+	}
+
+	entries, err := svc.Downloads()
+	if err != nil || len(entries) != 1 || entries[0].Song.ID != song.ID {
+		t.Fatalf("下载列表不符: %+v err=%v", entries, err)
+	}
+	if err := svc.DeleteDownload(song.ID); err != nil {
+		t.Fatalf("删除下载记录失败: %v", err)
+	}
+	if entries, _ = svc.Downloads(); len(entries) != 0 {
+		t.Fatalf("删除后应为空: %+v", entries)
+	}
+}
+
+// TestCreatePlaylistWithSongsKeepsOrder 验证批量建单/加歌按传入顺序落库，
+// 这条路径由曲库多选「加入歌单」直接使用。
+func TestCreatePlaylistWithSongsKeepsOrder(t *testing.T) {
+	st := openTestStore(t)
+	svc := New(nil, st, nil)
+	songs := []store.Song{
+		{Source: "bilibili", BVID: "BV1", Page: 1, Title: "A"},
+		{Source: "bilibili", BVID: "BV2", Page: 1, Title: "B"},
+		{Source: "bilibili", BVID: "BV3", Page: 1, Title: "C"},
+	}
+
+	p, err := svc.CreatePlaylistWithSongs("批量建单", songs)
+	if err != nil {
+		t.Fatalf("批量建单失败: %v", err)
+	}
+	got, err := st.PlaylistSongs(p.ID)
+	if err != nil {
+		t.Fatalf("读歌单失败: %v", err)
+	}
+	if len(got) != len(songs) {
+		t.Fatalf("应写入 %d 首，实际 %d", len(songs), len(got))
+	}
+	for i, want := range songs {
+		if got[i].BVID != want.BVID {
+			t.Fatalf("第 %d 首顺序不符: %+v", i, got)
+		}
+	}
+
+	added, err := svc.AddSongsToPlaylist(p.ID, songs[:2])
+	if err != nil || added != 2 {
+		t.Fatalf("批量加歌失败: added=%d err=%v", added, err)
+	}
+	if got, _ = st.PlaylistSongs(p.ID); len(got) != 3 {
+		t.Fatalf("重复歌曲不应增加条目: %+v", got)
+	}
+}

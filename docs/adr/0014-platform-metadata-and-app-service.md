@@ -12,7 +12,7 @@ v0.3 接第二个音源时补了 `source.Source`，但平台信息仍然散落�
   各有一份平台分支；
 - 每日推荐只给网易云建入口，`Candidate.Fee` 是网易云专用字段，
   `download.Ext` 用平台名猜扩展名；
-- `internal/tui/cmds.go` 直接做多源搜索、取流、歌词兜底、歌单同步与登录，
+- `zero-beat-tui/internal/tui/cmds.go` 直接做多源搜索、取流、歌词兜底、歌单同步与登录，
   `Model` 同时承担 UI 状态和业务编排。
 
 继续加平台会把这些问题放大：每加一个源都要改核心包、CLI、TUI 和下载层。
@@ -43,9 +43,9 @@ v0.3 接第二个音源时补了 `source.Source`，但平台信息仍然散落�
 - 每日推荐入口的 ID 由 `app.DailyPlaylistID(sourceID)` 生成，`app.IsDailyPlaylist`
   统一判断；任何 `CapDailyRecommendations` + `DailyRecommender` 的音源都会获得入口。
 
-### 新增 `internal/app`
+### 新增 `zero-beat-core/app`
 
-`internal/app` 是界面的业务服务，持有 `source.Registry` / `store.Store` /
+`zero-beat-core/app` 是界面的业务服务，持有 `source.Registry` / `store.Store` /
 `lrclib.Client`，提供：
 
 - `Search`：多源并发搜索、部分失败告警；
@@ -59,13 +59,13 @@ v0.3 接第二个音源时补了 `source.Source`，但平台信息仍然散落�
 - 歌单 CRUD、混合歌单引用、片段设置、本地搜索、账号持久化；
 - `AddToCloudPlaylist`：同源云端写入。
 
-`internal/tui/cmds.go` 只保留 `tea.Cmd` 包装和消息类型：从 `Model` 取依赖、
+`zero-beat-tui/internal/tui/cmds.go` 只保留 `tea.Cmd` 包装和消息类型：从 `Model` 取依赖、
 构造 `app.Service`、把返回值转成 `tea.Msg`。`app` 不 import Bubble Tea。
 
 ## 理由
 
 1. 平台差异应该收敛在适配器里；核心包和 UI 只认能力位与少量通用字段。
-2. 业务服务可以脱离 TUI 单测：`internal/app` 的测试直接构造 fake source 和临时
+2. 业务服务可以脱离 TUI 单测：`zero-beat-core/app` 的测试直接构造 fake source 和临时
    SQLite，不需要渲染一帧终端。
 3. `tea.Cmd` 只负责「在 goroutine 里跑、把结果送回 Update」，不再承载搜索/同步
    的具体流程，后续换 UI 或加 CLI 复用时不需要复制业务。
@@ -74,10 +74,10 @@ v0.3 接第二个音源时补了 `source.Source`，但平台信息仍然散落�
 ## 后果
 
 - 所有 `source.Source` 实现（含测试 fake）都要补 `Mark()`。
-- 平台链接解析从 `cmd/zero` 移到适配器；`zero download` 的目标识别由注册表驱动。
+- 平台链接解析从 `zero-beat-tui/cmd/zero` 移到适配器；`zero download` 的目标识别由注册表驱动。
 - `source` 核心包不再知道具体平台，新增平台只需新适配器 + 组合根注册。
-- 队列索引、洗牌/恢复、预解析缓存已抽到 `internal/player`；当前曲目、播放状态与
-  引擎控制仍在 `internal/tui`，定位为播放器的视图控制器，只调用 `app.Service` 与
+- 队列索引、洗牌/恢复、预解析缓存已抽到 `zero-beat-core/player`；当前曲目、播放状态与
+  引擎控制仍在 `zero-beat-tui/internal/tui`，定位为播放器的视图控制器，只调用 `app.Service` 与
   `audio.Engine`。下载任务队列/进度也属于界面状态。
 
 ## 替代方案

@@ -14,10 +14,10 @@ ADR-0009 明确写了：只有一个音源时接口是猜的，等第二个音�
 
 ## 决策
 
-- 新增 `internal/source`：`Source` 接口、`ID`、`Capability`、`Quality`、`Ref/Track/Candidate`、
+- 新增 `zero-beat-core/source`：`Source` 接口、`ID`、`Capability`、`Quality`、`Ref/Track/Candidate`、
   `Stream/Resolved`、`Playlist`、`QRCode/LoginStatus` 与 `Registry`。
-- B 站通过 `internal/source/bilibili` 适配现有 `internal/bili`；网易云在
-  `internal/netease` 实现接口，协议层使用 `go-musicfox/netease-music`（MIT），
+- B 站通过 `zero-beat-core/source/bilibili` 适配现有 `zero-beat-core/bili`；网易云在
+  `zero-beat-core/netease` 实现接口，协议层使用 `go-musicfox/netease-music`（MIT），
   复用 weapi/cloudsearch、二维码 chainId、`song_url_v1` 与歌词/歌单协议。
 - `store.Song` 增加 `remote_id` 与 `album`；`SongID(source, externalID, page)` 作为稳定 ID。
   B 站旧 ID 保持不变（`bilibili:<BV>:1`），网易云为 `netease:<songID>:1`。

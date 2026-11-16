@@ -49,7 +49,7 @@ title 为空 → "file:" + quick_hash
 
 ### 本地源是独立的 `Source`，但没有账号能力
 
-`internal/source/local` 只实现取流与本地歌词：`Caps()=0`。新增
+`zero-beat-core/source/local` 只实现取流与本地歌词：`Caps()=0`。新增
 `CapAccount`，B 站/网易云置位、local 不置位；登录页、二维码轮换与账号摘要
 只遍历 `Registry.AccountIDs()`。这样 `[本]` 标记正常，登录页不会被污染。
 

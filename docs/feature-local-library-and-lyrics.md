@@ -148,14 +148,14 @@ quick_hash:
 
 ### 3.5 本地源接入
 
-新增 `internal/source/local`：
+新增 `zero-beat-core/source/local`：
 
 - `ID() = "local"`，`Name() = "本地音乐库"`，`Mark() = "本"`，`Caps() = 0`。
 - `LoggedIn() = true`，`User()` 返回“本机”；`Session` 为空，`SetSession`/`Logout` 空实现。
 - `StartQRLogin`/`PollQRLogin` 返回“本地源不需要登录”；因为不置 `CapAccount`，登录页不会调用。
 - `Search` 返回空（不置 `CapSearch`）；`RemotePlaylists` 返回空；`PlaylistTracks` 返回空。
 - `Resolve` 按 3.3 实现；`Lyrics` 按第 4 节实现。
-- 组合根 `cmd/zero/main.go` 的 `newSources` 把 `local.New(st)` 加进注册表；本地源需要 store，平台源不需要。
+- 组合根 `zero-beat-tui/cmd/zero/main.go` 的 `newSources` 把 `local.New(st)` 加进注册表；本地源需要 store，平台源不需要。
 
 登录页与账号摘要：
 
@@ -374,7 +374,7 @@ offset 是“当前这版歌词”的属性，不是歌曲的属性：
 
 ### 6.1 歌单同步边界
 
-现状：`BuildSnapshot` 只导出 `kind in (local, mixin)`（[snapshot.go](../internal/sync/snapshot.go)）；导入在 `KeepLocal=false` 时会把远端没有的 local/mixin 删掉。**所以“过滤”必须是双向契约：导出不写 + 导入不删。**
+现状：`BuildSnapshot` 只导出 `kind in (local, mixin)`（[snapshot.go](../zero-beat-core/sync/snapshot.go)）；导入在 `KeepLocal=false` 时会把远端没有的 local/mixin 删掉。**所以“过滤”必须是双向契约：导出不写 + 导入不删。**
 
 新增 `playlists.sync_excluded`：
 
@@ -511,20 +511,20 @@ CREATE INDEX IF NOT EXISTS idx_downloads_path      ON downloads(path);
 
 | 位置 | 改动 |
 | --- | --- |
-| `internal/store` | 新列/新表/索引；`Playlist` 字段；`CreateFolderPlaylist`/`CreatePlaylistEx`、`LocalSongPath`、`DownloadByPath`、`LibraryFiles`、`ReplaceLibraryItems`；`sync_excluded` 过滤；`SetLyricOffset(songID, key, offset)`；`LyricBinding` 读写；`ListSyncAnnotations`；`Active/Save/Delete` 改造；`DeletePlaylist`/`RenamePlaylist` 放开 folder；`AddSongToPlaylist`/`RemoveSongFromPlaylist` 拒绝 folder；`MergePlaylist` 目标为 folder 时拒绝（源可以是 folder）；`AddMixinRef`/`SetMixinRefs` 的同步 guard。 |
-| `internal/library` | 新包：目录扫描、扩展名过滤、meta 读取、identity/quick hash、排序、扫描结果。 |
+| `zero-beat-core/store` | 新列/新表/索引；`Playlist` 字段；`CreateFolderPlaylist`/`CreatePlaylistEx`、`LocalSongPath`、`DownloadByPath`、`LibraryFiles`、`ReplaceLibraryItems`；`sync_excluded` 过滤；`SetLyricOffset(songID, key, offset)`；`LyricBinding` 读写；`ListSyncAnnotations`；`Active/Save/Delete` 改造；`DeletePlaylist`/`RenamePlaylist` 放开 folder；`AddSongToPlaylist`/`RemoveSongFromPlaylist` 拒绝 folder；`MergePlaylist` 目标为 folder 时拒绝（源可以是 folder）；`AddMixinRef`/`SetMixinRefs` 的同步 guard。 |
+| `zero-beat-core/library` | 新包：目录扫描、扩展名过滤、meta 读取、identity/quick hash、排序、扫描结果。 |
 | 依赖 | 标签读取引入纯 Go tag 库（候选 `github.com/dhowden/tag`），确认许可证后补 `THIRD_PARTY_NOTICES.md`；GB18030 使用已在依赖里的 `golang.org/x/text`，提升为直接依赖。 |
-| `internal/source/local` | 新包：`Source` 实现、`Resolve`、`Lyrics`、`Mark`。 |
-| `internal/source` | `CapAccount`；`Registry.AccountIDs()`；`source.Local` 常量。 |
-| `internal/source/bilibili`、`internal/netease` | `Caps()` 加 `CapAccount`。 |
-| `internal/app` | `Add/Remove/Relocate/RescanLibrary`；`Lyrics` resolver；`SearchLyricCandidates`、`BindLyrics`、`ClearLyricBinding`、`PreviewLyricBinding`；`SaveLyricOffset` 带 `OffsetKey`。 |
-| `internal/lyrics` | 本地 LRC 解析入口、编码、offset、双语、增强标签剥离。 |
-| `internal/lrclib` | `ID`、`Search`、`Get`。 |
-| `internal/sync` | `MetaVersion=2`、v1→v2 升级；`PlaylistFile` 不需要新字段；`AnnotationFile.LyricBind`；`ListPlaylistSnapshots` 过滤；`ListSyncAnnotations`；导入删除过滤。 |
-| `internal/config` | `LyricsPath()`。 |
-| `internal/tui` | 侧栏 folder/仅本机徽标；添加文件夹/重扫/移除；只读守卫；歌词来源浮层；`lyricOffsetKey`；帮助/演示页；帧测试。 |
-| `internal/keymap` | `bind_lyrics` 默认 `B`。 |
-| `cmd/zero` | `library`/`lyrics` 子命令；`newSources` 注册 local；usage/文档。 |
+| `zero-beat-core/source/local` | 新包：`Source` 实现、`Resolve`、`Lyrics`、`Mark`。 |
+| `zero-beat-core/source` | `CapAccount`；`Registry.AccountIDs()`；`source.Local` 常量。 |
+| `zero-beat-core/source/bilibili`、`zero-beat-core/netease` | `Caps()` 加 `CapAccount`。 |
+| `zero-beat-core/app` | `Add/Remove/Relocate/RescanLibrary`；`Lyrics` resolver；`SearchLyricCandidates`、`BindLyrics`、`ClearLyricBinding`、`PreviewLyricBinding`；`SaveLyricOffset` 带 `OffsetKey`。 |
+| `zero-beat-core/lyrics` | 本地 LRC 解析入口、编码、offset、双语、增强标签剥离。 |
+| `zero-beat-core/lrclib` | `ID`、`Search`、`Get`。 |
+| `zero-beat-core/sync` | `MetaVersion=2`、v1→v2 升级；`PlaylistFile` 不需要新字段；`AnnotationFile.LyricBind`；`ListPlaylistSnapshots` 过滤；`ListSyncAnnotations`；导入删除过滤。 |
+| `zero-beat-core/config` | `LyricsPath()`。 |
+| `zero-beat-tui/internal/tui` | 侧栏 folder/仅本机徽标；添加文件夹/重扫/移除；只读守卫；歌词来源浮层；`lyricOffsetKey`；帮助/演示页；帧测试。 |
+| `zero-beat-core/keymap` | `bind_lyrics` 默认 `B`。 |
+| `zero-beat-tui/cmd/zero` | `library`/`lyrics` 子命令；`newSources` 注册 local；usage/文档。 |
 | `docs` | README 文档地图、guide/library、guide/playback、reference/cli、reference/keys、ARCHITECTURE 数据模型、THIRD_PARTY_NOTICES（标签库）。 |
 
 ## 9. 测试计划

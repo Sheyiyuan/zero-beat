@@ -1,0 +1,40 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+.vscode/
+
+# Go
+/core/bin/
+*.dylib
+*.dll
+*.a
+*.test
+*.out
+
+# 平台产物
+app/android/.gradle/
+app/android/local.properties
+app/android/key.properties
+app/android/**/jniLibs/**/*.so
+app/windows/flutter/ephemeral/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.exe
+*.msix
+*.nupkg
+*.AppImage
+*.deb
+
+# 本地数据 / 日志
+*.log
+.DS_Store
+/scratch/

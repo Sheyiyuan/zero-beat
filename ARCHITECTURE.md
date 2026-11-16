@@ -2,50 +2,38 @@
 
 ## 分层
 
+```text
+zero-beat-core (公开 Go 业务模块)
+  app / store / source / bili / netease / library
+  player -> media 数据类型 + player.Engine 接口（由调用方实现引擎）
+  sync -> 共享快照/加密/合并 -> CLI 或 go-git
+  keymap -> 通用键位配置与校验
+  download / downloader / lyrics / lrclib / cover / instance / config
+
+zero-beat-tui (Go 应用模块)
+  zero-beat-tui/cmd/zero -> zero-beat-tui/internal/tui -> zero-beat-core
+  zero-beat-tui/internal/audio -> core/media + ffmpeg/oto
+  zero-beat-core/keymap -> core/keymap + Bubble Tea
+  zero-beat-tui/internal/sysmedia / desktop / control
+
+zero-beat-gui (当前为设计文档；未来独立应用包)
+zero-beat-site (VitePress 网站；Pages 独立发布)
+  Flutter + RPC/RemoteEngine -> zero-beat-core
 ```
-┌────────────────────────────────────────────────────────────┐
-│ cmd/zero   CLI：tui / play / download / login / sync / demo  │
-├────────────────────────────────────────────────────────────┤
-│ internal/tui        Bubble Tea v2：模型、渲染、按键、命令    │
-├──────────────────────────────┼─────────────────────────────┤
-│ internal/sync 跨设备同步     │                             │
-│  ├─ 快照/确定性导出          │                             │
-│  ├─ git 封装/合并/冲突       │                             │
-│  └─ Argon2id + XChaCha20     │                             │
-├──────────────────────────────┼─────────────────────────────┤
-│ internal/app 业务服务         │ internal/player 播放控制器   │
-│  ├─ 搜索 / 取流 / 歌词        │  ├─ 队列/播放状态/模式        │
-│  ├─ 歌单同步 / 登录 / 队列恢复│  ├─ 引擎控制/重试/预解析      │
-│  └─ 不依赖 Bubble Tea         │  └─ 不依赖 Bubble Tea        │
-│ internal/downloader 下载任务  │ internal/audio  播放引擎     │
-│  ├─ 并发/取消/进度事件        │ internal/store  SQLite      │
-│  └─ 不依赖 Bubble Tea         │                             │
-├──────────────────────────────┼─────────────────────────────┤
-│ internal/source 契约 + 注册表 │                             │
-│  ├─ source/bilibili 适配器    │                             │
-│  └─ internal/netease 客户端   │                             │
-├──────────────────────────────┴─────────────────────────────┤
-│ internal/sysmedia  MPRIS：系统媒体面板/媒体键桥接            │
-│ internal/cover     封面下载与缓存（只服务系统媒体面板）      │
-│ internal/instance  TUI 单实例锁（flock/独占文件，记录 PID）  │
-│ internal/bili   B 站 API 客户端（被适配器包装）              │
-│ internal/lyrics LRC 解析、译文合并与时间轴                    │
-│ internal/lrclib 外部歌词兜底（标题清洗 + 时长匹配）           │
-│ internal/download 下载落盘（Range 续传 + ffmpeg 封装）       │
-│ internal/config 数据目录                                     │
-└────────────────────────────────────────────────────────────┘
-```
+
+模块迁移、发布与同步后端约定见[迁移指南](docs/monorepo-and-sync.md)。
+
 
 依赖方向：`tui` 只依赖 `app.Service` 与 `source.Source` 接口，不按平台名写分支；
 `app` 依赖 `source` / `store` / `lyrics` / `lrclib`，但不 import Bubble Tea；
-`source/bilibili` 依赖 `bili`；`netease` 独立实现接口；`internal/player` 持有
-播放状态机并通过 `Engine` / `QueueSaver` 接口调用引擎与存储；`internal/downloader`
-持有下载任务队列；`internal/sync` 负责快照、git、合并与登录态加密；`internal/sysmedia` 把播放状态
-投喂给系统媒体面板并把面板/媒体键命令转回播放器，`internal/cover` 只为它下载封面；
+`source/bilibili` 依赖 `bili`；`netease` 独立实现接口；`zero-beat-core/player` 持有
+播放状态机并通过 `Engine` / `QueueSaver` 接口调用引擎与存储；`zero-beat-core/downloader`
+持有下载任务队列；`zero-beat-core/sync` 负责快照、git、合并与登录态加密；`zero-beat-tui/internal/sysmedia` 把播放状态
+投喂给系统媒体面板并把面板/媒体键命令转回播放器，`zero-beat-core/cover` 只为它下载封面；
 这些包都不依赖 Bubble Tea。`sync` 只依赖 `store` / `config` / `keymap`，不 import `app` 或 `tui`；
 `app.LibraryRevision()` 以回调形式注入，用于导入前判断用户是否刚改过库。`audio` / `store` / `lyrics` /
 `download` 互不认识。TUI 和 CLI 都通过 `download.Run` 落盘，TUI 还维护
-任务队列、进度行和下载管理页。`cmd/zero` 启动 TUI 前先通过 `internal/instance`
+任务队列、进度行和下载管理页。`zero-beat-tui/cmd/zero` 启动 TUI 前先通过 `zero-beat-core/instance`
 在数据目录拿进程级锁；CLI 子命令（play/download/sync 等）不占这把锁。
 
 平台展示信息（短标记、命令行别名、链接解析、歌词名、登录 App 名）属于适配器：
@@ -56,30 +44,30 @@
 ### 模块清单
 
 ```
-cmd/zero                 CLI 入口：tui / play / download / login / frame / +key / desktop 等
-internal/tui             Bubble Tea v2 界面：模型、渲染、按键、命令
-internal/control         本机控制通道：Unix socket，读取当前帧与注入按键
-internal/app             业务服务：搜索、取流、歌词、歌单同步、登录、队列恢复
-internal/player          播放控制器：队列、播放状态、引擎、模式、预解析
-internal/downloader      下载任务队列、并发、取消与进度事件
-internal/sync            跨设备同步：快照、git、合并、冲突、凭据加密
-internal/sysmedia        Linux MPRIS：系统媒体面板/媒体键与播放器之间的桥
-internal/cover           封面下载与磁盘缓存（只服务系统媒体面板）
-internal/instance        TUI 单实例锁（flock / 独占文件），锁文件记录 PID
-internal/desktop         Linux 应用菜单入口（.desktop + hicolor 图标）安装与卸载
-internal/source          多音源契约、能力位、注册表、平台元数据
-internal/source/bilibili B 站适配器：搜索、多 P、收藏夹、字幕、播放
-internal/source/local    本地音源：本机文件取流、本地旁挂/内嵌歌词（无登录、无搜索）
-internal/library         本地目录扫描、音频标签、曲目身份与内容指纹
-internal/netease         网易云客户端：基于 go-musicfox/netease-music 的 Source 适配
-internal/bili            B 站 API 客户端
-internal/audio           播放引擎：ffmpeg 解码 → 增益链 → oto 输出，事件通道
-internal/lyrics          LRC 解析、时间轴定位、本地编码/翻译合并、lyrics.toml
-internal/lrclib          LRCLIB 歌词查询与标题清洗
-internal/download        音频落盘：Range 续传、ffmpeg 封装、标签
-internal/store           SQLite：歌曲、歌单、队列、设置、登录态
-internal/keymap          动作 ID 与 TOML 覆盖加载
-internal/config          数据目录
+zero-beat-tui/cmd/zero                 CLI 入口：tui / play / download / login / frame / +key / desktop 等
+zero-beat-tui/internal/tui             Bubble Tea v2 界面：模型、渲染、按键、命令
+zero-beat-tui/internal/control         本机控制通道：Unix socket，读取当前帧与注入按键
+zero-beat-core/app             业务服务：搜索、取流、歌词、歌单同步、登录、队列恢复
+zero-beat-core/player          播放控制器：队列、播放状态、引擎、模式、预解析
+zero-beat-core/downloader      下载任务队列、并发、取消与进度事件
+zero-beat-core/sync            跨设备同步：快照、git、合并、冲突、凭据加密
+zero-beat-tui/internal/sysmedia        Linux MPRIS：系统媒体面板/媒体键与播放器之间的桥
+zero-beat-core/cover           封面下载与磁盘缓存（只服务系统媒体面板）
+zero-beat-core/instance        TUI 单实例锁（flock / 独占文件），锁文件记录 PID
+zero-beat-tui/internal/desktop         Linux 应用菜单入口（.desktop + hicolor 图标）安装与卸载
+zero-beat-core/source          多音源契约、能力位、注册表、平台元数据
+zero-beat-core/source/bilibili B 站适配器：搜索、多 P、收藏夹、字幕、播放
+zero-beat-core/source/local    本地音源：本机文件取流、本地旁挂/内嵌歌词（无登录、无搜索）
+zero-beat-core/library         本地目录扫描、音频标签、曲目身份与内容指纹
+zero-beat-core/netease         网易云客户端：基于 go-musicfox/netease-music 的 Source 适配
+zero-beat-core/bili            B 站 API 客户端
+zero-beat-tui/internal/audio           播放引擎：ffmpeg 解码 → 增益链 → oto 输出，事件通道
+zero-beat-core/lyrics          LRC 解析、时间轴定位、本地编码/翻译合并、lyrics.toml
+zero-beat-core/lrclib          LRCLIB 歌词查询与标题清洗
+zero-beat-core/download        音频落盘：Range 续传、ffmpeg 封装、标签
+zero-beat-core/store           SQLite：歌曲、歌单、队列、设置、登录态
+zero-beat-core/keymap          动作 ID 与 TOML 覆盖加载
+zero-beat-core/config          数据目录
 ```
 
 关键契约包括：`source.Source`（TUI 只知道接口，不按平台名分支）、
@@ -193,7 +181,7 @@ Manager（single-flight + debounce + 退避）
        ├─ 校验 meta.json 与本地 sync-key（版本/盐/keycheck）
        ├─ 登录态 LWW：远端较新先回填本地库
        ├─ 导出快照：playlists/ 清空重写、keymap、annotations、accounts
-       ├─ commit → git merge FETCH_HEAD
+       ├─ commit → 共享实体三方合并（base/local/remote）
        │    ├─ 干净：导入最终树
        │    ├─ accounts 冲突：按密文内 updated_at 自动 LWW
        │    └─ 其他冲突：快照 ours/theirs/base → abort → 冲突页
@@ -208,7 +196,7 @@ Manager（single-flight + debounce + 退避）
 云端写歌是可选的 `source.PlaylistWriter` 能力。
 
 ```go
-// TUI → 音源（实际定义在 internal/source）
+// TUI → 音源（实际定义在 zero-beat-core/source）
 type Source interface {
     ID() ID
     Name() string
@@ -306,7 +294,7 @@ library_files(playlist_id, path, song_id, size, mtime, content_hash, present)
 1. **Update 里不许有网络或磁盘长任务**。网络、解析、歌词都放到 `tea.Cmd`；只有队列保存、设置项、本地歌单增删改这类 SQLite 短事务留在 Update（WAL，毫秒级）；网络与解析仍然全在 Cmd。
 2. **引擎回调不许直接改 Model**。只往 channel 发事件，由 `waitEngineCmd` 转成消息。
 3. **每处理一次引擎事件都要重新挂 `waitEngineCmd`**，否则事件流会断。
-4. **渲染必须精确到行**：每行可见宽度等于终端宽度，总行数等于终端高度；`internal/tui/view_test.go` 会校验。帮助页内容比一屏长，由 `helpOffset` 做窗口裁剪，禁止直接把全部行塞给渲染器。
+4. **渲染必须精确到行**：每行可见宽度等于终端宽度，总行数等于终端高度；`zero-beat-tui/internal/tui/view_test.go` 会校验。帮助页内容比一屏长，由 `helpOffset` 做窗口裁剪，禁止直接把全部行塞给渲染器。
 5. 所有宽度计算走 `ansi.StringWidth` / `ansi.Truncate`，不要用 `len()`，否则中文会错位。
 6. **同步事件也要重新挂 `waitSyncCmd`**。`sync.Manager` 的网络/磁盘工作在后台
    goroutine，事件通过 channel 转成 `syncEventMsg`；`Update` 只更新状态、发起
@@ -343,9 +331,9 @@ library_files(playlist_id, path, song_id, size, mtime, content_hash, present)
 云端歌单只实现了「加歌」；删除、改名、取消收藏和完整分页仍未做。播放片段只做播放区间，
 不导出音频文件；区间末尾受 ffmpeg 输出缓冲影响，可能有约 100ms 的尾音。
 
-边界：`internal/app` 承接搜索、取流、歌词、歌单同步、登录、队列恢复、歌单 CRUD、
-偏好持久化、下载执行与本地优先解析等外部业务；`internal/player.Controller` 承接队列、当前曲目、
-播放状态、模式、重试、预解析、引擎控制与落盘；`internal/downloader.Manager` 承接
+边界：`zero-beat-core/app` 承接搜索、取流、歌词、歌单同步、登录、队列恢复、歌单 CRUD、
+偏好持久化、下载执行与本地优先解析等外部业务；`zero-beat-core/player.Controller` 承接队列、当前曲目、
+播放状态、模式、重试、预解析、引擎控制与落盘；`zero-beat-core/downloader.Manager` 承接
 下载任务、并发与取消。`Model` 只保留视图状态、按键路由和播放状态的只读镜像，
 不再决定「下一首是谁」「什么时候重试」「队列怎么变」；片段编辑器的整首预览
 也通过 `player.Controller` 完成。

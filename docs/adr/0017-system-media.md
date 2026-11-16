@@ -12,9 +12,9 @@
 
 ## 决策
 
-- **Linux 用会话 D-Bus 的 MPRIS**：`internal/sysmedia` 通过 `godbus/dbus` 注册
+- **Linux 用会话 D-Bus 的 MPRIS**：`zero-beat-tui/internal/sysmedia` 通过 `godbus/dbus` 注册
   `org.mpris.MediaPlayer2.zero`，实现播放/暂停/上下首/停止/进度/音量的标准方法；
-  `internal/tui` 每 250ms 把内存快照 `Publish` 给服务，平台实现负责合并写系统接口。
+  `zero-beat-tui/internal/tui` 每 250ms 把内存快照 `Publish` 给服务，平台实现负责合并写系统接口。
 - **系统媒体命令走事件**：`Commands()` channel → `waitSysmediaCmd` → `sysCommandMsg`，
   `Update` 只做状态映射，不直接调用播放器；与引擎事件同一套事件循环约束。
 - **封面只为系统面板**：当前曲目变化时在 `tea.Cmd` 里调用 `app.Service.CoverPath`，
@@ -39,7 +39,7 @@
 - Linux 上注册 `org.mpris.MediaPlayer2.zero`；名称被占用时明确报错并提示先退出旧实例，
   不再退到 `.instance<pid>`（通常由单实例锁提前阻止）。
 - 封面缓存占用磁盘；超过上限按最近访问时间淘汰，删除缓存后下一首会重新下载。
-- 没有桌面通知；同一数据目录的单实例由 `internal/instance` 保证，不同数据目录仍可能
+- 没有桌面通知；同一数据目录的单实例由 `zero-beat-core/instance` 保证，不同数据目录仍可能
   抢同一个 MPRIS 名称，此时 MPRIS 初始化会明确报错，TUI 继续运行但禁用系统媒体。
   测试可用 `ZERO_MPRIS_NAME` 隔离。
 - 播放状态每 250ms 更新一次，系统面板上的进度是插值显示，不是逐帧同步。

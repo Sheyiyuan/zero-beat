@@ -5,7 +5,7 @@
 
 ## 背景
 
-骨架阶段建了 `internal/domain`（Track / TrackSource）、`internal/source`（Source 接口 + 能力位 + 注册表）、`internal/match`、`internal/resolve`，
+骨架阶段建了 `internal/domain`（Track / TrackSource）、`zero-beat-core/source`（Source 接口 + 能力位 + 注册表）、`internal/match`、`internal/resolve`，
 但实际只有一个音源。写实现时发现：
 
 - 只有一个实现时，接口的每个方法都只能靠想象定义，方法签名改三次还没有第二个实现来校验。
@@ -14,7 +14,7 @@
 
 ## 决策
 
-删除 `internal/domain`、`internal/source`、`internal/match`、`internal/resolve` 与 `internal/audio/decoder`，
+删除 `internal/domain`、`zero-beat-core/source`、`internal/match`、`internal/resolve` 与 `zero-beat-tui/internal/audio/decoder`，
 首版只保留真实被调用的结构：`store.Song`、`audio.Stream`、`bili.Stream`。
 
 ## 理由

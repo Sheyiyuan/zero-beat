@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "site/**"
+      - "zero-beat-site/**"
       - "docs/**"
       - "assets/**"
       - ".github/workflows/pages.yml"
@@ -36,14 +36,14 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: site/pnpm-lock.yaml
+          cache-dependency-path: zero-beat-site/pnpm-lock.yaml
 
       - name: Install
-        working-directory: site
+        working-directory: zero-beat-site
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        working-directory: site
+        working-directory: zero-beat-site
         env:
           # 项目页地址是 https://<owner>.github.io/<repo>/；自定义域名时改成 /
           SITE_BASE: /${{ github.event.repository.name }}/
@@ -53,7 +53,7 @@ jobs:
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site/.vitepress/dist
+          path: zero-beat-site/.vitepress/dist
 
   deploy:
     needs: build

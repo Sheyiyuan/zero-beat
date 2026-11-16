@@ -5,7 +5,7 @@
 - **Go 1.26.10+**（仅源码构建需要）
 - **ffmpeg**（负责音频解码；ffprobe 随 ffmpeg 一起安装，本地音乐库缺时长时用它补一次）
 - 音频输出：Linux 用 PulseAudio / PipeWire，macOS 用 CoreAudio
-- 可选：系统 `git`（跨设备同步需要）；Linux 会话 D-Bus（系统媒体面板需要）
+- 可选：系统 `git`（同步的 CLI 后端需要；内置 go-git 无需）；Linux 会话 D-Bus（系统媒体面板需要）
 - 网易云协议层随程序内置，无需额外安装
 
 ## 平台支持
@@ -30,7 +30,7 @@ sudo sh install.sh --prefix /usr/local
 
 ## Arch Linux（AUR）
 
-仓库内 `.aur/` 维护 AUR 打包，提供两个包（互相冲突，装一个即可）：
+AUR 提供两个包（互相冲突，装一个即可）；打包文件不在当前检出内：
 
 - `zero-beat-bin`：直接安装 GitHub Release 的预编译二进制，不依赖 Go 工具链。
 - `zero-beat-git`：跟随 main 分支源码构建，装到的是最新提交。

@@ -1,0 +1,3635 @@
+// Package tui 是 zero-beat 的终端界面。
+package tui
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/app"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/config"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/downloader"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/lrclib"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/lyrics"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/player"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+	syncpkg "github.com/sheyiyuan/zero-beat/zero-beat-core/sync"
+	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/audio"
+	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/control"
+	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/keymap"
+	"github.com/sheyiyuan/zero-beat/zero-beat-tui/internal/sysmedia"
+)
+
+type view int
+
+const (
+	viewLibrary view = iota
+	viewSearch
+	viewQueue
+	viewLyrics
+	viewHelp
+	viewLogin
+	viewFolders
+	viewMix
+	viewDownloads
+	viewSync
+	viewConflicts
+)
+
+var viewNames = []string{"曲库", "搜索", "队列", "歌词", "帮助", "登录", "导入歌单", "混合歌单", "下载", "同步", "冲突"}
+
+var defaultKeys = keymap.Default()
+
+// remotePlaylistsCleanupMarker 标记「清空旧远端歌单镜像」的一次性维护已执行。
+const remotePlaylistsCleanupMarker = "maintenance.remote_playlists.cleared_v1"
+
+// qrCacheTTL 是登录二维码的本地缓存时间；到期或轮询返回失效时再重新申请。
+const qrCacheTTL = 150 * time.Second
+
+// sessionCheckInterval 是后台校验登录态的间隔；平台侧过期后无需等用户操作，
+// 下一轮检查就会自动登出并冻结该音源的远端歌单。
+const sessionCheckInterval = 15 * time.Minute
+
+// sessionRefreshInterval 是主动续期登录态的间隔。网易云官方客户端在启动和
+// 长时间在线时会换发 token；一天两次足够，过频反而容易被风控。
+const sessionRefreshInterval = 12 * time.Hour
+
+type qrCacheEntry struct {
+	qr           *source.QRCode
+	ascii        string
+	asciiCompact string
+	path         string
+	status       string
+	expiresAt    time.Time
+	fetching     bool
+}
+
+type searchMode int
+
+const (
+	searchLocalPlaylist searchMode = iota
+	searchLocalAll
+	searchSource
+)
+
+func (s searchMode) String() string {
+	switch s {
+	case searchLocalAll:
+		return "本地全部"
+	case searchSource:
+		return "音源搜索"
+	default:
+		return "当前歌单"
+	}
+}
+
+type libraryFocus int
+
+const (
+	focusSongs libraryFocus = iota
+	focusPlaylists
+)
+
+type playMode = player.Mode
+
+const (
+	modeListLoop = player.ModeListLoop
+	modeLoopOne  = player.ModeLoopOne
+	modeShuffle  = player.ModeShuffle
+	modeOrdered  = player.ModeOrdered
+)
+
+// modeCount 是 p 键循环的模式数量，跟着最后一个枚举值走。
+const modeCount = modeOrdered + 1
+
+// loopForMode 返回模式对应的 MPRIS 循环语义。
+func loopForMode(m playMode) sysmedia.LoopStatus {
+	switch m {
+	case modeLoopOne:
+		return sysmedia.LoopTrack
+	case modeOrdered:
+		return sysmedia.LoopNone
+	default:
+		return sysmedia.LoopPlaylist
+	}
+}
+
+// modeForLoop 把面板写入的循环目标值映射回播放模式；未知值返回 false。
+func modeForLoop(l sysmedia.LoopStatus) (playMode, bool) {
+	switch l {
+	case sysmedia.LoopNone:
+		return modeOrdered, true
+	case sysmedia.LoopTrack:
+		return modeLoopOne, true
+	case sysmedia.LoopPlaylist:
+		return modeListLoop, true
+	default:
+		return modeListLoop, false
+	}
+}
+
+// canGoNext / canGoPrev 决定面板按钮是否可用；顺序模式在队首/队尾没有下一首或上一首。
+func canGoNext(m playMode, idx, n int) bool {
+	if n < 2 {
+		return false
+	}
+	if m == modeOrdered {
+		return idx < n-1
+	}
+	return true
+}
+
+func canGoPrev(m playMode, idx, n int) bool {
+	if n < 2 {
+		return false
+	}
+	if m == modeOrdered {
+		return idx > 0
+	}
+	return true
+}
+
+type promptKind int
+
+const (
+	promptNone promptKind = iota
+	promptNewPlaylist
+	promptRenamePlaylist
+	promptDeletePlaylist
+	promptClearQueue
+	promptUnlockPlaylist
+	promptRemoveDownload
+	promptDeleteDownload
+	promptAddFolder
+	promptNewLocalOnly
+	promptSetFolderRoot
+)
+
+type notice struct {
+	text   string
+	isErr  bool
+	isWarn bool
+	at     time.Time
+}
+
+// Model 是 TUI 的全部状态。
+type Model struct {
+	width, height int
+	view          view
+	ctx           context.Context
+
+	sources *source.Registry
+	store   *store.Store
+	engine  *audio.Engine
+	pc      *player.Controller
+	quality source.Quality
+	keys    *keymap.Keymap
+
+	users map[source.ID]source.User
+	// nextSessionCheck 是下一次后台校验登录态的时间。
+	nextSessionCheck time.Time
+	// nextSessionRefresh 是下一次主动续期登录态的时间。
+	nextSessionRefresh time.Time
+
+	playlists         []store.Playlist
+	playlistIdx       int
+	songs             []store.Song
+	songIdx           int
+	songsBusy         bool
+	libraryFocus      libraryFocus
+	playingPlaylistID string
+
+	// 歌曲列表的批量选择：按歌曲 ID 记录，并绑定所属歌单。
+	selectionIDs  map[string]bool
+	selPlaylistID string
+	selAnchor     int
+
+	queue          []store.Song
+	queueIdx       int
+	queueCursor    int
+	shuffleBase    []store.Song
+	shuffleBaseIdx int
+	shuffleFn      func([]store.Song) // 测试可注入确定性的洗牌
+
+	current  *store.Song
+	state    audio.State
+	position time.Duration
+	duration time.Duration
+	volume   float64
+	compDB   float64
+	// songCompDB 是当前曲目的额外补偿（相对全局），autoGain 是自动响度均衡开关。
+	songCompDB float64
+	autoGain   bool
+	mode       playMode
+	muted      bool
+	// modeBeforeShuffle 是进入随机前的模式；面板关闭随机时恢复到它。只在本机内存里，不持久化。
+	modeBeforeShuffle playMode
+
+	// 同步：页面状态、输入缓冲与冲突选择。口令只在本机内存里短暂停留。
+	syncMgr    *syncpkg.Manager
+	syncStatus syncpkg.Status
+	syncBusy   bool
+	// 仅本机数据计数：同步页用来提示「换设备不会丢」。
+	localOnly       int
+	localAnnotation int
+	syncRev         uint64
+	syncEdit        string
+	syncInput       string
+	syncPass        string
+	syncCursor      int
+	syncAck         bool
+	syncConflicts   syncpkg.ConflictIndex
+	syncChoices     map[string]syncpkg.Choice
+	syncConflictIdx int
+
+	// sysmedia 把播放状态投喂给系统媒体面板；关闭时保持 nil。
+	sys             sysmedia.Service
+	artwork         string
+	artworkSongID   string
+	coverLoadingID  string
+	coverAttemptURL string
+
+	// resumeAt > 0 表示当前只是恢复出来的会话，尚未真正起播；space 从这里继续。
+	resumeAt       time.Duration
+	retryCount     int
+	lastPersist    time.Time
+	awaitingStream bool
+	playRequest    int
+
+	// 下一首预解析结果；只缓存一首，过期或队列变化即作废。
+	prefetch player.Prefetch
+
+	lyricBase     []lyrics.Line
+	lyricLines    []lyrics.Line
+	lyricIdx      int  // 正在播放的歌词行
+	lyricFocus    int  // 中央焦点行（浏览时由用户移动；-1 表示跟随播放行）
+	lyricFollow   bool // 焦点是否跟随播放行
+	lyricOffsetMS int
+	lyricSource   string
+	lyricLoaded   bool
+	// lyricOffsetKey 是当前这版歌词的来源层级（auto/portable/local），
+	// offset 按它读写，换源不会把偏移写到别的来源上。
+	lyricOffsetKey store.BindingScope
+	// lyricGen 是歌词请求代号：切歌/绑定后丢弃迟到的旧响应。
+	lyricGen      int
+	lyricDegraded bool
+	lyricWarning  string
+	lyricBound    bool
+	// lyricConfigWarned 保证 lyrics.toml 的降级提示只显示一次，不随切歌反复刷。
+	lyricConfigWarned bool
+	lrclib            *lrclib.Client
+
+	searchEditing bool
+	searchInput   string
+	searchKeyword string
+	searchResults []source.Candidate
+	localResults  []store.Song
+	searchMode    searchMode
+	searchIdx     int
+	searchBusy    bool
+	searchPage    int
+	searchPages   int
+	searchSource  source.ID // 空表示全部音源
+
+	downloads *downloader.Manager
+
+	downloadItems []downloadItem
+	downloadIdx   int
+	downloadsBusy bool
+	localFirst    bool
+	mouseOff      bool // 关闭鼠标捕获（设置里关掉，或 ZERO_MOUSE=0）
+
+	loginSource     source.ID
+	qrCache         map[source.ID]*qrCacheEntry
+	helpPopup       bool
+	helpPopupOffset int
+	aboutPopup      bool
+	menu            *menuState
+	lastClickAt     time.Time
+	lastClickX      int
+	lastClickY      int
+	lastClickTarget hitTarget
+	lastClickIndex  int
+
+	folderSource source.ID
+	folderItems  []source.Playlist
+	folderIdx    int
+	folderBusy   bool
+
+	mix *mixState
+
+	// lyricBind 是歌词来源浮层；打开期间独占按键。
+	lyricBind *lyricBindState
+
+	clip       *clipState
+	clipCache  store.Clip
+	clipSongID string
+
+	picker *targetPickerState
+
+	palette *paletteState
+
+	marqueeSong   string
+	marqueeOffset int
+
+	// listScroll 记录每个列表当前窗口起点；只在光标移出窗口时滚动。
+	listScroll map[listScrollKey]int
+
+	prompt            promptKind
+	promptInput       string
+	pendingPlaylistID string
+	// pendingPlayPlaylist 为 true 时，当前歌单曲目载入完成后自动从头播放
+	// （右键菜单「播放歌单」在异步载入期间点下时会置位）。
+	pendingPlayPlaylist bool
+	pendingAddSongs     []store.Song
+	pendingDownloadID   string
+	helpOffset          int
+
+	sleepUntil time.Time
+	sleepSlot  int
+
+	qr             *source.QRCode
+	qrSource       source.ID
+	qrPath         string
+	qrASCII        string // 完整登录链接的二维码
+	qrASCIICompact string // 去掉跟踪参数后的二维码，终端矮时用
+	qrStatus       string
+
+	// demoQuality 仅用于 zero demo 截图，真实运行时以引擎里的流为准。
+	demoQuality string
+
+	note notice
+}
+
+// New 构造界面模型，并恢复上次的音量、模式与队列。
+func New(sources *source.Registry, st *store.Store, engine *audio.Engine, syncMgr *syncpkg.Manager) *Model {
+	var cleaned bool
+	if st != nil {
+		cleaned, _ = st.CleanRemotePlaylistsOnce(remotePlaylistsCleanupMarker)
+	}
+	keys := defaultKeys
+	var keyErr error
+	var keyWarnings []string
+	if path, err := config.KeymapPath(); err == nil {
+		if loaded, warns, err := keymap.LoadWithWarnings(path); err != nil {
+			keyErr = err
+		} else {
+			keys = loaded
+			keyWarnings = warns
+		}
+	}
+	m := &Model{
+		ctx:         context.Background(),
+		sources:     sources,
+		store:       st,
+		engine:      engine,
+		quality:     source.QualityAuto,
+		keys:        keys,
+		lyricFocus:  -1,
+		lyricFollow: true,
+		selAnchor:   -1,
+		volume:      0.8,
+		mode:        modeListLoop,
+		state:       audio.StateIdle,
+		searchPage:  1,
+		lrclib:      lrclib.New(),
+		users:       map[source.ID]source.User{},
+		qrCache:     map[source.ID]*qrCacheEntry{},
+		syncMgr:     syncMgr,
+		syncChoices: map[string]syncpkg.Choice{},
+		syncRev:     app.LibraryRevision(),
+	}
+	if sources != nil {
+		for _, src := range sources.All() {
+			// 本地源没有登录态，账号摘要只看有 CapAccount 的音源。
+			if !src.Caps().Has(source.CapAccount) {
+				continue
+			}
+			if u := src.User(); u.LoggedIn {
+				m.users[src.ID()] = u
+			}
+		}
+		if ids := sources.AccountIDs(); len(ids) > 0 {
+			m.loginSource = ids[0]
+		}
+	}
+	prefs := app.New(sources, st, nil).Preferences()
+	m.volume = prefs.Volume
+	m.compDB = prefs.CompDB
+	m.autoGain = prefs.AutoGain && engine.AutoGainSupported()
+	m.mode = playMode(prefs.Mode)
+	m.quality = prefs.Quality
+	m.playingPlaylistID = prefs.PlayingPlaylist
+	m.localFirst = prefs.LocalFirst
+	m.mouseOff = !prefs.Mouse || os.Getenv("ZERO_MOUSE") == "0"
+	engine.SetVolume(m.volume)
+	engine.SetCompensationDB(m.compDB)
+	engine.SetAutoGain(m.autoGain)
+	if cleaned {
+		m.setNotice("已清理旧的远端歌单，按 f 重新导入", false)
+	}
+	if keyErr != nil {
+		m.setNotice("快捷键配置无效，已回退默认："+keyErr.Error(), true)
+	} else if len(keyWarnings) > 0 {
+		m.setWarn("快捷键配置部分降级：" + strings.Join(keyWarnings, "；"))
+	}
+	p, themeErr := resolveTheme(st)
+	applyTheme(p)
+	if themeErr != nil {
+		m.setNotice("主题配置无效，已回退："+themeErr.Error(), true)
+	}
+	if prefs.AutoGain && !m.autoGain {
+		m.setWarn("当前 ffmpeg 不提供 loudnorm，自动响度均衡已关闭")
+	}
+	return m
+}
+
+func (m *Model) match(a keymap.Action, key tea.Key) bool {
+	if m.keys == nil {
+		return defaultKeys.Match(a, key)
+	}
+	return m.keys.Match(a, key)
+}
+
+func (m *Model) keyLabel(a keymap.Action) string {
+	if m.keys == nil {
+		return defaultKeys.Label(a)
+	}
+	return m.keys.Label(a)
+}
+
+// Init 启动定时器、事件监听与首批数据加载。
+func (m *Model) Init() tea.Cmd {
+	m.nextSessionCheck = time.Now().Add(sessionCheckInterval)
+	m.nextSessionRefresh = time.Now().Add(sessionRefreshInterval)
+	cmds := []tea.Cmd{
+		tickCmd(),
+		waitEngineCmd(m.engine.Events()),
+		m.startupUsersCmd(),
+		m.loadPlaylistsCmd(),
+		m.restoreQueueCmd(),
+	}
+	if m.startSysmedia() {
+		cmds = append(cmds, waitSysmediaCmd(m.sys))
+		m.publishNowPlaying()
+	}
+	if m.syncMgr != nil {
+		m.syncMgr.Start()
+		m.syncStatus = m.syncMgr.Status()
+		cmds = append(cmds, waitSyncCmd(m.syncMgr))
+	}
+	return tea.Batch(cmds...)
+}
+
+// startSysmedia 启动系统媒体集成；失败或显式关闭时保持 nil，不影响播放。
+func (m *Model) startSysmedia() bool {
+	if os.Getenv("ZERO_SYSMEDIA") == "0" {
+		return false
+	}
+	svc, err := sysmedia.New()
+	if err != nil {
+		m.setWarn("系统媒体控制不可用：" + err.Error())
+		return false
+	}
+	if svc == nil {
+		return false
+	}
+	m.sys = svc
+	return true
+}
+
+// Update 处理消息。
+func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// 歌词来源浮层的异步结果先归它，其余消息继续走常规分支。
+	if cmd, handled := m.handleLyricBindMsg(msg); handled {
+		return m, cmd
+	}
+	switch msg := msg.(type) {
+	case folderAddedMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+		}
+		if msg.playlist.ID != "" {
+			m.pendingPlaylistID = msg.playlist.ID
+			notice := fmt.Sprintf("本地文件夹：%s · %d 首", msg.playlist.Title, msg.scan.Scanned)
+			if msg.scan.Subdirs > 0 {
+				notice += fmt.Sprintf(" · 未扫描 %d 个子文件夹", msg.scan.Subdirs)
+			}
+			if len(msg.scan.Warnings) > 0 {
+				m.setWarn(notice + " · " + msg.scan.Warnings[0])
+			} else if msg.err == nil {
+				m.setNotice(notice, false)
+			}
+		}
+		return m, m.loadLocalPlaylistsCmd()
+
+	case bindLocalSongsMsg:
+		if m.lyricBind == nil {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.lyricBind.err = msg.err.Error()
+		}
+		m.lyricBind.localSongs = msg.songs
+		m.lyricBind.localIdx = 0
+		return m, nil
+
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		return m, nil
+
+	case tea.KeyPressMsg:
+		return m.handleKey(tea.Key(msg))
+
+	case control.Request:
+		return m.handleControlRequest(msg)
+
+	case tea.PasteMsg:
+		m.handlePaste(msg.Content)
+		return m, nil
+
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(tea.Mouse(msg))
+
+	case tea.MouseWheelMsg:
+		return m.handleMouseWheel(tea.Mouse(msg))
+
+	case downloadEventMsg:
+		return m.handleDownloadEvent(msg)
+
+	case tickMsg:
+		var tick player.TickResult
+		m.withController(func(c *player.Controller) { tick = c.Tick(time.Now()) })
+		if len(m.lyricLines) > 0 {
+			// 前奏/回退到第一句之前时 ActiveIndex 返回 -1，也要如实写回，
+			// 否则底部歌词条会停在上一次高亮的那句。
+			m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
+		}
+		m.advanceMarquee()
+		if m.lyricFollow {
+			m.lyricFocus = m.lyricIdx
+		}
+		if m.note.text != "" && time.Since(m.note.at) > 4*time.Second {
+			m.note = notice{}
+		}
+		if tick.SleepPaused {
+			m.setNotice("睡眠定时结束，已暂停", false)
+		}
+		m.notifySyncIfChanged()
+		cmds := []tea.Cmd{tickCmd()}
+		if !m.nextSessionCheck.IsZero() && time.Now().After(m.nextSessionCheck) {
+			m.nextSessionCheck = time.Now().Add(sessionCheckInterval)
+			if m.store != nil && m.sources != nil {
+				cmds = append(cmds, m.loadUsersCmd())
+			}
+		}
+		if !m.nextSessionRefresh.IsZero() && time.Now().After(m.nextSessionRefresh) {
+			m.nextSessionRefresh = time.Now().Add(sessionRefreshInterval)
+			if m.sources != nil {
+				cmds = append(cmds, m.refreshSessionsCmd())
+			}
+		}
+		if cmd := m.syncArtwork(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		m.publishNowPlaying()
+		return m, tea.Batch(cmds...)
+
+	case engineEventMsg:
+		return m.handleEngineEvent(msg.ev)
+
+	case sysCommandMsg:
+		cmd := m.applySysCommand(msg.cmd)
+		m.publishNowPlaying()
+		cmds := []tea.Cmd{waitSysmediaCmd(m.sys)}
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case syncEventMsg:
+		return m.handleSyncEvent(msg.ev)
+
+	case syncStatusMsg:
+		m.syncStatus = msg.status
+		m.localOnly = msg.localOnly
+		m.localAnnotation = msg.localAnnotation
+		return m, nil
+
+	case syncConflictsMsg:
+		if msg.err != nil {
+			if errors.Is(msg.err, os.ErrNotExist) {
+				m.setNotice("没有待处理的冲突", false)
+				return m, m.syncStatusCmd()
+			}
+			m.setError(msg.err)
+			return m, nil
+		}
+		m.syncConflicts = msg.index
+		m.syncChoices = map[string]syncpkg.Choice{}
+		m.syncConflictIdx = 0
+		m.view = viewConflicts
+		return m, nil
+
+	case syncResultMsg:
+		return m.handleSyncResult(msg)
+
+	case sessionsAppliedMsg:
+		if len(msg.sources) > 0 && m.sources != nil {
+			for _, id := range msg.sources {
+				if src := m.sources.Get(id); src != nil {
+					if u := src.User(); u.LoggedIn {
+						m.users[id] = u
+					}
+				}
+			}
+		}
+		if len(msg.sources) > 0 {
+			// 同步回来的登录态可能已经在平台侧失效：立刻校验一次，
+			// 过期就走自动退出与冻结，不把「已登录」留在界面上。
+			return m, m.loadUsersCmd()
+		}
+		return m, nil
+
+	case coverMsg:
+		m.coverLoadingID = ""
+		if m.current != nil && msg.songID == m.current.ID && msg.err == nil {
+			m.artwork = msg.path
+			m.artworkSongID = msg.songID
+		}
+		m.publishNowPlaying()
+		return m, nil
+
+	case usersMsg:
+		if msg.users != nil {
+			m.users = msg.users
+		}
+		if len(msg.expired) > 0 {
+			return m, m.handleExpiredSessions(msg.expired)
+		}
+		return m, nil
+
+	case sessionsRefreshedMsg:
+		// 续期是静默的：失败留给下一轮账号校验和定时重试，
+		// 不在这里弹提示打断播放。
+		return m, nil
+
+	case playlistsMsg:
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		oldPlaylistID := m.currentPlaylistID()
+		m.playlists = msg.items
+		if m.pendingPlaylistID != "" {
+			for i, p := range m.playlists {
+				if p.ID == m.pendingPlaylistID {
+					m.playlistIdx = i
+					m.songIdx = 0
+					m.songs = nil
+					break
+				}
+			}
+			m.pendingPlaylistID = ""
+		}
+		if m.playlistIdx >= len(m.playlists) {
+			m.playlistIdx = max(0, len(m.playlists)-1)
+		}
+		if m.playlistIdx < 0 {
+			m.playlistIdx = 0
+		}
+		if m.currentPlaylistID() != oldPlaylistID {
+			m.clearSelection()
+		}
+		if msg.warn != nil {
+			m.setNotice(msg.warn.Error(), true)
+		}
+		if len(m.playlists) == 0 {
+			// 删掉最后一个歌单后清掉残留曲目，别让右栏继续显示已删除歌单。
+			m.playlistIdx = 0
+			m.songIdx = 0
+			m.songs = nil
+			m.songsBusy = false
+			m.clearSelection()
+			return m, nil
+		}
+		return m, m.loadSongsCmd(false)
+
+	case songsMsg:
+		m.songsBusy = false
+		check := m.sessionCheckCmd(msg.err)
+		if msg.err != nil {
+			if len(msg.items) == 0 {
+				m.setError(msg.err)
+				return m, check
+			}
+			m.setNotice(msg.err.Error(), true)
+		}
+		// r 刷新远端歌单、d 移除歌曲都会改变曲目数。侧栏计数必须跟着这次
+		// 加载结果走，否则会一直留着旧数字，直到下一次全量加载歌单。
+		m.syncPlaylistCount(msg.playlistID, len(msg.items))
+		if msg.playlistID != m.currentPlaylistID() {
+			return m, check
+		}
+		m.songs = msg.items
+		if m.songIdx >= len(m.songs) {
+			m.songIdx = max(0, len(m.songs)-1)
+		}
+		m.pruneSelection()
+		if m.pendingPlayPlaylist {
+			m.pendingPlayPlaylist = false
+			if len(m.songs) == 0 {
+				m.setNotice("这个歌单还是空的", false)
+				return m, check
+			}
+			return m, tea.Batch(check, m.playPlaylistFromStart())
+		}
+		return m, check
+
+	case foldersMsg:
+		if msg.source != m.folderSource {
+			return m, nil
+		}
+		m.folderBusy = false
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, m.sessionCheckCmd(msg.err)
+		}
+		m.folderItems = msg.items
+		if m.folderIdx >= len(m.folderItems) {
+			m.folderIdx = max(0, len(m.folderItems)-1)
+		}
+		if len(msg.items) == 0 {
+			m.setNotice("没有可添加的歌单", false)
+		}
+		return m, nil
+
+	case targetRemotesMsg:
+		if m.picker == nil || m.picker.mode != targetPickerAddSong {
+			return m, nil
+		}
+		if m.picker.commonSource() != string(msg.source) {
+			return m, nil
+		}
+		m.picker.remoteBusy = false
+		if msg.err != nil {
+			m.picker.remoteErr = msg.err.Error()
+			return m, nil
+		}
+		seen := map[string]bool{}
+		for _, item := range m.picker.items {
+			seen[item.ID] = true
+			if item.RemoteID != "" {
+				seen["remote:"+item.RemoteID] = true
+			}
+		}
+		for _, p := range msg.items {
+			if seen[p.ID] || seen["remote:"+p.RemoteID] {
+				continue
+			}
+			m.picker.items = append(m.picker.items, playlistTarget{
+				ID:       p.ID,
+				Title:    p.Title,
+				Source:   string(p.Source),
+				RemoteID: p.RemoteID,
+				Kind:     "remote",
+				Count:    p.Count,
+				Cloud:    true,
+			})
+		}
+		m.picker.normalize()
+		return m, nil
+
+	case playlistAddMsg:
+		if msg.err != nil && msg.count == 0 {
+			m.setError(fmt.Errorf("加入云端歌单失败（%s · %s）：%w", m.sourceName(source.ID(msg.target.Source)), msg.target.Title, msg.err))
+			return m, nil
+		}
+		suffix := ""
+		if msg.count > 1 {
+			suffix = fmt.Sprintf("（%d 首）", msg.count)
+		}
+		imported := false
+		for _, p := range m.playlists {
+			if p.ID != msg.target.ID {
+				continue
+			}
+			imported = true
+			if m.currentPlaylistID() == p.ID {
+				m.songsBusy = true
+				if msg.err != nil {
+					m.setNotice(fmt.Sprintf("云端歌单已加入 %d 首，后续失败：%v", msg.count, msg.err), true)
+				} else {
+					m.setNotice("已加入云端歌单："+msg.target.Title+suffix, false)
+				}
+				return m, m.loadSongsCmdFor(p, true)
+			}
+			break
+		}
+		if msg.err != nil {
+			m.setNotice(fmt.Sprintf("云端歌单已加入 %d 首，后续失败：%v", msg.count, msg.err), true)
+			return m, nil
+		}
+		if imported {
+			m.setNotice("已加入云端歌单："+msg.target.Title+suffix, false)
+		} else {
+			m.setNotice("已加入云端歌单：「"+msg.target.Title+"」"+suffix+"（按 f 可导入曲库）", false)
+		}
+		return m, nil
+
+	case searchMsg:
+		if msg.keyword != m.searchKeyword || msg.page != m.searchPage || msg.source != m.searchSource {
+			return m, nil
+		}
+		m.searchBusy = false
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		m.searchResults = msg.candidates
+		m.searchPages = msg.pages
+		m.searchIdx = 0
+		if msg.warn != nil {
+			m.setNotice(msg.warn.Error(), true)
+		} else if len(msg.candidates) == 0 {
+			m.setNotice("没有搜到结果", false)
+		}
+		return m, nil
+
+	case downloadsMsg:
+		m.downloadsBusy = false
+		if msg.err != nil {
+			m.setError(msg.err)
+			return m, nil
+		}
+		m.downloadItems = msg.items
+		if m.downloadIdx >= len(m.downloadItems) {
+			m.downloadIdx = max(0, len(m.downloadItems)-1)
+		}
+		if m.downloadIdx < 0 {
+			m.downloadIdx = 0
+		}
+		return m, nil
+
+	case streamMsg:
+		return m.handleStream(msg)
+
+	case prefetchMsg:
+		if msg.err == nil && msg.songID != "" && msg.songID == m.nextQueueSongID() {
+			s := msg.stream
+			m.prefetch.Set(msg.songID, s)
+			// 把预解析补出的 CID / 封面 / 时长写回队列条目，切歌后歌词才能走平台字幕。
+			if msg.song.ID != "" {
+				for i := range m.queue {
+					if store.NormalizeSong(m.queue[i]).ID == msg.songID {
+						m.queue[i] = msg.song
+						break
+					}
+				}
+				// 分 P 回退时 ID 可能变化，缓存键跟着改，否则 takePrefetch 会错过。
+				m.prefetch.Set(store.NormalizeSong(msg.song).ID, s)
+			}
+		}
+		return m, nil
+
+	case lyricMsg:
+		// 绑定切换/切歌后，慢请求的旧结果不能覆盖新绑定。
+		if msg.gen != 0 && msg.gen != m.lyricGen {
+			return m, nil
+		}
+		if m.current == nil || msg.songID != m.current.ID {
+			return m, nil
+		}
+		m.lyricBase = msg.lines
+		m.lyricOffsetMS = msg.offsetMS
+		m.lyricOffsetKey = msg.offsetKey
+		if m.lyricOffsetKey == "" {
+			m.lyricOffsetKey = store.BindingAuto
+		}
+		m.lyricLines = lyrics.Clone(msg.lines, msg.offsetMS)
+		m.lyricSource = msg.source
+		m.lyricBound = msg.bound
+		m.lyricDegraded = msg.degraded
+		m.lyricWarning = msg.warning
+		m.lyricLoaded = true
+		m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
+		m.followLyricLine()
+		if msg.err != nil && len(msg.lines) == 0 {
+			m.setNotice("歌词获取失败："+msg.err.Error(), true)
+		} else if msg.degraded && msg.warning != "" {
+			m.setWarn(msg.warning)
+		} else if msg.warning != "" && !m.lyricConfigWarned {
+			m.lyricConfigWarned = true
+			m.setWarn(msg.warning)
+		}
+		return m, nil
+
+	case queueRestoredMsg:
+		if len(msg.songs) > 0 {
+			idx := msg.index
+			if idx < 0 || idx >= len(msg.songs) {
+				idx = 0
+			}
+			song := msg.songs[idx]
+			duration := time.Duration(song.Duration) * time.Second
+			clip := sanitizeClip(m.loadClip(song.ID), duration)
+			position := clampClipStart(msg.position, clip, duration)
+			if duration > 0 && position > duration {
+				position = duration
+			}
+			m.withController(func(c *player.Controller) {
+				c.RestoreSession(msg.songs, idx, &song, position)
+			})
+			m.queueCursor = m.queueIdx
+			m.syncSongComp(song.ID)
+			m.setActiveClip(song.ID, clip)
+			m.lyricLoaded = false
+			m.lyricLines = nil
+			m.lyricIdx = -1
+			m.followLyricLine()
+			if m.position > 0 {
+				m.setNotice(fmt.Sprintf("已恢复上次进度 %s · space 继续", formatDuration(m.position)), false)
+			} else {
+				m.setNotice("已恢复上次队列 · space 开始播放", false)
+			}
+			return m, m.lyricsCmd(song)
+		}
+		return m, nil
+
+	case qrMsg:
+		if m.qrCache == nil {
+			m.qrCache = map[source.ID]*qrCacheEntry{}
+		}
+		if msg.err != nil {
+			if entry := m.qrCache[msg.source]; entry != nil {
+				entry.fetching = false
+				entry.status = "获取二维码失败"
+			}
+			if msg.source == m.loginSource {
+				m.qrStatus = "获取二维码失败"
+				m.setError(msg.err)
+			}
+			return m, nil
+		}
+		ascii, compact, path := buildQRArt(msg.qr.URL, msg.source)
+		entry := &qrCacheEntry{
+			qr:           msg.qr,
+			ascii:        ascii,
+			asciiCompact: compact,
+			path:         path,
+			status:       "用 " + m.loginAppName(msg.source) + " 扫码登录",
+			expiresAt:    time.Now().Add(qrCacheTTL),
+		}
+		m.qrCache[msg.source] = entry
+		if msg.source != m.loginSource {
+			return m, nil // 用户已经切走，缓存起来等切回来
+		}
+		m.applyQREntry(msg.source, entry)
+		return m, pollLoginCmd(m.sources.Get(msg.source), msg.qr.Key)
+
+	case qrPollMsg:
+		if msg.source != m.qrSource {
+			return m, nil // 用户已经切到别的音源，旧轮询不再续
+		}
+		src := m.sources.Get(msg.source)
+		entry := m.qrCache[msg.source]
+		if msg.err != nil {
+			m.qrStatus = "轮询失败：" + msg.err.Error()
+			if entry != nil {
+				entry.status = m.qrStatus
+			}
+			return m, pollLoginTick(src, m.qrKey())
+		}
+		m.qrStatus = msg.status.Message
+		if entry != nil {
+			entry.status = msg.status.Message
+		}
+		if msg.status.LoggedIn {
+			m.qrStatus = "登录成功"
+			label := "登录成功"
+			if src != nil {
+				label = src.Name() + " 登录成功"
+				_ = m.service().SaveAccount(src.ID(), src.Session())
+			}
+			m.setNotice(label, false)
+			m.view = viewLibrary
+			// 登录成功后清掉这个源的二维码缓存。
+			delete(m.qrCache, msg.source)
+			m.qr = nil
+			m.qrSource = ""
+			m.qrASCII = ""
+			m.qrASCIICompact = ""
+			m.qrPath = ""
+			m.qrStatus = ""
+			return m, tea.Batch(m.loadUsersCmd(), m.loadPlaylistsCmd())
+		}
+		if msg.status.Expired {
+			if entry != nil {
+				entry.status = "二维码已失效"
+				entry.fetching = false
+				entry.expiresAt = time.Time{}
+			}
+			m.qr = nil
+			m.qrASCII = ""
+			m.qrASCIICompact = ""
+			m.qrPath = ""
+			m.qrStatus = "二维码已失效，正在重新获取…"
+			if entry != nil {
+				entry.fetching = true
+				entry.status = m.qrStatus
+			}
+			return m, m.startLoginCmd(msg.source)
+		}
+		return m, pollLoginTick(src, m.qrKey())
+	}
+	return m, nil
+}
+
+func (m *Model) qrKey() string {
+	if m.qr == nil {
+		return ""
+	}
+	return m.qr.Key
+}
+
+func (m *Model) handleEngineEvent(ev audio.Event) (tea.Model, tea.Cmd) {
+	var res player.EventResult
+	m.withController(func(c *player.Controller) { res = c.HandleEvent(ev) })
+	switch {
+	case res.Retry:
+		m.setNotice("播放中断，正在重新解析并重试…", true)
+		return m, tea.Batch(
+			m.playSongCmdAt(res.Song, res.StartAt, m.retryCount),
+			waitEngineCmd(m.engine.Events()),
+		)
+	case res.Ended:
+		if m.clip != nil {
+			return m, waitEngineCmd(m.engine.Events())
+		}
+		return m, tea.Batch(m.advance(), waitEngineCmd(m.engine.Events()))
+	case res.Err != nil:
+		m.setError(res.Err)
+	}
+	return m, waitEngineCmd(m.engine.Events())
+}
+
+func (m *Model) handleStream(msg streamMsg) (tea.Model, tea.Cmd) {
+	song := store.NormalizeSong(msg.song)
+	m.syncSongComp(song.ID)
+	duration := msg.stream.Duration
+	if duration == 0 && song.Duration > 0 {
+		duration = time.Duration(song.Duration) * time.Second
+	}
+	clip, preview := m.playbackClip(song, duration)
+	startAt := clampClipStart(msg.startAt, clip, duration)
+
+	var res player.PlayResult
+	m.withController(func(c *player.Controller) {
+		res = c.CompletePlay(m.ctx, msg.request, song, msg.stream, startAt, msg.retry, clip, preview, msg.err)
+	})
+	switch {
+	case res.Stale:
+		return m, nil
+	case res.Retry:
+		m.setNotice("解析播放地址失败，正在重试…", true)
+		return m, m.playSongCmdAt(res.Song, res.StartAt, res.RetryCount)
+	case res.Err != nil:
+		m.setNotice("解析播放地址失败："+res.Err.Error(), true)
+		return m, nil
+	}
+	return m, m.finishStart(res.Song, res.Stream, clip)
+}
+
+// playbackClip 返回当前曲目应使用的片段；编辑器打开时用整首预览。
+func (m *Model) playbackClip(song store.Song, duration time.Duration) (store.Clip, bool) {
+	clip := sanitizeClip(m.loadClip(song.ID), duration)
+	preview := false
+	if m.clip != nil && m.clip.songID == song.ID {
+		m.clip.previewing = true
+		clip = store.Clip{}
+		preview = true
+	}
+	return clip, preview
+}
+
+// startStream 把已解析的音频流交给控制器并刷新界面状态。
+func (m *Model) startStream(song store.Song, stream source.Stream, startAt time.Duration) tea.Cmd {
+	song = store.NormalizeSong(song)
+	m.syncSongComp(song.ID)
+	if m.clip != nil && m.clip.songID != song.ID {
+		m.clip = nil
+	}
+	duration := stream.Duration
+	if duration == 0 && song.Duration > 0 {
+		duration = time.Duration(song.Duration) * time.Second
+	}
+	clip, preview := m.playbackClip(song, duration)
+	startAt = clampClipStart(startAt, clip, duration)
+
+	var res player.PlayResult
+	m.withController(func(c *player.Controller) {
+		res = c.PlayResolved(m.ctx, song, stream, startAt, clip, preview)
+	})
+	if res.Err != nil {
+		m.setError(res.Err)
+		return nil
+	}
+	return m.finishStart(res.Song, res.Stream, clip)
+}
+
+func (m *Model) finishStart(song store.Song, stream source.Stream, clip store.Clip) tea.Cmd {
+	// 自动切歌（队列推进、预解析）也要收起上一首的歌词来源浮层。
+	if m.lyricBind != nil && m.lyricBind.song.ID != song.ID {
+		m.lyricBind = nil
+	}
+	m.setActiveClip(song.ID, clip)
+	m.lyricBase = nil
+	m.lyricLines = nil
+	m.lyricIdx = -1
+	m.lyricSource = ""
+	m.lyricLoaded = false
+	m.lyricOffsetMS = 0
+	m.lyricOffsetKey = store.BindingAuto
+	m.lyricBound = false
+	m.lyricDegraded = false
+	m.lyricWarning = ""
+	m.followLyricLine()
+	quality := stream.Quality
+	if quality == "" {
+		quality = "未知音质"
+	}
+	m.setNotice("正在播放 · "+quality, false)
+	return tea.Batch(m.lyricsCmd(song), m.prefetchNextCmd())
+}
+
+func (m *Model) handleKey(key tea.Key) (tea.Model, tea.Cmd) {
+	if m.menu != nil {
+		return m.handleMenuKey(key)
+	}
+	if m.palette != nil {
+		return m.handlePaletteKey(key)
+	}
+	if m.prompt != promptNone {
+		return m.handlePromptKey(key)
+	}
+	if m.lyricBind != nil {
+		return m.handleLyricBindKey(key)
+	}
+	if m.clip != nil {
+		return m.handleClipKey(key)
+	}
+	if m.picker != nil {
+		return m.handlePickerKey(key)
+	}
+	// 浮层（帮助/关于）在最上层，按键必须先归它们；搜索输入在其下。
+	if m.helpPopup {
+		return m.handleHelpPopupKey(key)
+	}
+	if m.aboutPopup {
+		return m.handleAboutKey(key)
+	}
+	if m.view == viewSearch && m.searchEditing {
+		return m.handleSearchInput(key)
+	}
+	if m.view == viewSync {
+		return m.handleSyncKey(key)
+	}
+	if m.view == viewConflicts {
+		return m.handleConflictKey(key)
+	}
+
+	switch {
+	case isCtrl(key, 'c'):
+		m.shutdown()
+		return m, tea.Quit
+	case key.Code == tea.KeyEscape:
+		// 歌词页浏览中：esc 先回到正在播放的那句，再按才返回曲库。
+		if m.view == viewLyrics && m.lyricBrowsing() {
+			m.followLyricLine()
+			return m, nil
+		}
+		// 曲库里有批量选择时，esc 先取消选择，不直接离开页面。
+		if m.view == viewLibrary && m.hasSelection() {
+			m.clearSelection()
+			m.setNotice("已取消选择", false)
+			return m, nil
+		}
+		// esc 只做「取消 / 返回曲库」；关于入口在页头 zero 与命令面板。
+		if m.view == viewMix {
+			m.mix = nil
+		}
+		if m.view != viewLibrary {
+			m.view = viewLibrary
+		}
+		return m, nil
+	case m.match(keymap.Back, key):
+		if m.view == viewMix {
+			m.mix = nil
+		}
+		if m.view != viewLibrary {
+			m.view = viewLibrary
+		}
+		return m, nil
+	case key.Code == tea.KeyTab:
+		if m.view == viewMix {
+			m.mix = nil
+		}
+		step := 1
+		if isShiftTab(key) {
+			step = -1
+		}
+		return m.openPage(m.cyclePage(step))
+	case m.match(keymap.Select, key):
+		return m, m.handleSelectKey()
+	case m.match(keymap.SelectAll, key):
+		return m, m.handleSelectAllKey()
+	case key.Code == tea.KeySpace || key.Text == " ":
+		if m.view == viewMix {
+			return m.handleMixKey(key)
+		}
+		return m, m.togglePlayback()
+	case m.match(keymap.Quit, key):
+		m.shutdown()
+		return m, tea.Quit
+	case m.match(keymap.Sync, key):
+		return m, m.openSyncPage()
+	case m.match(keymap.QueueView, key):
+		m.view = viewQueue
+		return m, m.onViewChanged()
+	case m.match(keymap.LyricsView, key):
+		m.view = viewLyrics
+		return m, m.onViewChanged()
+	case m.match(keymap.Downloads, key):
+		return m, m.openDownloads()
+	case m.match(keymap.LocalSearch, key):
+		m.openLocalSearch(searchLocalPlaylist)
+		return m, nil
+	case m.match(keymap.Search, key):
+		m.openSourceSearch()
+		return m, nil
+	case m.match(keymap.HelpPage, key):
+		if m.view == viewHelp {
+			m.view = viewLibrary
+		} else {
+			m.view = viewHelp
+		}
+		return m, nil
+	case m.match(keymap.HelpPopup, key):
+		m.helpPopup = !m.helpPopup
+		m.helpPopupOffset = 0
+		return m, nil
+	case m.match(keymap.Login, key):
+		m.view = viewLogin
+		return m, m.ensureLoginQR()
+	case m.match(keymap.Mute, key):
+		m.toggleMute()
+		return m, nil
+	case m.match(keymap.Quality, key):
+		m.cycleQuality()
+		return m, nil
+	case m.match(keymap.Sleep, key):
+		m.cycleSleep()
+		return m, nil
+	// 歌词偏移在任意视图都能调，底部的常驻歌词条会立刻反映结果。
+	case m.match(keymap.OffsetDown, key):
+		return m, m.shiftLyrics(-500)
+	case m.match(keymap.OffsetUp, key):
+		return m, m.shiftLyrics(500)
+	case m.match(keymap.OffsetReset, key):
+		return m, m.resetLyricOffset()
+	case m.match(keymap.Download, key):
+		if m.view == viewHelp || m.view == viewLogin {
+			break
+		}
+		return m, m.startCurrentDownload()
+	case m.match(keymap.DownloadSelected, key):
+		if m.view == viewHelp || m.view == viewLogin {
+			break
+		}
+		return m, m.startSelectedDownload()
+	case m.match(keymap.BindLyrics, key):
+		return m, m.openLyricBind()
+	case m.match(keymap.EditClip, key):
+		if m.view == viewHelp || m.view == viewLogin {
+			break
+		}
+		return m, m.openClipEditor()
+	case m.match(keymap.AddPlaylist, key):
+		if m.view == viewLibrary && m.libraryFocus == focusSongs {
+			if songs := m.selectedSongs(); len(songs) > 0 {
+				return m, m.openAddSongsPicker(songs)
+			}
+		}
+		if song, ok := m.songForPlaylistAdd(); ok {
+			return m, m.openAddSongPicker(song)
+		}
+		if m.view == viewLibrary && m.libraryFocus == focusPlaylists {
+			return m, m.needSongFocus()
+		}
+		return m, nil
+	case m.match(keymap.MergePlaylist, key):
+		if m.view != viewLibrary {
+			return m, nil
+		}
+		return m, m.openMergePicker()
+	}
+
+	switch m.view {
+	case viewLibrary:
+		return m.handleLibraryKey(key)
+	case viewSearch:
+		return m.handleSearchKey(key)
+	case viewQueue:
+		return m.handleQueueKey(key)
+	case viewLyrics:
+		return m.handleLyricsKey(key)
+	case viewHelp:
+		return m.handleHelpKey(key)
+	case viewFolders:
+		return m.handleFolderKey(key)
+	case viewMix:
+		return m.handleMixKey(key)
+	case viewDownloads:
+		return m.handleDownloadsKey(key)
+	case viewLogin:
+		if m.match(keymap.Up, key) {
+			return m, m.switchLoginSource(-1)
+		}
+		if m.match(keymap.Down, key) {
+			return m, m.switchLoginSource(1)
+		}
+		if m.match(keymap.Refresh, key) {
+			if _, ok := m.userFor(m.loginSource); ok {
+				return m, m.loadUsersCmd()
+			}
+			return m, m.refreshLoginQR()
+		}
+		if m.match(keymap.Source, key) {
+			return m, m.switchLoginSource(1)
+		}
+		// login_image 默认绑定 o；v 作为历史键位继续兼容。
+		if m.match(keymap.LoginImage, key) || isKey(key, "v") {
+			if m.qrPath == "" {
+				m.setNotice("二维码图片还没生成", false)
+				return m, nil
+			}
+			if err := openLocalFile(m.qrPath); err != nil {
+				m.setError(err)
+			} else {
+				m.setNotice("已打开二维码图片："+m.qrPath, false)
+			}
+			return m, nil
+		}
+		if m.match(keymap.Logout, key) || isKey(key, "W") || isKey(key, "X") {
+			return m, m.logout(m.loginSource)
+		}
+		return m.handleCommonPlaybackKey(key)
+	}
+	return m.handleCommonPlaybackKey(key)
+}
+
+func (m *Model) openLocalSearch(mode searchMode) {
+	m.searchMode = mode
+	m.view = viewSearch
+	m.searchEditing = true
+	m.searchInput = m.searchKeyword
+	m.searchIdx = 0
+	m.searchBusy = false
+	m.searchResults = nil
+	m.searchPage = 1
+	m.searchPages = 0
+}
+
+func (m *Model) openSourceSearch() {
+	m.searchMode = searchSource
+	m.view = viewSearch
+	m.searchEditing = true
+	m.searchInput = m.searchKeyword
+	m.searchIdx = 0
+}
+
+func (m *Model) handleCommonPlaybackKey(key tea.Key) (tea.Model, tea.Cmd) {
+	switch {
+	case m.match(keymap.Next, key):
+		return m, m.advance()
+	case m.match(keymap.Previous, key):
+		return m, m.rewind()
+	case m.match(keymap.SeekBack5, key) || key.Code == tea.KeyLeft:
+		return m, m.seekBy(-5 * time.Second)
+	case m.match(keymap.SeekBack1, key):
+		return m, m.seekBy(-1 * time.Second)
+	case m.match(keymap.SeekFwd5, key) || key.Code == tea.KeyRight:
+		return m, m.seekBy(5 * time.Second)
+	case m.match(keymap.SeekFwd10, key):
+		return m, m.seekBy(10 * time.Second)
+	case m.match(keymap.VolumeUp, key):
+		m.changeVolume(0.05)
+		return m, nil
+	case m.match(keymap.VolumeDown, key):
+		m.changeVolume(-0.05)
+		return m, nil
+	case m.match(keymap.CompUp, key):
+		m.changeComp(1)
+		return m, nil
+	case m.match(keymap.CompDown, key):
+		m.changeComp(-1)
+		return m, nil
+	case m.match(keymap.SongCompUp, key):
+		m.changeSongComp(1)
+		return m, nil
+	case m.match(keymap.SongCompDown, key):
+		m.changeSongComp(-1)
+		return m, nil
+	case m.match(keymap.Mode, key):
+		m.setMode((m.mode + 1) % modeCount)
+		return m, nil
+	case m.match(keymap.PageUp, key):
+		return m, m.pageMove(-1)
+	case m.match(keymap.PageDown, key):
+		return m, m.pageMove(1)
+	case m.match(keymap.Top, key):
+		if m.view == viewLibrary && m.libraryFocus == focusPlaylists {
+			return m, m.selectPlaylist(0)
+		}
+		m.moveTop()
+		return m, nil
+	case m.match(keymap.Bottom, key):
+		if m.view == viewLibrary && m.libraryFocus == focusPlaylists {
+			return m, m.selectPlaylist(len(m.playlists) - 1)
+		}
+		m.moveBottom()
+		return m, nil
+	case len(key.Text) == 1 && key.Text[0] >= '1' && key.Text[0] <= '9':
+		idx := int(key.Text[0] - '1')
+		if idx < len(navPages) {
+			return m.openPage(idx)
+		}
+	}
+	return m, nil
+}
+
+// pageMove 实现 musicfox 风格的翻页：列表移动光标，搜索翻页，帮助滚动。
+func (m *Model) pageMove(delta int) tea.Cmd {
+	page := m.bodyHeight()
+	switch m.view {
+	case viewLibrary:
+		if m.libraryFocus == focusPlaylists {
+			return m.selectPlaylist(m.playlistIdx + delta*page)
+		}
+		m.songIdx = clampInt(m.songIdx+delta*page, 0, max(0, len(m.songs)-1))
+	case viewSearch:
+		if m.searchMode != searchSource {
+			return nil
+		}
+		return m.changeSearchPage(delta)
+	case viewQueue:
+		m.queueCursor = clampInt(m.queueCursor+delta*page, 0, max(0, len(m.queue)-1))
+	case viewFolders:
+		m.folderIdx = clampInt(m.folderIdx+delta*page, 0, max(0, len(m.folderItems)-1))
+	case viewDownloads:
+		m.downloadIdx = clampInt(m.downloadIdx+delta*page, 0, max(0, len(m.downloadItems)-1))
+	case viewHelp:
+		m.scrollHelp(delta * page)
+	}
+	return nil
+}
+
+func (m *Model) moveTop() {
+	switch m.view {
+	case viewLibrary:
+		m.songIdx = 0
+	case viewSearch:
+		m.searchIdx = 0
+	case viewQueue:
+		m.queueCursor = 0
+	case viewFolders:
+		m.folderIdx = 0
+	case viewDownloads:
+		m.downloadIdx = 0
+	case viewHelp:
+		m.scrollHelpToTop()
+	}
+}
+
+func (m *Model) moveBottom() {
+	switch m.view {
+	case viewLibrary:
+		m.songIdx = max(0, len(m.songs)-1)
+	case viewSearch:
+		m.searchIdx = max(0, m.currentSearchLen()-1)
+	case viewQueue:
+		m.queueCursor = max(0, len(m.queue)-1)
+	case viewFolders:
+		m.folderIdx = max(0, len(m.folderItems)-1)
+	case viewDownloads:
+		m.downloadIdx = max(0, len(m.downloadItems)-1)
+	case viewHelp:
+		m.scrollHelpToBottom()
+	}
+}
+
+func clampInt(v, low, high int) int {
+	if v < low {
+		return low
+	}
+	if v > high {
+		return high
+	}
+	return v
+}
+
+func (m *Model) onViewChanged() tea.Cmd {
+	if m.view == viewQueue {
+		m.queueCursor = m.queueIdx
+	}
+	if m.view == viewHelp {
+		m.helpOffset = 0
+	}
+	if m.view == viewLogin {
+		return m.ensureLoginQR()
+	}
+	if m.view == viewFolders && !m.folderBusy && len(m.folderItems) == 0 {
+		return m.openFolders(m.defaultFolderSource())
+	}
+	if m.view == viewDownloads && !m.downloadsBusy {
+		m.downloadsBusy = true
+		return m.loadDownloadsCmd()
+	}
+	if m.view == viewSync && m.syncMgr != nil {
+		return m.syncStatusCmd()
+	}
+	return nil
+}
+
+func (m *Model) handleLibraryKey(key tea.Key) (tea.Model, tea.Cmd) {
+	switch {
+	case m.match(keymap.Left, key):
+		m.libraryFocus = focusPlaylists
+		return m, nil
+	case m.match(keymap.Right, key):
+		m.libraryFocus = focusSongs
+		return m, nil
+	case m.match(keymap.Up, key):
+		if m.libraryFocus == focusPlaylists {
+			return m, m.movePlaylist(-1)
+		}
+		if m.songIdx > 0 {
+			m.songIdx--
+			m.resetMarquee()
+		}
+		return m, nil
+	case m.match(keymap.Down, key):
+		if m.libraryFocus == focusPlaylists {
+			return m, m.movePlaylist(1)
+		}
+		if m.songIdx < len(m.songs)-1 {
+			m.songIdx++
+			m.resetMarquee()
+		}
+		return m, nil
+	case key.Code == tea.KeyEnter || m.match(keymap.PlaySelected, key):
+		if m.libraryFocus == focusPlaylists {
+			if m.songsBusy {
+				m.setNotice("歌单载入中…", false)
+				return m, nil
+			}
+			if len(m.songs) == 0 {
+				m.setNotice("这个歌单还是空的", false)
+				return m, nil
+			}
+			return m, m.playPlaylistFromStart()
+		}
+		if len(m.songs) == 0 {
+			return m, nil
+		}
+		if m.selectionCount() > 0 {
+			return m, m.playSelectedSongs()
+		}
+		return m, m.playPlaylistIndex(m.songIdx)
+	case m.match(keymap.Enqueue, key):
+		if m.libraryFocus == focusPlaylists {
+			return m, m.needSongFocus()
+		}
+		if m.selectionCount() > 0 {
+			return m, m.enqueueSelectedSongs()
+		}
+		return m, m.enqueueCurrent()
+	case m.match(keymap.PlayNext, key):
+		if m.libraryFocus == focusPlaylists {
+			return m, m.needSongFocus()
+		}
+		if m.selectionCount() > 0 {
+			return m, m.insertSelectedNext()
+		}
+		if m.songIdx >= 0 && m.songIdx < len(m.songs) {
+			return m, m.insertNext(m.songs[m.songIdx])
+		}
+		return m, nil
+	case m.match(keymap.Folders, key):
+		return m, m.openFolders(m.defaultFolderSource())
+	case m.match(keymap.New, key):
+		// N 始终打开命令面板（新建本地/混合歌单、同步、解锁、关于），
+		// 不随焦点改变行为；歌单栏右键也走同一个面板。
+		m.openPalette()
+		return m, nil
+	case m.match(keymap.MixEdit, key):
+		if m.libraryFocus == focusSongs {
+			return m, m.needPlaylistFocus()
+		}
+		if p, ok := m.currentPlaylist(); ok && p.Kind == "mixin" {
+			return m, m.openMixEditor(p.ID)
+		}
+		m.setNotice("只有混合歌单可以编辑引用", true)
+		return m, nil
+	case m.match(keymap.Unlock, key):
+		if m.libraryFocus == focusSongs {
+			return m, m.needPlaylistFocus()
+		}
+		if p, ok := m.currentPlaylist(); ok && p.Kind == "remote" && !app.IsDailyPlaylist(p) {
+			m.beginPrompt(promptUnlockPlaylist)
+			return m, nil
+		}
+		m.setNotice("只有普通同步歌单可以解锁", true)
+		return m, nil
+	case m.match(keymap.Rename, key):
+		if m.libraryFocus == focusSongs {
+			return m, m.needPlaylistFocus()
+		}
+		p, ok := m.currentPlaylist()
+		if !ok || !store.IsEditableKind(p.Kind) {
+			m.setNotice("只有本地、混合或文件夹歌单可以重命名", true)
+			return m, nil
+		}
+		m.beginPrompt(promptRenamePlaylist)
+		return m, nil
+	case m.match(keymap.Delete, key):
+		if m.libraryFocus == focusSongs {
+			return m, m.needPlaylistFocus()
+		}
+		p, ok := m.currentPlaylist()
+		if !ok {
+			m.setNotice("没有选中的歌单", true)
+			return m, nil
+		}
+		if app.IsDailyPlaylist(p) {
+			m.setNotice("每日推荐入口不能删除", true)
+			return m, nil
+		}
+		m.beginPrompt(promptDeletePlaylist)
+		return m, nil
+	case m.match(keymap.Remove, key):
+		if m.libraryFocus == focusPlaylists {
+			return m, m.needSongFocus()
+		}
+		return m, m.removeSelected()
+	case m.match(keymap.Refresh, key):
+		if p, ok := m.currentPlaylist(); ok {
+			m.songsBusy = true
+			return m, m.loadSongsCmdFor(p, true)
+		}
+		return m, nil
+	}
+	return m.handleCommonPlaybackKey(key)
+}
+
+func (m *Model) needSongFocus() tea.Cmd {
+	m.setNotice("先按 → / l 切到歌曲列表", false)
+	return nil
+}
+
+func (m *Model) needPlaylistFocus() tea.Cmd {
+	m.setNotice("先按 ← / h 切到歌单列表", false)
+	return nil
+}
+
+func (m *Model) handleSearchKey(key tea.Key) (tea.Model, tea.Cmd) {
+	switch {
+	case m.match(keymap.LocalSearch, key):
+		m.openLocalSearch(searchLocalPlaylist)
+		return m, nil
+	case m.match(keymap.Search, key):
+		m.openSourceSearch()
+		return m, nil
+	case m.match(keymap.Up, key):
+		if m.searchIdx > 0 {
+			m.searchIdx--
+		}
+		return m, nil
+	case m.match(keymap.Down, key):
+		if m.searchIdx < m.currentSearchLen()-1 {
+			m.searchIdx++
+		}
+		return m, nil
+	case key.Code == tea.KeyEnter || m.match(keymap.PlaySelected, key):
+		if m.searchMode == searchSource {
+			return m, m.playSearchResult(m.searchIdx)
+		}
+		return m, m.playLocalResult(m.searchIdx)
+	case m.match(keymap.Enqueue, key):
+		if m.searchMode == searchSource {
+			return m, m.enqueueSearchResult(m.searchIdx)
+		}
+		return m, m.enqueueLocalResult(m.searchIdx)
+	case m.match(keymap.PlayNext, key):
+		if m.searchMode == searchSource {
+			if m.searchIdx >= 0 && m.searchIdx < len(m.searchResults) {
+				return m, m.insertNext(m.searchResultSong(m.searchIdx))
+			}
+			return m, nil
+		}
+		return m, m.insertNextLocalResult(m.searchIdx)
+	case m.match(keymap.Refresh, key):
+		return m, m.toggleSearchScope()
+	case m.match(keymap.Source, key):
+		if m.searchMode != searchSource {
+			m.setNotice("r 切换当前歌单/本地全部；s 仅用于音源搜索", false)
+			return m, nil
+		}
+		return m, m.cycleSearchSource()
+	}
+	return m.handleCommonPlaybackKey(key)
+}
+
+func (m *Model) currentSearchLen() int {
+	if m.searchMode == searchSource {
+		return len(m.searchResults)
+	}
+	return len(m.localResults)
+}
+
+func (m *Model) toggleSearchScope() tea.Cmd {
+	if m.searchMode == searchSource {
+		if strings.TrimSpace(m.searchKeyword) == "" {
+			return nil
+		}
+		m.searchPage = 1
+		m.searchPages = 0
+		m.searchResults = nil
+		m.searchIdx = 0
+		m.searchBusy = true
+		return m.searchCmd(m.searchKeyword, 1)
+	}
+	if m.searchMode == searchLocalPlaylist {
+		m.searchMode = searchLocalAll
+	} else {
+		m.searchMode = searchLocalPlaylist
+	}
+	m.searchIdx = 0
+	m.searchBusy = false
+	return m.runLocalSearch()
+}
+
+func (m *Model) runLocalSearch() tea.Cmd {
+	keyword := strings.ToLower(strings.TrimSpace(m.searchKeyword))
+	m.searchIdx = 0
+	if keyword == "" {
+		m.localResults = nil
+		return nil
+	}
+	if m.searchMode == searchLocalPlaylist {
+		out := make([]store.Song, 0)
+		for _, song := range m.songs {
+			if songMatches(song, keyword) {
+				out = append(out, song)
+			}
+		}
+		m.localResults = out
+		return nil
+	}
+	if m.store == nil {
+		m.localResults = nil
+		return nil
+	}
+	songs, err := m.service().SearchSongs(keyword, 500)
+	if err != nil {
+		m.setError(err)
+		return nil
+	}
+	m.localResults = songs
+	return nil
+}
+
+func songMatches(song store.Song, lowerQuery string) bool {
+	return strings.Contains(strings.ToLower(song.Title), lowerQuery) ||
+		strings.Contains(strings.ToLower(song.Artist), lowerQuery) ||
+		strings.Contains(strings.ToLower(song.Album), lowerQuery)
+}
+
+func (m *Model) playLocalResult(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.localResults) {
+		return nil
+	}
+	song := store.NormalizeSong(m.localResults[idx])
+	queue := append([]store.Song(nil), m.localResults...)
+	queueIdx := idx
+	if m.searchMode == searchLocalPlaylist {
+		queue = append([]store.Song(nil), m.songs...)
+		queueIdx = -1
+		for i := range queue {
+			if queue[i].ID == song.ID {
+				queueIdx = i
+				break
+			}
+		}
+		if queueIdx < 0 {
+			queue = []store.Song{song}
+			queueIdx = 0
+		}
+	}
+	if m.searchMode == searchLocalPlaylist {
+		m.setPlayingPlaylist(m.currentPlaylistID())
+	} else {
+		m.setPlayingPlaylist("")
+	}
+	m.loadQueue(queue, queueIdx)
+	return m.playSong(m.queue[m.queueIdx])
+}
+
+func (m *Model) addLocalResultToPlaylist(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.localResults) {
+		return nil
+	}
+	return m.openAddSongPicker(m.localResults[idx])
+}
+
+func (m *Model) enqueueLocalResult(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.localResults) {
+		return nil
+	}
+	return m.enqueueSong(m.localResults[idx])
+}
+
+func (m *Model) insertNextLocalResult(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.localResults) {
+		return nil
+	}
+	return m.insertNext(m.localResults[idx])
+}
+
+// cycleSearchSource 在「全部 / 各音源」之间切换搜索范围。
+func (m *Model) cycleSearchSource() tea.Cmd {
+	if m.sources == nil {
+		return nil
+	}
+	order := []source.ID{""}
+	for _, src := range m.sources.All() {
+		if src.Caps().Has(source.CapSearch) {
+			order = append(order, src.ID())
+		}
+	}
+	idx := 0
+	for i, id := range order {
+		if id == m.searchSource {
+			idx = i
+			break
+		}
+	}
+	m.searchSource = order[(idx+1)%len(order)]
+	label := "全部音源"
+	if m.searchSource != "" {
+		label = m.sourceName(m.searchSource)
+	}
+	m.searchPage = 1
+	m.searchPages = 0
+	m.searchResults = nil
+	m.searchIdx = 0
+	if m.searchKeyword != "" {
+		m.searchBusy = true
+		return m.searchCmd(m.searchKeyword, 1)
+	}
+	m.setNotice("搜索源："+label, false)
+	return nil
+}
+
+// changeSearchPage 在搜索结果里翻页；page 结果返回前忽略重复按键。
+func (m *Model) changeSearchPage(delta int) tea.Cmd {
+	if m.searchKeyword == "" || m.searchBusy {
+		return nil
+	}
+	target := m.searchPage + delta
+	if target < 1 {
+		m.setNotice("已经是第一页", false)
+		return nil
+	}
+	if m.searchPages > 0 && target > m.searchPages {
+		m.setNotice("已经是最后一页", false)
+		return nil
+	}
+	m.searchPage = target
+	m.searchBusy = true
+	return m.searchCmd(m.searchKeyword, target)
+}
+
+func (m *Model) handleSearchInput(key tea.Key) (tea.Model, tea.Cmd) {
+	if isCtrl(key, 'c') {
+		m.shutdown()
+		return m, tea.Quit
+	}
+	if key.Code == tea.KeyTab {
+		m.searchEditing = false
+		return m.handleKey(key)
+	}
+	switch key.Code {
+	case tea.KeyEnter:
+		m.searchEditing = false
+		keyword := strings.TrimSpace(m.searchInput)
+		m.searchKeyword = keyword
+		m.searchIdx = 0
+		if m.searchMode == searchSource {
+			m.searchPage = 1
+			m.searchPages = 0
+			m.searchResults = nil
+			if keyword == "" {
+				m.searchBusy = false
+				return m, nil
+			}
+			m.searchBusy = true
+			return m, m.searchCmd(keyword, 1)
+		}
+		m.searchBusy = false
+		m.searchResults = nil
+		return m, m.runLocalSearch()
+	case tea.KeyEscape:
+		m.searchEditing = false
+		return m, nil
+	case tea.KeyBackspace:
+		if r := []rune(m.searchInput); len(r) > 0 {
+			m.searchInput = string(r[:len(r)-1])
+		}
+		return m, nil
+	}
+	if isCtrl(key, 'u') {
+		m.searchInput = ""
+		return m, nil
+	}
+	if key.Text != "" && key.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModSuper) == 0 {
+		m.searchInput += key.Text
+	}
+	return m, nil
+}
+
+func (m *Model) handleQueueKey(key tea.Key) (tea.Model, tea.Cmd) {
+	switch {
+	case m.match(keymap.Up, key):
+		if m.queueCursor > 0 {
+			m.queueCursor--
+		}
+		return m, nil
+	case m.match(keymap.Down, key):
+		if m.queueCursor < len(m.queue)-1 {
+			m.queueCursor++
+		}
+		return m, nil
+	case key.Code == tea.KeyEnter || m.match(keymap.PlaySelected, key):
+		if m.queueCursor >= 0 && m.queueCursor < len(m.queue) {
+			return m, m.playQueueIndex(m.queueCursor)
+		}
+		return m, nil
+	case m.match(keymap.QueueDown, key):
+		return m, m.moveQueueItem(1)
+	case m.match(keymap.QueueUp, key):
+		return m, m.moveQueueItem(-1)
+	case m.match(keymap.PlayNext, key):
+		return m, m.playQueueItemNext()
+	case m.match(keymap.Delete, key):
+		if len(m.queue) == 0 {
+			return m, nil
+		}
+		m.beginPrompt(promptClearQueue)
+		return m, nil
+	case m.match(keymap.Remove, key):
+		return m, m.removeQueueItem()
+	}
+	return m.handleCommonPlaybackKey(key)
+}
+
+// handleFolderKey 处理远端歌单/收藏夹导入页。
+func (m *Model) handleFolderKey(key tea.Key) (tea.Model, tea.Cmd) {
+	switch {
+	case m.match(keymap.Up, key):
+		if m.folderIdx > 0 {
+			m.folderIdx--
+		}
+		return m, nil
+	case m.match(keymap.Down, key):
+		if m.folderIdx < len(m.folderItems)-1 {
+			m.folderIdx++
+		}
+		return m, nil
+	case key.Code == tea.KeyEnter || m.match(keymap.PlaySelected, key):
+		return m, m.addSelectedFolder()
+	case m.match(keymap.Source, key):
+		return m, m.switchFolderSource()
+	case m.match(keymap.Refresh, key):
+		m.folderBusy = true
+		return m, m.loadRemoteFoldersCmd(m.folderSource)
+	}
+	return m.handleCommonPlaybackKey(key)
+}
+
+func (m *Model) defaultFolderSource() source.ID {
+	if m.sources == nil {
+		return ""
+	}
+	if src := m.sources.Get(m.folderSource); src != nil && src.LoggedIn() && src.Caps().Has(source.CapRemotePlaylists) {
+		return m.folderSource
+	}
+	if src := m.sources.Get(m.loginSource); src != nil && src.LoggedIn() && src.Caps().Has(source.CapRemotePlaylists) {
+		return m.loginSource
+	}
+	for _, src := range m.sources.All() {
+		if src.LoggedIn() && src.Caps().Has(source.CapRemotePlaylists) {
+			return src.ID()
+		}
+	}
+	for _, src := range m.sources.All() {
+		if src.Caps().Has(source.CapRemotePlaylists) {
+			return src.ID()
+		}
+	}
+	return ""
+}
+
+func (m *Model) switchFolderSource() tea.Cmd {
+	if m.sources == nil {
+		return nil
+	}
+	var ids []source.ID
+	for _, src := range m.sources.All() {
+		if src.Caps().Has(source.CapRemotePlaylists) {
+			ids = append(ids, src.ID())
+		}
+	}
+	if len(ids) <= 1 {
+		return nil
+	}
+	idx := 0
+	for i, id := range ids {
+		if id == m.folderSource {
+			idx = i
+			break
+		}
+	}
+	m.folderSource = ids[(idx+1)%len(ids)]
+	m.folderItems = nil
+	m.folderIdx = 0
+	m.folderBusy = true
+	return m.loadRemoteFoldersCmd(m.folderSource)
+}
+
+func (m *Model) openFolders(srcID source.ID) tea.Cmd {
+	if m.sources == nil {
+		m.setNotice("没有可用的音源", true)
+		return nil
+	}
+	src := m.sources.Get(srcID)
+	if src == nil || !src.LoggedIn() {
+		m.setNotice("请先登录 "+m.sourceName(srcID)+" 再浏览歌单", true)
+		return nil
+	}
+	m.folderSource = srcID
+	m.folderItems = nil
+	m.folderIdx = 0
+	m.folderBusy = true
+	m.view = viewFolders
+	return m.loadRemoteFoldersCmd(srcID)
+}
+
+func (m *Model) addSelectedFolder() tea.Cmd {
+	if m.folderIdx < 0 || m.folderIdx >= len(m.folderItems) {
+		return nil
+	}
+	if m.store == nil {
+		return nil
+	}
+	p := m.folderItems[m.folderIdx]
+	if _, err := m.service().ImportRemotePlaylist(p); err != nil {
+		m.setError(err)
+		return nil
+	}
+	m.pendingPlaylistID = p.ID
+	m.view = viewLibrary
+	m.setNotice("已添加歌单："+p.Title, false)
+	return m.loadLocalPlaylistsCmd()
+}
+
+// handleHelpKey 处理帮助页滚动；直接复用弹窗的滚动入口，保证两种帮助一致。
+func (m *Model) handleHelpKey(key tea.Key) (tea.Model, tea.Cmd) {
+	switch {
+	case m.match(keymap.Up, key):
+		m.scrollHelp(-1)
+		return m, nil
+	case m.match(keymap.Down, key):
+		m.scrollHelp(1)
+		return m, nil
+	case m.match(keymap.PageUp, key):
+		m.scrollHelp(-m.helpViewport())
+		return m, nil
+	case m.match(keymap.PageDown, key):
+		m.scrollHelp(m.helpViewport())
+		return m, nil
+	case m.match(keymap.Top, key):
+		m.scrollHelpToTop()
+		return m, nil
+	case m.match(keymap.Bottom, key):
+		m.scrollHelpToBottom()
+		return m, nil
+	}
+	return m.handleCommonPlaybackKey(key)
+}
+
+// helpViewport 返回帮助页可见行数，与 render() 的正文高度保持一致。
+// 直接复用 bodyHeight，底部出现歌词条/下载进度行时也能正确计算边界。
+func (m *Model) helpViewport() int {
+	return m.bodyHeight()
+}
+
+// ---- 动作 ----
+
+func (m *Model) ensureStored(song store.Song) store.Song {
+	return m.service().UpsertSong(song)
+}
+
+func (m *Model) searchResultSong(idx int) store.Song {
+	return app.SongFromTrack(m.searchResults[idx].Track)
+}
+
+// playPlaylistFromMenu 播放右键菜单选中的歌单：必要时先切过去，
+// 曲目还在异步载入时等 songsMsg 到达后自动从头播放。
+func (m *Model) playPlaylistFromMenu(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.playlists) {
+		return nil
+	}
+	m.libraryFocus = focusPlaylists
+	if idx != m.playlistIdx {
+		cmd := m.selectPlaylist(idx)
+		m.pendingPlayPlaylist = true
+		m.setNotice("歌单载入中，载入后自动播放…", false)
+		return cmd
+	}
+	if m.songsBusy {
+		m.pendingPlayPlaylist = true
+		m.setNotice("歌单载入中，载入后自动播放…", false)
+		return nil
+	}
+	return m.playPlaylistFromStart()
+}
+
+// playPlaylistFromStart 从当前歌单开始播放：随机模式下先整体洗牌，
+// 第一首也是随机的（不是固定播歌单第一首）。
+func (m *Model) playPlaylistFromStart() tea.Cmd {
+	if len(m.songs) == 0 {
+		m.setNotice("这个歌单还是空的", false)
+		return nil
+	}
+	m.songIdx = 0
+	return m.playPlaylistAt(0, true)
+}
+
+// playPlaylistIndex 从歌单第 idx 首开始播放（显式点歌时保留该曲目）。
+func (m *Model) playPlaylistIndex(idx int) tea.Cmd {
+	return m.playPlaylistAt(idx, false)
+}
+
+func (m *Model) playPlaylistAt(idx int, randomFirst bool) tea.Cmd {
+	if idx < 0 || idx >= len(m.songs) {
+		return nil
+	}
+	queue := make([]store.Song, len(m.songs))
+	for i := range m.songs {
+		queue[i] = store.NormalizeSong(m.songs[i])
+	}
+	m.setPlayingPlaylist(m.currentPlaylistID())
+	if randomFirst && m.mode == modeShuffle {
+		m.withController(func(c *player.Controller) { c.LoadQueueRandom(queue) })
+		m.queueCursor = m.queueIdx
+	} else {
+		m.loadQueue(queue, idx)
+	}
+	if p, ok := m.currentPlaylist(); ok {
+		queueLabel := "已载入队列"
+		if m.mode == modeShuffle {
+			queueLabel = "已洗牌入队"
+		}
+		m.setNotice(fmt.Sprintf("播放歌单：%s（%d 首，%s）", p.Title, len(queue), queueLabel), false)
+	}
+	return m.playSong(m.queue[m.queueIdx])
+}
+
+func (m *Model) playQueueIndex(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.queue) {
+		return nil
+	}
+	m.withController(func(c *player.Controller) { c.SetIndex(idx) })
+	m.queueCursor = m.queueIdx
+	return m.playSong(m.queue[m.queueIdx])
+}
+
+func (m *Model) playSearchResult(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.searchResults) {
+		return nil
+	}
+	song := m.ensureStored(m.searchResultSong(idx))
+	m.withController(func(c *player.Controller) {
+		// Enqueue 返回追加位置；不要读 m.queue（闭包执行时它还是旧长度）。
+		c.SetIndex(c.Enqueue(song))
+	})
+	m.queueCursor = m.queueIdx
+	m.setPlayingPlaylist("")
+	m.persistQueue()
+	return m.playSong(song)
+}
+
+func (m *Model) playSong(song store.Song) tea.Cmd {
+	song = store.NormalizeSong(song)
+	// 绑定浮层只服务打开时那首歌；切歌后关掉，避免误绑。
+	if m.lyricBind != nil && m.lyricBind.song.ID != song.ID {
+		m.lyricBind = nil
+	}
+	m.clip = nil
+	m.clipSongID = ""
+	m.clipCache = store.Clip{}
+	m.lyricBase = nil
+	m.lyricLines = nil
+	m.lyricIdx = -1
+	m.lyricSource = ""
+	m.lyricLoaded = false
+	m.lyricOffsetMS = 0
+	m.lyricOffsetKey = store.BindingAuto
+	m.lyricBound = false
+	m.lyricDegraded = false
+	m.lyricWarning = ""
+	m.followLyricLine()
+	cmd := m.playSongCmdAt(song, 0, 0)
+	m.persistQueue()
+	return cmd
+}
+
+// setMode 切换播放模式；进入/离开随机模式时重建队列顺序。
+func (m *Model) setMode(next playMode) {
+	if next == m.mode {
+		return
+	}
+	if next == modeShuffle {
+		m.modeBeforeShuffle = m.mode
+	}
+	var shuffled, restored bool
+	m.withController(func(c *player.Controller) {
+		shuffled, restored = c.SetMode(next)
+	})
+	m.service().SaveMode(int(m.mode))
+	label := m.mode.String()
+	if shuffled {
+		label += "（队列已洗牌）"
+	}
+	if restored {
+		label += "（队列已恢复）"
+	}
+	if shuffled || restored {
+		m.persistQueue()
+	}
+	m.setNotice("播放模式："+label, false)
+	// 面板打开时立刻同步图标；sysCommandMsg 之后还会再发布一次，第二次是空操作。
+	m.publishNowPlaying()
+}
+
+// startShuffleQueue 按当前随机模式重排队列；恢复会话时用。
+func (m *Model) startShuffleQueue() {
+	m.withController(func(c *player.Controller) {
+		c.LoadQueue(m.queue, m.queueIdx)
+	})
+	m.persistQueue()
+}
+
+// loadQueue 用新歌单/新搜索结果替换队列；随机模式下保存原始顺序并洗牌。
+func (m *Model) loadQueue(queue []store.Song, idx int) {
+	m.withController(func(c *player.Controller) {
+		c.LoadQueue(queue, idx)
+	})
+	m.queueCursor = m.queueIdx
+}
+
+// advance 按播放模式前进到下一首；列表循环/顺序模式优先使用预解析结果。
+func (m *Model) advance() tea.Cmd {
+	var song store.Song
+	var ok bool
+	m.withController(func(c *player.Controller) { song, _, ok = c.Next() })
+	if !ok {
+		// 只有自然播完才提示；手动在队尾按下一首保持安静。
+		if m.mode == modeOrdered && len(m.queue) > 0 && m.state == audio.StateEnded {
+			m.setNotice("已播放到队尾", false)
+		}
+		return nil
+	}
+	// 队列页游标跟随播放索引，避免切歌后「正在播放」与选中行错位。
+	m.queueCursor = m.queueIdx
+	if m.mode == modeListLoop || m.mode == modeOrdered {
+		if s, has := m.takePrefetch(song); has {
+			return m.startStream(song, s, 0)
+		}
+	}
+	return m.playSong(song)
+}
+
+// rewind 回到上一首。
+func (m *Model) rewind() tea.Cmd {
+	var song store.Song
+	var ok bool
+	m.withController(func(c *player.Controller) { song, _, ok = c.Prev() })
+	if !ok {
+		return nil
+	}
+	m.queueCursor = m.queueIdx
+	return m.playSong(song)
+}
+
+// togglePlayback 统一处理「起播 / 暂停 / 继续」。恢复出来的会话在第一次 space 时才起播。
+func (m *Model) togglePlayback() tea.Cmd {
+	var res player.ToggleResult
+	m.withController(func(c *player.Controller) { res = c.Toggle() })
+	switch res.Action {
+	case player.ToggleNone:
+		return nil
+	case player.ToggleBusy:
+		m.setNotice("正在缓冲，请稍候…", false)
+		return nil
+	case player.TogglePaused, player.ToggleResumed:
+		return nil
+	case player.ToggleNeedPlay:
+		if res.Song.ID == "" {
+			return nil
+		}
+		return m.playSongCmdAt(res.Song, res.StartAt, 0)
+	}
+	return nil
+}
+
+// applySysCommand 把系统媒体面板的操作映射到现有播放动作。
+func (m *Model) applySysCommand(cmd sysmedia.Command) tea.Cmd {
+	switch cmd.Kind {
+	case sysmedia.CommandToggle:
+		return m.togglePlayback()
+	case sysmedia.CommandPlay:
+		if m.state == audio.StatePaused || m.state == audio.StateEnded || m.state == audio.StateIdle {
+			return m.togglePlayback()
+		}
+	case sysmedia.CommandPause:
+		if m.state == audio.StatePlaying {
+			return m.togglePlayback()
+		}
+	case sysmedia.CommandNext:
+		return m.advance()
+	case sysmedia.CommandPrevious:
+		return m.rewind()
+	case sysmedia.CommandStop:
+		m.withController(func(c *player.Controller) { c.Stop() })
+		m.persistQueue()
+	case sysmedia.CommandSeekTo:
+		if m.current != nil && (cmd.TrackID == "" || cmd.TrackID == m.current.ID) {
+			return m.seekTo(cmd.Position)
+		}
+	case sysmedia.CommandSeekBy:
+		if m.current != nil {
+			return m.seekBy(cmd.Offset)
+		}
+	case sysmedia.CommandSetVolume:
+		v := clamp01(cmd.Volume)
+		m.withController(func(c *player.Controller) { c.SetVolume(v) })
+		m.service().SaveVolume(m.volume)
+	case sysmedia.CommandSetShuffle:
+		if cmd.Shuffle {
+			m.setMode(modeShuffle)
+		} else if m.mode == modeShuffle {
+			m.setMode(m.modeBeforeShuffle)
+		}
+	case sysmedia.CommandSetLoopStatus:
+		if next, ok := modeForLoop(cmd.Loop); ok {
+			m.setMode(next)
+		}
+	}
+	return nil
+}
+
+// publishNowPlaying 把当前镜像推给系统媒体面板；未启用时是空操作。
+func (m *Model) publishNowPlaying() {
+	if m.sys == nil {
+		return
+	}
+	snap := sysmedia.Snapshot{
+		State:    m.state,
+		Position: m.position,
+		Duration: m.duration,
+		Volume:   m.volume,
+		Muted:    m.muted,
+		Shuffle:  m.mode == modeShuffle,
+		Loop:     loopForMode(m.mode),
+		CanNext:  canGoNext(m.mode, m.queueIdx, len(m.queue)),
+		CanPrev:  canGoPrev(m.mode, m.queueIdx, len(m.queue)),
+	}
+	if m.current != nil {
+		snap.TrackID = m.current.ID
+		snap.Title = m.current.Title
+		snap.Artist = m.current.Artist
+		snap.Album = m.current.Album
+		if snap.Duration <= 0 && m.current.Duration > 0 {
+			snap.Duration = time.Duration(m.current.Duration) * time.Second
+		}
+		if m.artworkSongID == m.current.ID {
+			snap.Artwork = m.artwork
+		}
+	} else {
+		snap.Position = 0
+	}
+	m.sys.Publish(snap)
+}
+
+// syncArtwork 让封面缓存跟上当前曲目；只在启用系统集成时下载。
+func (m *Model) syncArtwork() tea.Cmd {
+	if m.sys == nil {
+		return nil
+	}
+	cur := m.current
+	if cur == nil {
+		m.artwork = ""
+		m.artworkSongID = ""
+		m.coverLoadingID = ""
+		m.coverAttemptURL = ""
+		return nil
+	}
+	if cur.Cover == "" {
+		m.artwork = ""
+		m.artworkSongID = cur.ID
+		m.coverLoadingID = ""
+		m.coverAttemptURL = ""
+		return nil
+	}
+	if m.artworkSongID == cur.ID && (m.artwork != "" || m.coverAttemptURL == cur.Cover) {
+		return nil
+	}
+	if m.coverLoadingID == cur.ID {
+		return nil
+	}
+	m.artwork = ""
+	m.artworkSongID = cur.ID
+	m.coverLoadingID = cur.ID
+	m.coverAttemptURL = cur.Cover
+	svc := m.service()
+	song := *cur
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		path, err := svc.CoverPath(ctx, song)
+		return coverMsg{songID: song.ID, path: path, err: err}
+	}
+}
+
+// seekTo 跳到绝对位置；沿用 seekBy 的片段限制与过期续签逻辑。
+func (m *Model) seekTo(target time.Duration) tea.Cmd {
+	return m.seekBy(target - m.position)
+}
+
+// seekBy 跳转；地址临近过期时顺手续签，避免 seek 触发 403。
+func (m *Model) seekBy(delta time.Duration) tea.Cmd {
+	if m.current == nil {
+		return nil
+	}
+	if m.awaitingStream {
+		m.setNotice("正在缓冲，暂时不能跳转", false)
+		return nil
+	}
+	// 片段编辑时的整首预览属于编辑器交互，先交给 clip 逻辑处理。
+	if m.clip != nil {
+		if handled, cmd := m.previewForSeek(m.clipPosition() + delta); handled {
+			return cmd
+		}
+	}
+	var res player.SeekResult
+	m.withController(func(c *player.Controller) {
+		res = c.Seek(m.ctx, delta, m.clipCache, m.clip != nil)
+	})
+	switch res.Action {
+	case player.ToggleBusy:
+		m.setNotice("正在缓冲，暂时不能跳转", false)
+		return nil
+	case player.ToggleNeedPlay:
+		m.setNotice("播放地址即将过期或跳转失败，正在重新解析…", true)
+		return m.playSongCmdAt(res.Song, res.StartAt, 0)
+	}
+	if res.Clamped {
+		m.setNotice("已限制在当前片段内", false)
+	}
+	return nil
+}
+
+func (m *Model) changeVolume(delta float64) {
+	v := clamp01(m.volume + delta)
+	m.withController(func(c *player.Controller) { c.SetVolume(v) })
+	m.service().SaveVolume(m.volume)
+	m.setNotice(fmt.Sprintf("音量 %d%%", int(m.volume*100)), false)
+}
+
+func (m *Model) toggleMute() {
+	m.withController(func(c *player.Controller) { c.ToggleMute() })
+	if m.muted {
+		m.setNotice("已静音 · M 恢复", false)
+	} else {
+		m.setNotice(fmt.Sprintf("取消静音 · 音量 %d%%", int(m.volume*100)), false)
+	}
+}
+
+func (m *Model) cycleQuality() {
+	m.withController(func(c *player.Controller) { c.CycleQuality() })
+	m.service().SaveQuality(m.quality)
+	m.setNotice("音质偏好："+m.qualityPrefLabel()+"（下一首生效）", false)
+}
+
+func (m *Model) cycleSleep() {
+	var until time.Time
+	m.withController(func(c *player.Controller) { until = c.CycleSleep() })
+	if until.IsZero() {
+		m.setNotice("睡眠定时已关闭", false)
+		return
+	}
+	m.setNotice(fmt.Sprintf("睡眠定时：%d 分钟后暂停", int(time.Until(until).Minutes())), false)
+}
+
+func (m *Model) changeComp(delta float64) {
+	next := m.compDB + delta
+	m.withController(func(c *player.Controller) { c.SetCompDB(next) })
+	m.service().SaveCompDB(m.compDB)
+	m.setNotice(fmt.Sprintf("全局音量补偿 %+.0f dB", m.compDB), false)
+}
+
+// changeSongComp 调整当前曲目的额外补偿；它叠加在全局补偿之上，只影响这首歌。
+func (m *Model) changeSongComp(delta float64) {
+	if m.current == nil {
+		m.setNotice("先播放一首歌，再调单曲音量补偿", true)
+		return
+	}
+	songID := m.current.ID
+	next := m.songCompDB + delta
+	m.withController(func(c *player.Controller) { c.SetSongCompDB(next) })
+	m.service().SaveSongCompDB(songID, m.songCompDB)
+	if m.songCompDB == 0 {
+		m.setNotice(fmt.Sprintf("单曲音量补偿 0 dB（跟随全局 %+.0f dB）", m.compDB), false)
+		return
+	}
+	m.setNotice(fmt.Sprintf("单曲音量补偿 %+.0f dB（全局 %+.0f dB）", m.songCompDB, m.compDB), false)
+}
+
+// syncSongComp 在切歌时读取该曲目的额外补偿并应用；没有设置时回到 0。
+func (m *Model) syncSongComp(songID string) {
+	m.songCompDB = m.service().SongCompDB(songID)
+	m.withController(func(c *player.Controller) { c.SetSongCompDB(m.songCompDB) })
+}
+
+// toggleAutoGain 开关自动响度均衡；当前曲目在播放/暂停中时立即重新起播应用。
+func (m *Model) toggleAutoGain() tea.Cmd {
+	if m.engine != nil && !m.engine.AutoGainSupported() {
+		m.setNotice("当前 ffmpeg 不提供 loudnorm，无法开启自动响度均衡", true)
+		return nil
+	}
+	next := !m.autoGain
+	ok := false
+	m.withController(func(c *player.Controller) { ok = c.SetAutoGain(next) })
+	if !ok {
+		m.setNotice("当前 ffmpeg 不提供 loudnorm，无法开启自动响度均衡", true)
+		return nil
+	}
+	m.service().SaveAutoGain(m.autoGain)
+	state := "关闭"
+	if m.autoGain {
+		state = "开启"
+	}
+	if m.current != nil && (m.state == audio.StatePlaying || m.state == audio.StatePaused) {
+		pos := m.position
+		paused := m.state == audio.StatePaused
+		clip := m.activeClip()
+		restarted := false
+		m.withController(func(c *player.Controller) {
+			restarted = c.RestartWithClip(m.ctx, clip, pos, paused)
+		})
+		if restarted {
+			m.setNotice("自动响度均衡已"+state+"（当前曲目已重新起播）", false)
+			return nil
+		}
+	}
+	m.setNotice("自动响度均衡已"+state+"（下一首生效）", false)
+	return nil
+}
+
+func (m *Model) movePlaylist(delta int) tea.Cmd {
+	return m.selectPlaylist(m.playlistIdx + delta)
+}
+
+func (m *Model) selectPlaylist(idx int) tea.Cmd {
+	if len(m.playlists) == 0 {
+		return nil
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(m.playlists) {
+		idx = len(m.playlists) - 1
+	}
+	if idx == m.playlistIdx {
+		return nil
+	}
+	m.clearSelection()
+	m.playlistIdx = idx
+	m.songIdx = 0
+	m.songs = nil
+	m.songsBusy = true
+	return m.loadSongsCmd(false)
+}
+
+func (m *Model) addCurrentToPlaylist() tea.Cmd {
+	if m.songIdx < 0 || m.songIdx >= len(m.songs) {
+		return nil
+	}
+	return m.openAddSongPicker(m.songs[m.songIdx])
+}
+
+func (m *Model) addSearchResultToPlaylist(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.searchResults) {
+		return nil
+	}
+	return m.openAddSongPicker(m.searchResultSong(idx))
+}
+
+func (m *Model) enqueueCurrent() tea.Cmd {
+	if m.songIdx < 0 || m.songIdx >= len(m.songs) {
+		return nil
+	}
+	return m.enqueueSong(m.songs[m.songIdx])
+}
+
+func (m *Model) enqueueSearchResult(idx int) tea.Cmd {
+	if idx < 0 || idx >= len(m.searchResults) {
+		return nil
+	}
+	return m.enqueueSong(m.searchResultSong(idx))
+}
+
+func (m *Model) enqueueSong(song store.Song) tea.Cmd {
+	song = m.ensureStored(song)
+	m.withController(func(c *player.Controller) {
+		_ = c.Enqueue(song)
+	})
+	m.queueCursor = len(m.queue) - 1
+	m.persistQueue()
+	m.setNotice("已加入队列："+song.Title, false)
+	return nil
+}
+
+// insertNext 把一首歌插到当前曲目之后；已存在时会先移除旧位置，避免重复。
+func (m *Model) insertNext(song store.Song) tea.Cmd {
+	song = m.ensureStored(song)
+	if m.current != nil && song.ID == m.current.ID {
+		m.setNotice("这首歌正在播放", false)
+		return nil
+	}
+	m.withController(func(c *player.Controller) {
+		m.queueCursor = c.InsertNext(song)
+	})
+	m.persistQueue()
+	m.setNotice("下一首播放："+song.Title, false)
+	return nil
+}
+
+func (m *Model) moveQueueItem(delta int) tea.Cmd {
+	oldCursor := m.queueCursor
+	m.withController(func(c *player.Controller) {
+		m.queueCursor = c.MoveItem(oldCursor, delta)
+	})
+	if m.queueCursor == oldCursor {
+		return nil
+	}
+	m.persistQueue()
+	return nil
+}
+
+// playQueueItemNext 把队列里选中的条目移动到当前曲目之后。
+func (m *Model) playQueueItemNext() tea.Cmd {
+	cursor := m.queueCursor
+	if cursor < 0 || cursor >= len(m.queue) {
+		return nil
+	}
+	if m.current != nil && cursor == m.queueIdx {
+		m.setNotice("这首歌正在播放", false)
+		return nil
+	}
+	item := m.queue[cursor]
+	m.withController(func(c *player.Controller) {
+		m.queueCursor = c.MoveToNext(cursor)
+	})
+	m.persistQueue()
+	m.setNotice("下一首播放："+item.Title, false)
+	return nil
+}
+
+func (m *Model) removeSelected() tea.Cmd {
+	songs := m.batchSongs()
+	if len(songs) == 0 {
+		return nil
+	}
+	p, ok := m.currentPlaylist()
+	if !ok {
+		return nil
+	}
+	removed := 0
+	for _, raw := range songs {
+		song := store.NormalizeSong(raw)
+		if err := m.service().RemoveSongFromPlaylist(p.ID, song.ID); err != nil {
+			m.setError(err)
+			if removed == 0 {
+				return nil
+			}
+			break
+		}
+		removed++
+	}
+	if removed == 0 {
+		return nil
+	}
+	m.clearSelection()
+	if removed < len(songs) {
+		// 中途失败时保留错误提示，已移除的部分照常刷新出来。
+		return m.loadSongsCmd(false)
+	}
+	firstTitle := store.NormalizeSong(songs[0]).Title
+	switch p.Kind {
+	case "remote":
+		if removed == 1 {
+			m.setNotice("已从本地缓存移除（刷新同步会恢复）："+firstTitle, false)
+		} else {
+			m.setNotice(fmt.Sprintf("已从本地缓存移除 %d 首（刷新同步会恢复）", removed), false)
+		}
+	case "mixin":
+		if removed == 1 {
+			m.setNotice("已在本歌单隐藏（源歌单不变）："+firstTitle, false)
+		} else {
+			m.setNotice(fmt.Sprintf("已在本歌单隐藏 %d 首（源歌单不变）", removed), false)
+		}
+	default:
+		if removed == 1 {
+			m.setNotice("已从歌单移除："+firstTitle, false)
+		} else {
+			m.setNotice(fmt.Sprintf("已从歌单移除：%d 首", removed), false)
+		}
+	}
+	return m.loadSongsCmd(false)
+}
+
+func (m *Model) removeQueueItem() tea.Cmd {
+	oldLen := len(m.queue)
+	var res player.RemoveResult
+	m.withController(func(c *player.Controller) {
+		res, m.queueCursor = c.RemoveItem(m.queueCursor)
+	})
+	if len(m.queue) == oldLen {
+		return nil
+	}
+
+	if res.RemovingCurrent {
+		if res.Empty {
+			m.withController(func(c *player.Controller) { c.Stop() })
+			m.lyricBase = nil
+			m.lyricLines = nil
+			m.lyricIdx = -1
+			m.lyricSource = ""
+			m.lyricLoaded = false
+			m.followLyricLine()
+			m.queueCursor = 0
+			m.setPlayingPlaylist("")
+			m.persistQueue()
+			m.setNotice("已移除当前曲目，队列已空", false)
+			return nil
+		}
+		m.persistQueue()
+		m.setNotice("已移除当前曲目，播放下一首", false)
+		return m.playSong(m.queue[m.queueIdx])
+	}
+
+	m.persistQueue()
+	m.setNotice("已从队列移除："+res.Removed.Title, false)
+	return nil
+}
+
+// clearQueue 清空待播队列，但保留正在播放/暂停的当前曲目，避免「清空即静音」的意外。
+func (m *Model) clearQueue() {
+	m.withController(func(c *player.Controller) { c.Clear() })
+	m.queueCursor = 0
+	m.persistQueue()
+	if m.current != nil {
+		m.setNotice("已清空队列（保留当前曲目）", false)
+	} else {
+		m.setNotice("已清空队列", false)
+	}
+}
+
+func (m *Model) takePrefetch(song store.Song) (source.Stream, bool) {
+	song = store.NormalizeSong(song)
+	var stream source.Stream
+	var ok bool
+	m.withController(func(c *player.Controller) {
+		stream, ok = c.PrefetchCache().Take(song.ID, time.Now())
+	})
+	return stream, ok
+}
+
+func (m *Model) invalidatePrefetch() {
+	m.withController(func(c *player.Controller) { c.PrefetchCache().Clear() })
+}
+
+// nextQueueIndex 返回可预取的下一首队列索引；不预取的模式或顺序模式到队尾时返回 -1。
+// 直接读镜像，避免为了算索引走一遍 Controller.Load/Export。
+func (m *Model) nextQueueIndex() int {
+	return player.NextPlayableIndex(m.mode, m.queueIdx, len(m.queue))
+}
+
+func (m *Model) nextQueueSongID() string {
+	idx := m.nextQueueIndex()
+	if idx < 0 {
+		return ""
+	}
+	return store.NormalizeSong(m.queue[idx]).ID
+}
+
+// prefetchNextCmd 提前解析下一首，缩短切歌时「已缓冲」的等待。
+func (m *Model) prefetchNextCmd() tea.Cmd {
+	if m.engine == nil || m.sources == nil || m.store == nil {
+		return nil
+	}
+	idx := m.nextQueueIndex()
+	if idx < 0 {
+		return nil
+	}
+	song := store.NormalizeSong(m.queue[idx])
+	if m.prefetch.Matches(song.ID, time.Now()) {
+		return nil
+	}
+	svc, quality := m.service(), m.quality
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		resolved, stream, err := svc.Resolve(ctx, song, quality)
+		return prefetchMsg{songID: song.ID, song: resolved, stream: stream, err: err}
+	}
+}
+
+func (m *Model) persistQueue() {
+	m.withController(func(c *player.Controller) { c.Persist() })
+}
+
+func (m *Model) needsPersist() bool {
+	return m.withControllerBool(func(c *player.Controller) bool { return c.NeedsPersist() })
+}
+
+// ---- 歌单/队列确认输入 ----
+
+func (m *Model) beginPrompt(kind promptKind) {
+	m.prompt = kind
+	m.promptInput = ""
+	if kind == promptRenamePlaylist {
+		if p, ok := m.currentPlaylist(); ok {
+			m.promptInput = p.Title
+		}
+	}
+	if kind == promptSetFolderRoot {
+		if p, ok := m.currentPlaylist(); ok {
+			m.promptInput = p.RootPath
+		}
+	}
+}
+
+func (m *Model) handlePromptKey(key tea.Key) (tea.Model, tea.Cmd) {
+	if isCtrl(key, 'c') {
+		m.shutdown()
+		return m, tea.Quit
+	}
+	switch key.Code {
+	case tea.KeyEscape:
+		m.prompt = promptNone
+		m.promptInput = ""
+		m.pendingAddSongs = nil
+		m.pendingDownloadID = ""
+		return m, nil
+	case tea.KeyEnter:
+		return m, m.commitPrompt()
+	case tea.KeyBackspace:
+		if r := []rune(m.promptInput); len(r) > 0 {
+			m.promptInput = string(r[:len(r)-1])
+		}
+		return m, nil
+	}
+	if isCtrl(key, 'u') {
+		m.promptInput = ""
+		return m, nil
+	}
+	if key.Text != "" && key.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModSuper) == 0 {
+		m.promptInput += key.Text
+	}
+	return m, nil
+}
+
+func (m *Model) commitPrompt() tea.Cmd {
+	kind := m.prompt
+	input := strings.TrimSpace(m.promptInput)
+	m.prompt = promptNone
+	m.promptInput = ""
+	downloadID := m.pendingDownloadID
+	m.pendingDownloadID = ""
+	if m.store == nil {
+		return nil
+	}
+	switch kind {
+	case promptNewPlaylist, promptNewLocalOnly:
+		if input == "" {
+			m.setNotice("歌单名不能为空", true)
+			return nil
+		}
+		var p store.Playlist
+		var err error
+		pending := m.pendingAddSongs
+		// 有本地曲目时必须落到仅本机歌单，否则同步会把它当成可导出的条目。
+		localOnly := kind == promptNewLocalOnly || requiresLocalOnly(pending)
+		switch {
+		case len(pending) > 0 && localOnly:
+			p, err = m.service().CreateLocalOnlyPlaylistWithSongs(input, pending)
+		case len(pending) > 0:
+			p, err = m.service().CreatePlaylistWithSongs(input, pending)
+		case localOnly:
+			p, err = m.service().CreateLocalOnlyPlaylist(input)
+		default:
+			p, err = m.service().CreatePlaylist(input)
+		}
+		if err != nil {
+			m.setError(err)
+			return nil
+		}
+		m.pendingPlaylistID = p.ID
+		playlistName := "本地歌单"
+		if localOnly {
+			playlistName = "仅本机歌单"
+		}
+		if len(pending) > 0 {
+			m.pendingAddSongs = nil
+			if len(pending) == 1 {
+				m.setNotice("已新建"+playlistName+"并加入："+p.Title, false)
+			} else {
+				m.setNotice(fmt.Sprintf("已新建%s并加入：%s（%d 首）", playlistName, p.Title, len(pending)), false)
+			}
+		} else {
+			m.setNotice("已新建"+playlistName+"："+p.Title, false)
+		}
+		return m.loadLocalPlaylistsCmd()
+	case promptAddFolder:
+		if input == "" {
+			m.setNotice("路径不能为空", true)
+			return nil
+		}
+		return m.addFolderCmd(input)
+	case promptSetFolderRoot:
+		p, ok := m.currentPlaylist()
+		if !ok {
+			return nil
+		}
+		if input == "" {
+			m.setNotice("路径不能为空", true)
+			return nil
+		}
+		return m.setFolderRootCmd(p.ID, input)
+	case promptRenamePlaylist:
+		p, ok := m.currentPlaylist()
+		if !ok {
+			return nil
+		}
+		if input == "" {
+			m.setNotice("歌单名不能为空", true)
+			return nil
+		}
+		if err := m.service().RenamePlaylist(p.ID, input); err != nil {
+			m.setError(err)
+			return nil
+		}
+		m.pendingPlaylistID = p.ID
+		m.setNotice("已重命名歌单："+input, false)
+		return m.loadLocalPlaylistsCmd()
+	case promptDeletePlaylist:
+		p, ok := m.currentPlaylist()
+		if !ok {
+			return nil
+		}
+		if err := m.service().DeletePlaylistCompletely(p.ID); err != nil {
+			m.setError(err)
+			return nil
+		}
+		m.clearSelection()
+		m.pendingPlaylistID = ""
+		m.setNotice("已删除歌单："+p.Title, false)
+		return m.loadLocalPlaylistsCmd()
+	case promptClearQueue:
+		m.clearQueue()
+		return nil
+	case promptUnlockPlaylist:
+		p, ok := m.currentPlaylist()
+		if !ok {
+			return nil
+		}
+		unlocked, err := m.service().UnlockPlaylist(p.ID)
+		if err != nil {
+			m.setError(err)
+			return nil
+		}
+		m.pendingPlaylistID = unlocked.ID
+		m.setNotice("已解锁为本地歌单："+unlocked.Title, false)
+		return m.loadLocalPlaylistsCmd()
+	case promptRemoveDownload:
+		return m.removeDownloadRecord(downloadID)
+	case promptDeleteDownload:
+		return m.deleteDownloadFile(downloadID)
+	}
+	return nil
+}
+
+// ---- 歌词偏移 ----
+
+func (m *Model) shiftLyrics(deltaMS int) tea.Cmd {
+	if len(m.lyricBase) == 0 {
+		m.setNotice("当前没有歌词可调整", true)
+		return nil
+	}
+	offset := m.lyricOffsetMS + deltaMS
+	if offset < -10000 {
+		offset = -10000
+	}
+	if offset > 10000 {
+		offset = 10000
+	}
+	m.lyricOffsetMS = offset
+	m.lyricLines = lyrics.Clone(m.lyricBase, offset)
+	m.lyricIdx = lyrics.ActiveIndex(m.lyricLines, int(m.position/time.Millisecond))
+	if m.lyricFollow {
+		m.lyricFocus = m.lyricIdx
+	}
+	if m.current != nil {
+		key := m.lyricOffsetKey
+		if key == "" {
+			key = store.BindingAuto
+		}
+		m.service().SaveLyricOffset(m.current.ID, key, offset)
+	}
+	m.setNotice(fmt.Sprintf("歌词偏移 %+.1f 秒", float64(offset)/1000), false)
+	return nil
+}
+
+func (m *Model) resetLyricOffset() tea.Cmd {
+	if m.lyricOffsetMS == 0 {
+		return nil
+	}
+	return m.shiftLyrics(-m.lyricOffsetMS)
+}
+
+// addFolderCmd 在后台完成建歌单 + 首次扫描，避免阻塞界面。
+func (m *Model) addFolderCmd(path string) tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		playlist, scan, err := svc.AddLocalFolder(path)
+		return folderAddedMsg{playlist: playlist, scan: scan, err: err}
+	}
+}
+
+// setFolderRootCmd 更换文件夹并重扫。
+func (m *Model) setFolderRootCmd(playlistID, path string) tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		scan, err := svc.SetLibraryRoot(playlistID, path)
+		return folderAddedMsg{playlist: scan.Playlist, scan: scan, err: err}
+	}
+}
+
+// rescanFolderCmd 重新扫描当前文件夹歌单。
+func (m *Model) rescanFolderCmd(playlistID string) tea.Cmd {
+	svc := m.service()
+	return func() tea.Msg {
+		scan, err := svc.RescanLibrary(playlistID)
+		return folderAddedMsg{playlist: scan.Playlist, scan: scan, err: err}
+	}
+}
+
+// buildQRArt 生成终端二维码与图片路径，不修改 Model，便于按音源缓存。
+func buildQRArt(rawURL string, srcID source.ID) (ascii, compact, path string) {
+	ascii = renderQR(rawURL)
+	path = writeQRCodePNG(rawURL, srcID)
+	if compactURL := stripTracking(rawURL); compactURL != rawURL {
+		compact = renderQR(compactURL)
+	}
+	return ascii, compact, path
+}
+
+// setQRCode 同时生成完整与精简两份二维码，供不同终端高度使用。
+func (m *Model) setQRCode(rawURL string) {
+	m.qrASCII, m.qrASCIICompact, m.qrPath = buildQRArt(rawURL, m.loginSource)
+}
+
+func (m *Model) applyQREntry(srcID source.ID, entry *qrCacheEntry) {
+	m.loginSource = srcID
+	m.qrSource = srcID
+	m.qr = entry.qr
+	m.qrASCII = entry.ascii
+	m.qrASCIICompact = entry.asciiCompact
+	m.qrPath = entry.path
+	m.qrStatus = entry.status
+}
+
+func (m *Model) ensureLoginQR() tea.Cmd {
+	if m.sources == nil {
+		m.setNotice("没有可用的登录源", true)
+		return nil
+	}
+	src := m.sources.Get(m.loginSource)
+	if src == nil {
+		m.setNotice("未知登录源", true)
+		return nil
+	}
+	if _, ok := m.userFor(m.loginSource); ok {
+		if m.qrCache != nil {
+			delete(m.qrCache, m.loginSource)
+		}
+		m.qrSource = m.loginSource
+		m.qr = nil
+		m.qrASCII = ""
+		m.qrASCIICompact = ""
+		m.qrPath = ""
+		m.qrStatus = "已登录"
+		if _, known := m.users[m.loginSource]; !known {
+			return m.loadUsersCmd()
+		}
+		return nil
+	}
+	if m.qrCache == nil {
+		m.qrCache = map[source.ID]*qrCacheEntry{}
+	}
+	entry := m.qrCache[m.loginSource]
+	if entry != nil && entry.qr != nil && time.Now().Before(entry.expiresAt) {
+		same := m.qrSource == m.loginSource && m.qr != nil
+		m.applyQREntry(m.loginSource, entry)
+		if same {
+			return nil
+		}
+		return pollLoginCmd(src, entry.qr.Key)
+	}
+	if entry != nil && entry.fetching {
+		m.qrSource = m.loginSource
+		m.qr = nil
+		m.qrASCII = ""
+		m.qrASCIICompact = ""
+		m.qrPath = ""
+		m.qrStatus = "正在获取二维码…"
+		return nil
+	}
+	if entry == nil {
+		entry = &qrCacheEntry{}
+		m.qrCache[m.loginSource] = entry
+	}
+	entry.fetching = true
+	entry.status = "正在获取二维码…"
+	m.qrSource = m.loginSource
+	m.qr = nil
+	m.qrASCII = ""
+	m.qrASCIICompact = ""
+	m.qrPath = ""
+	m.qrStatus = entry.status
+	return m.startLoginCmd(m.loginSource)
+}
+
+// refreshLoginQR 强制丢弃当前源的缓存并重新申请。
+func (m *Model) refreshLoginQR() tea.Cmd {
+	if m.qrCache != nil {
+		if entry := m.qrCache[m.loginSource]; entry != nil {
+			entry.expiresAt = time.Time{}
+			entry.fetching = false
+		}
+	}
+	m.qr = nil
+	m.qrSource = ""
+	return m.ensureLoginQR()
+}
+
+// qualityLabel 返回当前音轨档位。
+func (m *Model) qualityLabel() string {
+	if m.awaitingStream {
+		return "解析中"
+	}
+	var quality string
+	m.withController(func(c *player.Controller) { quality = c.CurrentQuality() })
+	if quality != "" {
+		return quality
+	}
+	if m.demoQuality != "" {
+		return m.demoQuality
+	}
+	return "—"
+}
+
+// qualityPrefLabel 返回音质偏好档位。
+func (m *Model) qualityPrefLabel() string {
+	return m.quality.Label()
+}
+
+// promptLine 返回底部输入/确认提示。
+func (m *Model) promptLine() string {
+	switch m.prompt {
+	case promptNewPlaylist:
+		return "新建本地歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
+	case promptAddFolder:
+		return "添加本地文件夹：" + m.promptInput + "▏  enter 扫描 · esc 取消"
+	case promptNewLocalOnly:
+		return "新建仅本机歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
+	case promptSetFolderRoot:
+		return "更换文件夹：" + m.promptInput + "▏  enter 重扫 · esc 取消"
+	case promptRenamePlaylist:
+		return "重命名歌单：" + m.promptInput + "▏  enter 确认 · esc 取消"
+	case promptDeletePlaylist:
+		if p, ok := m.currentPlaylist(); ok {
+			if p.Kind == "remote" {
+				return "删除歌单「" + p.Title + "」的本地副本？停止同步，平台上的歌单不受影响 · enter 确认 · esc 取消"
+			}
+			return "删除歌单「" + p.Title + "」及其条目？enter 确认 · esc 取消"
+		}
+		return "删除歌单？enter 确认 · esc 取消"
+	case promptClearQueue:
+		return "清空播放队列？当前曲目会保留 · enter 确认 · esc 取消"
+	case promptUnlockPlaylist:
+		if p, ok := m.currentPlaylist(); ok {
+			return "解锁「" + p.Title + "」为本地歌单？保留曲目并停止同步 · enter 确认 · esc 取消"
+		}
+		return "解锁为本地歌单？enter 确认 · esc 取消"
+	case promptRemoveDownload:
+		if item, ok := m.downloadByID(m.pendingDownloadID); ok {
+			return "移除下载记录「" + downloadTitle(item) + "」？文件会保留 · enter 确认 · esc 取消"
+		}
+		return "移除下载记录？enter 确认 · esc 取消"
+	case promptDeleteDownload:
+		if item, ok := m.downloadByID(m.pendingDownloadID); ok {
+			return "删除本地文件「" + downloadTitle(item) + "」？enter 确认 · esc 取消"
+		}
+		return "删除本地文件？enter 确认 · esc 取消"
+	}
+	return ""
+}
+
+// playerState 把视图镜像压成播放器快照。
+func (m *Model) playerState() player.State {
+	return player.State{
+		Queue:          m.queue,
+		Index:          m.queueIdx,
+		Current:        m.current,
+		PlaybackState:  m.state,
+		Position:       m.position,
+		Duration:       m.duration,
+		Mode:           m.mode,
+		Volume:         m.volume,
+		CompDB:         m.compDB,
+		SongCompDB:     m.songCompDB,
+		AutoGain:       m.autoGain,
+		Muted:          m.muted,
+		ResumeAt:       m.resumeAt,
+		Retry:          m.retryCount,
+		Awaiting:       m.awaitingStream,
+		Request:        m.playRequest,
+		Prefetch:       m.prefetch,
+		ShuffleBase:    m.shuffleBase,
+		ShuffleBaseIdx: m.shuffleBaseIdx,
+		SleepUntil:     m.sleepUntil,
+		SleepSlot:      m.sleepSlot,
+		Quality:        m.quality,
+		LastPersist:    m.lastPersist,
+	}
+}
+
+// applyPlayerState 把播放器快照拉回视图镜像。
+func (m *Model) applyPlayerState(s player.State) {
+	m.queue = s.Queue
+	m.queueIdx = s.Index
+	m.current = s.Current
+	m.state = s.PlaybackState
+	m.position = s.Position
+	m.duration = s.Duration
+	m.mode = s.Mode
+	m.volume = s.Volume
+	m.compDB = s.CompDB
+	m.songCompDB = s.SongCompDB
+	m.autoGain = s.AutoGain
+	m.muted = s.Muted
+	m.resumeAt = s.ResumeAt
+	m.retryCount = s.Retry
+	m.awaitingStream = s.Awaiting
+	m.playRequest = s.Request
+	m.prefetch = s.Prefetch
+	m.shuffleBase = s.ShuffleBase
+	m.shuffleBaseIdx = s.ShuffleBaseIdx
+	m.sleepUntil = s.SleepUntil
+	m.sleepSlot = s.SleepSlot
+	m.quality = s.Quality
+	m.lastPersist = s.LastPersist
+}
+
+// controller 返回播放器控制器；首次使用时用当前镜像初始化。
+func (m *Model) controller() *player.Controller {
+	if m.pc == nil {
+		var eng player.Engine
+		if m.engine != nil {
+			eng = m.engine
+		}
+		m.pc = player.New(eng, m.service())
+		m.pc.Load(m.playerState())
+	}
+	return m.pc
+}
+
+// withController 把镜像推给控制器，执行 fn 后再拉回。
+func (m *Model) withController(fn func(*player.Controller)) {
+	c := m.controller()
+	if m.shuffleFn != nil {
+		c.SetShuffleFunc(m.shuffleFn)
+	}
+	c.Load(m.playerState())
+	fn(c)
+	m.applyPlayerState(c.Export())
+}
+
+// withControllerBool 同 withController，但返回一个布尔结果。
+func (m *Model) withControllerBool(fn func(*player.Controller) bool) bool {
+	c := m.controller()
+	if m.shuffleFn != nil {
+		c.SetShuffleFunc(m.shuffleFn)
+	}
+	c.Load(m.playerState())
+	got := fn(c)
+	m.applyPlayerState(c.Export())
+	return got
+}
+
+// sourceName 返回音源显示名；测试或极端情况下没有注册表时退回原始 ID。
+func (m *Model) sourceName(id source.ID) string {
+	if m.sources != nil {
+		return m.sources.Name(id)
+	}
+	return string(id)
+}
+
+// sourceMark 返回列表行短标记；未知音源用 ? 兜底。
+func (m *Model) sourceMark(id source.ID) string {
+	if m.sources != nil {
+		return m.sources.Mark(id)
+	}
+	return "?"
+}
+
+// userFor 返回某音源当前登录用户；优先使用已加载的账号信息，必要时回退到 Source。
+func (m *Model) userFor(srcID source.ID) (source.User, bool) {
+	if m.users != nil {
+		if u, ok := m.users[srcID]; ok && u.LoggedIn {
+			return u, true
+		}
+	}
+	if m.sources != nil {
+		if src := m.sources.Get(srcID); src != nil && src.LoggedIn() {
+			return src.User(), true
+		}
+	}
+	return source.User{}, false
+}
+
+func (m *Model) accountSummary() string {
+	var ids []source.ID
+	if m.sources != nil {
+		// 本地源没有登录态，不出现在账户摘要里。
+		ids = m.sources.AccountIDs()
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		name := m.sourceName(id)
+		var src source.Source
+		if m.sources != nil {
+			src = m.sources.Get(id)
+			if src != nil {
+				name = src.Name()
+			}
+		}
+		u, known := m.users[id]
+		logged := u.LoggedIn
+		if !known && src != nil {
+			logged = src.LoggedIn()
+			u = src.User()
+		}
+		if !logged {
+			parts = append(parts, name+" 未登录")
+			continue
+		}
+		who := u.Name
+		if who == "" {
+			who = "已登录"
+		}
+		parts = append(parts, name+" "+who)
+	}
+	return strings.Join(parts, " · ")
+}
+func (m *Model) currentPlaylist() (store.Playlist, bool) {
+	if m.playlistIdx < 0 || m.playlistIdx >= len(m.playlists) {
+		return store.Playlist{}, false
+	}
+	return m.playlists[m.playlistIdx], true
+}
+
+func (m *Model) currentPlaylistID() string {
+	if p, ok := m.currentPlaylist(); ok {
+		return p.ID
+	}
+	return ""
+}
+
+// syncPlaylistCount 用一次曲目加载的结果更新侧栏里对应歌单的曲目数。
+// 歌单可能已经不在列表里（例如同步删除），此时静默跳过。
+func (m *Model) syncPlaylistCount(id string, count int) {
+	if id == "" || count < 0 {
+		return
+	}
+	for i := range m.playlists {
+		if m.playlists[i].ID == id {
+			m.playlists[i].Count = count
+			return
+		}
+	}
+}
+
+func (m *Model) setPlayingPlaylist(id string) {
+	if m.playingPlaylistID == id {
+		return
+	}
+	m.playingPlaylistID = id
+	m.service().SavePlayingPlaylist(id)
+}
+
+// logout 退出指定音源：清除 cookie 与账号，并冻结它的远端歌单镜像。
+// 冻结只停止刷新，歌单、缓存曲目与混合歌单引用都保留；重新登录后自动解冻。
+func (m *Model) logout(srcID source.ID) tea.Cmd {
+	src := m.sources.Get(srcID)
+	m.service().Logout(srcID)
+	if m.users != nil {
+		delete(m.users, srcID)
+	}
+	if m.qrCache != nil {
+		delete(m.qrCache, srcID)
+	}
+	m.qr = nil
+	m.qrSource = ""
+	m.qrASCII = ""
+	m.qrASCIICompact = ""
+	m.qrPath = ""
+	m.qrStatus = ""
+	m.pendingPlaylistID = "local-default"
+	m.playlistIdx = 0
+	m.songs = nil
+	m.songIdx = 0
+	label := "已退出登录，远端歌单已冻结；本地歌单与队列保留"
+	if src != nil {
+		label = src.Name() + " 已退出登录，远端歌单已冻结；本地歌单与队列保留"
+	}
+	m.setNotice(label, false)
+	return tea.Batch(m.loadUsersCmd(), m.loadLocalPlaylistsCmd(), m.ensureLoginQR())
+}
+
+// sessionCheckCmd 在业务请求返回「登录态过期」时立即触发账号校验。
+// 真正的清理与冻结统一由 usersMsg -> handleExpiredSessions 处理，避免多处重复。
+func (m *Model) sessionCheckCmd(err error) tea.Cmd {
+	if err != nil && errors.Is(err, source.ErrSessionExpired) {
+		return m.loadUsersCmd()
+	}
+	return nil
+}
+
+// handleExpiredSessions 处理平台判定失效的登录态：自动退出并冻结远端歌单。
+// 只做本地清理与重载，不再向已过期的音源发请求。
+func (m *Model) handleExpiredSessions(ids []source.ID) tea.Cmd {
+	if len(ids) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		names = append(names, m.sourceName(id))
+		m.service().Logout(id)
+		delete(m.users, id)
+		delete(m.qrCache, id)
+		if m.qrSource == id {
+			m.qr = nil
+			m.qrSource = ""
+			m.qrASCII = ""
+			m.qrASCIICompact = ""
+			m.qrPath = ""
+			m.qrStatus = ""
+		}
+	}
+	m.setWarn(strings.Join(names, "、") + " 登录已过期，已自动退出并冻结远端歌单；重新登录后自动恢复")
+	var cmds []tea.Cmd
+	if m.store != nil {
+		cmds = append(cmds, m.loadLocalPlaylistsCmd())
+	}
+	if m.view == viewLogin {
+		if _, ok := m.userFor(m.loginSource); !ok {
+			cmds = append(cmds, m.ensureLoginQR())
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
+// switchLoginSource 在登录页按上下键/ s 切换音源；优先复用缓存，没有才拉取。
+func (m *Model) switchLoginSource(delta int) tea.Cmd {
+	if m.sources == nil {
+		return nil
+	}
+	ids := m.sources.AccountIDs()
+	if len(ids) == 0 {
+		return nil
+	}
+	idx := 0
+	for i, id := range ids {
+		if id == m.loginSource {
+			idx = i
+			break
+		}
+	}
+	n := len(ids)
+	m.loginSource = ids[((idx+delta)%n+n)%n]
+	return m.ensureLoginQR()
+}
+
+func (m *Model) loginAppName(id source.ID) string {
+	if m.sources != nil {
+		return m.sources.LoginAppName(id)
+	}
+	return "手机 App"
+}
+
+func (m *Model) shutdown() {
+	m.cancelDownloads()
+	m.persistQueue()
+	if m.syncMgr != nil {
+		m.syncMgr.Close()
+	}
+	if m.sys != nil {
+		m.sys.Close()
+		m.sys = nil
+	}
+	if m.engine != nil {
+		_ = m.engine.Close()
+	}
+}
+
+func (m *Model) setNotice(text string, isErr bool) {
+	m.note = notice{text: text, isErr: isErr, at: time.Now()}
+}
+
+// setWarn 显示黄色提示：不阻断操作，但需要用户知道（如快捷键配置被部分降级）。
+func (m *Model) setWarn(text string) {
+	m.note = notice{text: text, isWarn: true, at: time.Now()}
+}
+
+func (m *Model) setError(err error) {
+	if err == nil {
+		return
+	}
+	m.setNotice(err.Error(), true)
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

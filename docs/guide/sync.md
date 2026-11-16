@@ -10,6 +10,7 @@
 zero sync init --remote git@github.com:me/zero-beat-sync.git --branch main
 zero sync status
 zero sync pull          # 拉取、合并、导入
+zero sync --backend gogit pull # 使用内置后端，无需系统 Git
 zero sync push          # 导出、提交、合并、推送
 zero sync conflicts     # 查看冲突实体
 zero sync resolve <tx> --all local|remote
@@ -17,6 +18,8 @@ zero sync key rotate    # 换口令并重加密登录态
 ```
 
 `zero sync` 可以查看全部子命令。
+
+同步后端支持 `auto`、`cli`、`gogit`。优先级为命令行 `--backend` > 环境变量 `ZERO_SYNC_BACKEND` > `sync.toml` 的 `backend` > `auto`。Linux/macOS 的 `auto` 优先可用的系统 Git，Windows/Android 优先内置 go-git。每轮固定后端，认证或业务失败不会切换；`zero sync status` 和同步页显示请求后端与上次实际后端。
 
 ## 同步页
 
@@ -42,6 +45,8 @@ TUI 里按 `ctrl+s` 打开同步页，也可以点右下角的同步状态。页
 | `esc` | 返回同步页 |
 
 落选版本归档到 `~/.config/zero-beat/sync/archive/`，不会丢。
+
+选择对应产生冲突时的固定版本。如果期间本地或远端又有修改，应用时会重新计算冲突，需要针对新版本重新选择。旧版客户端留下的冲突档案可以查看或归档，先放弃旧事务再同步才能继续处理。
 
 ## 仅本机数据
 
@@ -69,8 +74,9 @@ v0.7.0 起同步仓库格式为 `meta.v=2`，新增「仅本机」边界与歌�
 
 ## 连接方式
 
-- `git@host:...` / `ssh://...` 走 SSH（系统 ssh-agent 与 `~/.ssh/config`）。
-- `https://...` 走系统的凭据管理；也可以把 token 存成本地文件（`sync-token`，0600）作为兜底，不会写进命令行或 git 配置。
+- CLI 后端沿用系统 Git 的 SSH 配置、credential helper 和 `GIT_SSH_COMMAND`。
+- go-git 的 HTTPS 认证使用本地 `sync-token`（0600）；SSH 使用 agent 或私钥并校验 `known_hosts`。可在 `sync.toml` 指定 `ssh_key`、`known_hosts` 的绝对路径；加密私钥通过 agent 解锁。
+- go-git 不执行 Git credential helper 或自定义 SSH 命令；依赖这些能力时显式选择 `cli`。token 不写进命令行或 Git 配置。
 
 ## 自动同步
 
@@ -84,7 +90,7 @@ v0.7.0 起同步仓库格式为 `meta.v=2`，新增「仅本机」边界与歌�
 - 同一份内容在两端都改过才会冲突，冲突时逐项选择保留哪边。
 - 登录态以最近一次登录为准，不弹冲突选择；在一台设备退出登录，不影响其他设备。
 - 队列、下载文件、全局音量与全局补偿、自动响度均衡、音质、播放模式、鼠标偏好、`lyrics.toml` 这些跟着设备走，不参与同步；单曲音量补偿、歌词绑定与偏移属于单曲注释，会同步（本机绑定除外）。
-- 同步需要系统安装 `git`。
+- 使用 `gogit` 无需安装系统 Git，使用 `cli` 时需要。
 - 同步登录态可能触发平台风控，失效时会回落到扫码登录。
 
 同步是按间隔进行的，不追求毫秒级一致。想了解设计与安全细节，见 [docs/sync-design.md](../sync-design.md) 与 [ADR 0016](../adr/0016-git-sync.md)。

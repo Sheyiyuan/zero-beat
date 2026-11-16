@@ -1,0 +1,513 @@
+// Package keymap 定义可配置的按键动作，并把 keymap.toml 合并到内置默认值。
+package keymap
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Action 是稳定的动作 ID；配置文件只使用这些 ID，不直接写功能代码。
+type Action string
+
+const (
+	Quit             Action = "quit"
+	HelpPopup        Action = "help_popup"
+	HelpPage         Action = "help_page"
+	Login            Action = "login"
+	LocalSearch      Action = "local_search"
+	Search           Action = "search"
+	QueueView        Action = "queue_view"
+	LyricsView       Action = "lyrics_view"
+	PlayPause        Action = "play_pause"
+	Next             Action = "next"
+	Previous         Action = "previous"
+	SeekBack1        Action = "seek_back_1"
+	SeekBack5        Action = "seek_back_5"
+	SeekFwd5         Action = "seek_forward_5"
+	SeekFwd10        Action = "seek_forward_10"
+	VolumeDown       Action = "volume_down"
+	VolumeUp         Action = "volume_up"
+	CompDown         Action = "comp_down"
+	CompUp           Action = "comp_up"
+	SongCompDown     Action = "song_comp_down"
+	SongCompUp       Action = "song_comp_up"
+	Mode             Action = "mode"
+	Mute             Action = "mute"
+	Quality          Action = "quality"
+	Sleep            Action = "sleep"
+	OffsetDown       Action = "offset_down"
+	OffsetUp         Action = "offset_up"
+	OffsetReset      Action = "offset_reset"
+	Up               Action = "up"
+	Down             Action = "down"
+	Left             Action = "left"
+	Right            Action = "right"
+	Top              Action = "top"
+	Bottom           Action = "bottom"
+	PageUp           Action = "page_up"
+	PageDown         Action = "page_down"
+	PlaySelected     Action = "play_selected"
+	Select           Action = "select"
+	SelectAll        Action = "select_all"
+	Download         Action = "download"
+	DownloadSelected Action = "download_selected"
+	AddPlaylist      Action = "add_playlist"
+	MergePlaylist    Action = "merge_playlist"
+	Enqueue          Action = "enqueue"
+	PlayNext         Action = "play_next"
+	Remove           Action = "remove"
+	Delete           Action = "delete"
+	Rename           Action = "rename"
+	New              Action = "new"
+	Folders          Action = "folders"
+	Downloads        Action = "downloads"
+	MixEdit          Action = "mix_edit"
+	EditClip         Action = "edit_clip"
+	// BindLyrics 打开歌词来源浮层：手动指定平台、LRCLIB 或本地歌词。
+	BindLyrics   Action = "bind_lyrics"
+	ClipSetStart Action = "clip_set_start"
+	ClipSetEnd   Action = "clip_set_end"
+	ClipClear    Action = "clip_clear"
+	Unlock       Action = "unlock"
+	Refresh      Action = "refresh"
+	QueueUp      Action = "queue_up"
+	QueueDown    Action = "queue_down"
+	Source       Action = "source"
+	LoginImage   Action = "login_image"
+	Logout       Action = "logout"
+	Back         Action = "back"
+	Sync         Action = "sync"
+)
+
+// Defaults 是内置键位；配置文件按动作覆盖，不写出的动作继续使用这里。
+var Defaults = map[Action][]string{
+	Quit:             {"q", "Q"},
+	HelpPopup:        {"H"},
+	HelpPage:         {},
+	Login:            {"L"},
+	LocalSearch:      {"/"},
+	Search:           {"?"},
+	QueueView:        {"c"},
+	LyricsView:       {"T", "ctrl+l"},
+	PlayPause:        {"space"},
+	Next:             {"]"},
+	Previous:         {"["},
+	SeekBack1:        {"x"},
+	SeekBack5:        {"X"},
+	SeekFwd5:         {"v"},
+	SeekFwd10:        {"V"},
+	VolumeDown:       {"-"},
+	VolumeUp:         {"+", "="},
+	CompDown:         {","},
+	CompUp:           {"."},
+	SongCompDown:     {";"},
+	SongCompUp:       {"'"},
+	Mode:             {"p"},
+	Mute:             {"m"},
+	Quality:          {"y"},
+	Sleep:            {"t"},
+	OffsetDown:       {"<"},
+	OffsetUp:         {">"},
+	OffsetReset:      {"0"},
+	Up:               {"up", "k"},
+	Down:             {"down", "j"},
+	Left:             {"left", "h"},
+	Right:            {"right", "l"},
+	Top:              {"g"},
+	Bottom:           {"G"},
+	PageUp:           {"ctrl+u", "pgup"},
+	PageDown:         {"ctrl+d", "pgdown"},
+	PlaySelected:     {"n"},
+	Select:           {"z", "ctrl+space"},
+	SelectAll:        {"ctrl+a"},
+	Download:         {"w"},
+	DownloadSelected: {"W"},
+	AddPlaylist:      {"a"},
+	MergePlaylist:    {"S"},
+	Enqueue:          {"E", "A"},
+	PlayNext:         {"e"},
+	Remove:           {"d", "\\"},
+	Delete:           {"D"},
+	Rename:           {"R"},
+	New:              {"N"},
+	Folders:          {"f"},
+	Downloads:        {"F"},
+	MixEdit:          {"M"},
+	EditClip:         {"C"},
+	BindLyrics:       {"B"},
+	ClipSetStart:     {"{"},
+	ClipSetEnd:       {"}"},
+	ClipClear:        {"ctrl+r"},
+	Unlock:           {"U"},
+	Refresh:          {"r"},
+	QueueUp:          {"K"},
+	QueueDown:        {"J"},
+	Source:           {"s"},
+	LoginImage:       {"o"},
+	Logout:           {"ctrl+w"},
+	Back:             {"b"},
+	Sync:             {"ctrl+s"},
+}
+
+var actionSet = func() map[Action]bool {
+	m := make(map[Action]bool, len(Defaults))
+	for a := range Defaults {
+		m[a] = true
+	}
+	return m
+}()
+
+type binding struct {
+	display string
+	code    rune
+	text    string
+	mods    KeyMod
+}
+
+// Keymap 是编译后的动作绑定。
+type Keymap struct {
+	labels   map[Action][]string
+	bindings map[Action][]binding
+}
+
+// Default 返回内置键位。
+func Default() *Keymap {
+	km, _, err := build(Defaults, nil)
+	if err != nil {
+		panic("keymap: 默认键位冲突: " + err.Error())
+	}
+	return km
+}
+
+// Load 读取 TOML 配置；文件不存在时返回默认键位。
+func Load(path string) (*Keymap, error) {
+	km, _, err := LoadWithWarnings(path)
+	return km, err
+}
+
+// LoadWithWarnings 与 Load 相同，但额外返回「用户绑定抢走默认键」产生的降级说明。
+//
+// 冲突处理：用户显式写出的动作优先，被抢走的默认绑定禁用并记一条 warning；
+// 只有两个都是用户自定义动作的冲突才整份拒绝（见 README「自定义快捷键」与 ADR-0012）。
+func LoadWithWarnings(path string) (*Keymap, []string, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Default(), nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("读取快捷键配置: %w", err)
+	}
+	return Parse(raw)
+}
+
+// Parse validates and compiles a portable keymap without filesystem access.
+func Parse(raw []byte) (*Keymap, []string, error) {
+	var doc struct {
+		Keys map[string][]string `toml:"keys"`
+	}
+	md, err := toml.Decode(string(raw), &doc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("解析快捷键配置: %w", err)
+	}
+	if u := md.Undecoded(); len(u) > 0 {
+		return nil, nil, fmt.Errorf("快捷键配置包含未知字段: %s", u)
+	}
+	merged := make(map[Action][]string, len(Defaults))
+	for a, keys := range Defaults {
+		merged[a] = append([]string(nil), keys...)
+	}
+	overridden := make(map[Action]bool, len(doc.Keys))
+	for name, keys := range doc.Keys {
+		a := Action(name)
+		if !actionSet[a] {
+			return nil, nil, fmt.Errorf("未知动作 %q", name)
+		}
+		merged[a] = append([]string(nil), keys...)
+		overridden[a] = true
+	}
+	return build(merged, overridden)
+}
+
+// build 编译绑定。overridden 标记用户显式覆盖的动作：冲突时用户绑定优先，
+// 被抢走的默认绑定禁用并记一条 warning；两份用户绑定冲突才返回错误。
+func build(actions map[Action][]string, overridden map[Action]bool) (*Keymap, []string, error) {
+	km := &Keymap{
+		labels:   make(map[Action][]string, len(actions)),
+		bindings: make(map[Action][]binding, len(actions)),
+	}
+	// 先处理用户覆盖的动作，让「用户优先」与 map 遍历顺序无关。
+	ordered := make([]Action, 0, len(actions))
+	for a := range actions {
+		ordered = append(ordered, a)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if oi, oj := overridden[ordered[i]], overridden[ordered[j]]; oi != oj {
+			return oi
+		}
+		return ordered[i] < ordered[j]
+	})
+
+	used := map[string]Action{}
+	var warnings []string
+	for _, a := range ordered {
+		seen := map[string]bool{}
+		for _, raw := range actions[a] {
+			b, err := parseBinding(raw)
+			if err != nil {
+				return nil, nil, fmt.Errorf("动作 %s 的按键 %q: %w", a, raw, err)
+			}
+			if seen[b.display] {
+				continue
+			}
+			seen[b.display] = true
+			prev, taken := used[b.display]
+			if !taken {
+				used[b.display] = a
+				km.add(a, b)
+				continue
+			}
+			if prev == a {
+				continue
+			}
+			prevOver, curOver := overridden[prev], overridden[a]
+			switch {
+			case curOver && !prevOver:
+				// 用户的绑定优先，被抢的默认绑定禁用。
+				km.remove(prev, b.display)
+				delete(used, b.display)
+				used[b.display] = a
+				km.add(a, b)
+				warnings = append(warnings,
+					fmt.Sprintf("%s 的默认键 %q 已被 %s 占用，该默认绑定已禁用", prev, b.display, a))
+			case !curOver && prevOver:
+				warnings = append(warnings,
+					fmt.Sprintf("%s 的默认键 %q 已被 %s 占用，该默认绑定已禁用", a, b.display, prev))
+			default:
+				return nil, nil, fmt.Errorf("按键 %q 同时绑定到 %s 和 %s", b.display, prev, a)
+			}
+		}
+	}
+	return km, warnings, nil
+}
+
+func (k *Keymap) add(a Action, b binding) {
+	k.labels[a] = append(k.labels[a], b.display)
+	k.bindings[a] = append(k.bindings[a], b)
+}
+
+// remove 删除某动作的一条绑定；labels 与 bindings 始终按同一顺序追加。
+func (k *Keymap) remove(a Action, display string) {
+	for i, label := range k.labels[a] {
+		if label != display {
+			continue
+		}
+		k.labels[a] = append(k.labels[a][:i], k.labels[a][i+1:]...)
+		k.bindings[a] = append(k.bindings[a][:i], k.bindings[a][i+1:]...)
+		return
+	}
+}
+
+// Keys 返回动作当前生效的按键展示值。
+func (k *Keymap) Keys(a Action) []string {
+	if k == nil {
+		return nil
+	}
+	return append([]string(nil), k.labels[a]...)
+}
+
+// Label 返回形如「j / down」的展示字符串。
+func (k *Keymap) Label(a Action) string {
+	keys := k.Keys(a)
+	return strings.Join(keys, " / ")
+}
+
+// Match 判断当前按键是否命中动作。
+func (k *Keymap) Match(a Action, key Key) bool {
+	if k == nil {
+		return false
+	}
+	for _, b := range k.bindings[a] {
+		if b.match(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func (b binding) match(key Key) bool {
+	if b.mods != 0 {
+		if key.Mod&b.mods != b.mods {
+			return false
+		}
+	} else if key.Mod&(ModCtrl|ModAlt|ModSuper) != 0 {
+		return false
+	}
+	// 终端里 Shift+C 通常是 Code='c'、Text="C"；如果先按 Code 匹配，
+	// 小写 c 的动作会抢走上层 C 的键位。可打印字符一律以 Text 为准。
+	if b.text != "" && key.Text != "" {
+		return key.Text == b.text
+	}
+	if b.code != 0 {
+		return key.Code == b.code
+	}
+	return key.Text == b.text
+}
+
+// ParseKey 把 keymap.toml 里的按键写法（space / enter / ctrl+a / 单字符）
+// 解析成注入用的 Key，保证控制通道和真人按键使用同一套键名。
+func ParseKey(raw string) (Key, error) {
+	b, err := parseBinding(raw)
+	if err != nil {
+		return Key{}, err
+	}
+	key := Key{Code: b.code, Text: b.text, Mod: b.mods}
+	// 真实终端的空格键带 Text " "，命名写法里没有；补上才能落进输入态。
+	if key.Code == KeySpace && key.Text == "" {
+		key.Text = " "
+	}
+	// ctrl/super 组合在终端里不产生可打印文本，清掉 Text 才和真人按键一致。
+	if key.Mod&(ModCtrl|ModSuper) != 0 {
+		key.Text = ""
+	}
+	return key, nil
+}
+
+func parseBinding(raw string) (binding, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return binding{}, errors.New("按键不能为空")
+	}
+	if raw == " " {
+		return binding{display: "space", code: KeySpace, text: " "}, nil
+	}
+	// 「+」本身是一个键，不是修饰符分隔符。
+	if raw == "+" {
+		return binding{display: "+", code: '+', text: "+"}, nil
+	}
+	parts := strings.Split(raw, "+")
+	base := parts[len(parts)-1]
+	var mods KeyMod
+	for _, p := range parts[:len(parts)-1] {
+		switch strings.ToLower(strings.TrimSpace(p)) {
+		case "ctrl", "control":
+			mods |= ModCtrl
+		case "alt", "meta":
+			mods |= ModAlt
+		case "shift":
+			mods |= ModShift
+		case "super", "cmd":
+			mods |= ModSuper
+		default:
+			return binding{}, fmt.Errorf("未知修饰键 %q", p)
+		}
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return binding{}, errors.New("缺少基础按键")
+	}
+	display := base
+	if mods&ModCtrl != 0 {
+		display = "ctrl+" + display
+	}
+	if mods&ModAlt != 0 {
+		display = "alt+" + display
+	}
+	if mods&ModShift != 0 {
+		display = "shift+" + display
+	}
+	if mods&ModSuper != 0 {
+		display = "super+" + display
+	}
+	if code, ok := namedKey(base); ok {
+		if mods != 0 && code == KeySpace {
+			return binding{display: display, code: code, text: " ", mods: mods}, nil
+		}
+		if mods == 0 {
+			switch code {
+			case KeyUp:
+				display = "↑"
+			case KeyDown:
+				display = "↓"
+			case KeyLeft:
+				display = "←"
+			case KeyRight:
+				display = "→"
+			case KeyPgUp:
+				display = "PgUp"
+			case KeyPgDown:
+				display = "PgDn"
+			}
+		}
+		return binding{display: display, code: code, mods: mods}, nil
+	}
+	r := []rune(base)
+	if len(r) != 1 {
+		return binding{}, fmt.Errorf("只支持单键或命名键，收到 %q", base)
+	}
+	return binding{display: display, code: r[0], text: string(r[0]), mods: mods}, nil
+}
+
+func namedKey(s string) (rune, bool) {
+	switch strings.ToLower(s) {
+	case "space":
+		return KeySpace, true
+	case "enter", "return":
+		return KeyEnter, true
+	case "tab":
+		return KeyTab, true
+	case "esc", "escape":
+		return KeyEscape, true
+	case "backspace":
+		return KeyBackspace, true
+	case "delete", "del":
+		return KeyDelete, true
+	case "up":
+		return KeyUp, true
+	case "down":
+		return KeyDown, true
+	case "left":
+		return KeyLeft, true
+	case "right":
+		return KeyRight, true
+	case "pgup", "pageup":
+		return KeyPgUp, true
+	case "pgdown", "pagedown":
+		return KeyPgDown, true
+	case "home":
+		return KeyHome, true
+	case "end":
+		return KeyEnd, true
+	}
+	return 0, false
+}
+
+// ExampleTOML 生成包含全部默认动作的示例配置。
+func ExampleTOML() string {
+	names := make([]string, 0, len(Defaults))
+	for a := range Defaults {
+		names = append(names, string(a))
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("# zero-beat 快捷键配置\n")
+	b.WriteString("# 只写想改的动作；未写出的动作使用内置默认值。\n")
+	b.WriteString("# 空数组表示禁用该动作。\n\n[keys]\n")
+	for _, name := range names {
+		b.WriteString(name)
+		b.WriteString(" = [")
+		for i, k := range Defaults[Action(name)] {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(strconv.Quote(k))
+		}
+		b.WriteString("]\n")
+	}
+	return b.String()
+}

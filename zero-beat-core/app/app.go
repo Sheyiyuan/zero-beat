@@ -1,0 +1,403 @@
+// Package app 承载与界面无关的业务操作：搜索、取流、歌词、歌单同步、
+// 登录与队列恢复。TUI 只负责把结果转成 tea.Msg，不在这里出现 Bubble Tea 类型。
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/cover"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/lrclib"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/source"
+	"github.com/sheyiyuan/zero-beat/zero-beat-core/store"
+)
+
+// Service 是一组无界面依赖的业务操作。它是轻量的，可以在每个 tea.Cmd 里新建。
+type Service struct {
+	sources *source.Registry
+	store   *store.Store
+	lrclib  *lrclib.Client
+}
+
+// New 构造业务服务；st 与 lrc 可以为 nil（测试或纯搜索场景）。
+func New(sources *source.Registry, st *store.Store, lrc *lrclib.Client) *Service {
+	return &Service{sources: sources, store: st, lrclib: lrc}
+}
+
+// Sources 返回注册表。
+func (s *Service) Sources() *source.Registry { return s.sources }
+
+// Store 返回存储层。
+func (s *Service) Store() *store.Store { return s.store }
+
+// SearchResult 是合并多源搜索后的结果。
+type SearchResult struct {
+	Candidates []source.Candidate
+	Pages      int
+	Warn       error
+}
+
+// Search 并发搜索注册表里的音源；单源失败只告警，全部失败才返回错误。
+func (s *Service) Search(ctx context.Context, keyword string, page int, filter source.ID) (SearchResult, error) {
+	var out SearchResult
+	if s.sources == nil {
+		return out, fmt.Errorf("没有可用的音源")
+	}
+	var list []source.Source
+	if filter == "" {
+		for _, src := range s.sources.All() {
+			if src.Caps().Has(source.CapSearch) {
+				list = append(list, src)
+			}
+		}
+	} else if src := s.sources.Get(filter); src != nil && src.Caps().Has(source.CapSearch) {
+		list = []source.Source{src}
+	}
+	if len(list) == 0 {
+		return out, fmt.Errorf("未知音源 %q", filter)
+	}
+
+	type result struct {
+		page source.SearchPage
+		err  error
+	}
+	results := make([]result, len(list))
+	var wg sync.WaitGroup
+	wg.Add(len(list))
+	for i, src := range list {
+		go func(i int, src source.Source) {
+			defer wg.Done()
+			p, err := src.Search(ctx, keyword, page)
+			results[i] = result{page: p, err: err}
+		}(i, src)
+	}
+	wg.Wait()
+
+	var errs []string
+	for _, r := range results {
+		if r.err != nil {
+			errs = append(errs, r.err.Error())
+			continue
+		}
+		out.Candidates = append(out.Candidates, r.page.Candidates...)
+		if r.page.Pages > out.Pages {
+			out.Pages = r.page.Pages
+		}
+	}
+	switch {
+	case len(errs) == len(list):
+		return out, fmt.Errorf("搜索失败：%s", joinErrors(errs))
+	case len(errs) > 0:
+		out.Warn = fmt.Errorf("部分音源搜索失败：%s", joinErrors(errs))
+	}
+	return out, nil
+}
+
+// RefFromSong 把持久化歌曲转成音源定位信息。
+func RefFromSong(song store.Song) source.Ref {
+	return source.Ref{
+		Source:     source.ID(song.Source),
+		ExternalID: song.ExternalID(),
+		Page:       song.Page,
+		CID:        song.CID,
+	}
+}
+
+// SongFromTrack 把音源曲目转成持久化歌曲；不写平台专属字段。
+func SongFromTrack(t source.Track) store.Song {
+	song := store.Song{
+		Source:   string(t.Source),
+		RemoteID: t.ExternalID,
+		Page:     t.Page,
+		CID:      t.CID,
+		Title:    t.Title,
+		Artist:   t.Artist,
+		Album:    t.Album,
+		Duration: t.Duration,
+		Cover:    t.Cover,
+	}
+	return store.NormalizeSong(song)
+}
+
+// MergeResolved 只补齐解析结果里的非空字段，避免把已有元数据覆盖成空值。
+func MergeResolved(song store.Song, t source.Track) store.Song {
+	if t.Source != "" {
+		song.Source = string(t.Source)
+	}
+	if t.ExternalID != "" {
+		song.RemoteID = t.ExternalID
+	}
+	if t.Page > 0 {
+		song.Page = t.Page
+	}
+	if t.CID > 0 {
+		song.CID = t.CID
+	}
+	if t.Title != "" {
+		song.Title = t.Title
+	}
+	if t.Artist != "" {
+		song.Artist = t.Artist
+	}
+	if t.Album != "" {
+		song.Album = t.Album
+	}
+	if t.Duration > 0 {
+		song.Duration = t.Duration
+	}
+	if t.Cover != "" {
+		song.Cover = t.Cover
+	}
+	return store.NormalizeSong(song)
+}
+
+// Stream 解析音频地址但不落库，供下载等只读场景使用。
+func (s *Service) Stream(ctx context.Context, song store.Song, quality source.Quality) (source.Track, source.Stream, error) {
+	song = store.NormalizeSong(song)
+	if s.sources == nil {
+		return source.Track{}, source.Stream{}, fmt.Errorf("没有可用的音源")
+	}
+	src := s.sources.GetString(song.Source)
+	if src == nil {
+		return source.Track{}, source.Stream{}, fmt.Errorf("未知音源 %q", song.Source)
+	}
+	resolved, err := src.Resolve(ctx, RefFromSong(song), quality)
+	if err != nil {
+		return source.Track{}, source.Stream{}, err
+	}
+	return resolved.Track, resolved.Stream, nil
+}
+
+// CoverPath 下载并缓存歌曲封面，返回本地文件路径；封面只服务系统媒体面板。
+func (s *Service) CoverPath(ctx context.Context, song store.Song) (string, error) {
+	if song.Cover == "" {
+		return "", fmt.Errorf("没有封面")
+	}
+	var headers map[string]string
+	if s.sources != nil {
+		if src := s.sources.GetString(song.Source); src != nil {
+			if h, ok := src.(source.CoverHeadersProvider); ok {
+				headers = h.CoverHeaders()
+			}
+		}
+	}
+	return cover.Fetch(ctx, song.Cover, headers)
+}
+
+// DownloadedPath 返回已下载且文件仍然有效（存在且非空）的本地路径。
+// 与「本地优先」开关无关：下载完成与否只看索引和文件。
+func (s *Service) DownloadedPath(songID string) (string, bool) {
+	if s.store == nil || songID == "" {
+		return "", false
+	}
+	d, err := s.store.Download(songID)
+	if err != nil || d.Path == "" {
+		return "", false
+	}
+	info, err := os.Stat(d.Path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return "", false
+	}
+	return d.Path, true
+}
+
+// LocalStream 返回已下载文件的本地播放流；记录不存在或文件失效时返回 false。
+func (s *Service) LocalStream(song store.Song) (source.Stream, bool) {
+	if s.store == nil {
+		return source.Stream{}, false
+	}
+	song = store.NormalizeSong(song)
+	d, err := s.store.Download(song.ID)
+	if err != nil || d.Path == "" {
+		return source.Stream{}, false
+	}
+	info, err := os.Stat(d.Path)
+	if err != nil || info.IsDir() || info.Size() == 0 {
+		return source.Stream{}, false
+	}
+	duration := time.Duration(d.DurationMS) * time.Millisecond
+	if duration == 0 && song.Duration > 0 {
+		duration = time.Duration(song.Duration) * time.Second
+	}
+	return source.Stream{
+		URL:      d.Path,
+		Codec:    d.Codec,
+		Duration: duration,
+		Quality:  "本地",
+	}, true
+}
+
+// Resolve 解析音频地址并把缺失的元数据回写数据库。
+func (s *Service) Resolve(ctx context.Context, song store.Song, quality source.Quality) (store.Song, source.Stream, error) {
+	return s.ResolveWithLocal(ctx, song, quality, true)
+}
+
+// ResolveWithLocal 解析音频地址；allowLocal 为 true 时优先使用已下载文件。
+//
+// 本地记录失效（文件被删除、移动）会继续走远程解析。
+func (s *Service) ResolveWithLocal(ctx context.Context, song store.Song, quality source.Quality, allowLocal bool) (store.Song, source.Stream, error) {
+	song = store.NormalizeSong(song)
+	if allowLocal && s.LocalFirstEnabled() {
+		if stream, ok := s.LocalStream(song); ok {
+			return song, stream, nil
+		}
+	}
+	track, stream, err := s.Stream(ctx, song, quality)
+	if err != nil {
+		return song, source.Stream{}, err
+	}
+	song = MergeResolved(song, track)
+	if s.store != nil {
+		if stored, uerr := s.store.UpsertSong(song); uerr == nil {
+			song = stored
+		}
+	}
+	return song, stream, nil
+}
+
+// Downloads 返回下载记录与歌曲元数据，供下载管理页使用。
+func (s *Service) Downloads() ([]store.DownloadEntry, error) {
+	if s.store == nil {
+		return nil, nil
+	}
+	return s.store.DownloadEntries()
+}
+
+// DeleteDownload 删除下载记录，不删除文件。
+func (s *Service) DeleteDownload(songID string) error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.DeleteDownload(songID)
+}
+
+// Users 读取所有已登录音源的账号信息；同时返回登录态已经不可用的音源
+// （平台判定过期，或库里有账号但装不进音源）。这里只做判定，不直接清理：
+// 由调用方决定冻结歌单与提示时机，避免读接口带副作用。
+func (s *Service) Users(ctx context.Context) (map[source.ID]source.User, []source.ID) {
+	users := map[source.ID]source.User{}
+	var expired []source.ID
+	if s.sources == nil {
+		return users, nil
+	}
+	for _, src := range s.sources.All() {
+		// 本地源没有登录态，不该出现在账号摘要里。
+		if !src.Caps().Has(source.CapAccount) {
+			continue
+		}
+		if !src.LoggedIn() {
+			users[src.ID()] = source.User{}
+			// 库里有账号却装不进音源，说明本地登录态已经不可用：
+			// 与平台侧过期一样处理，避免歌单一直停在「同步中」。
+			if s.store != nil {
+				if _, err := s.store.LoadAccount(string(src.ID())); err == nil {
+					expired = append(expired, src.ID())
+				}
+			}
+			continue
+		}
+		got, err := src.Account(ctx)
+		if errors.Is(err, source.ErrSessionExpired) {
+			// 本地存的是旧 token、或平台刚刚换发过 token 时，先续期再判死刑；
+			// 续期失败说明平台确实不认这份登录态，保持原错误交给下面处理。
+			if refresher, ok := src.(source.SessionRefresher); ok {
+				if rerr := refresher.RefreshSession(ctx); rerr == nil {
+					again, aerr := src.Account(ctx)
+					switch {
+					case aerr == nil:
+						got, err = again, nil
+						s.persistSession(src)
+					case !errors.Is(aerr, source.ErrSessionExpired):
+						// 续期成功但账号接口网络异常：保留「已登录」，不要冻结。
+						err = aerr
+					}
+				}
+			}
+		}
+		switch {
+		case errors.Is(err, source.ErrSessionExpired):
+			users[src.ID()] = source.User{}
+			expired = append(expired, src.ID())
+		case err != nil:
+			// 网络或风控错误时不写 entry，标题栏仍能用 cookie 状态显示「已登录」。
+		default:
+			users[src.ID()] = got
+		}
+	}
+	return users, expired
+}
+
+// Queue 是恢复出来的播放队列。
+type Queue struct {
+	Songs    []store.Song
+	Index    int
+	Position time.Duration
+	OK       bool
+}
+
+// RestoreQueue 读取持久化队列，并按 ID 修正失效曲目导致的索引偏移。
+func (s *Service) RestoreQueue() Queue {
+	if s.store == nil {
+		return Queue{}
+	}
+	state, err := s.store.LoadQueue()
+	if err != nil || len(state.IDs) == 0 {
+		return Queue{}
+	}
+	songs, err := s.store.SongsByIDs(state.IDs)
+	if err != nil || len(songs) == 0 {
+		return Queue{}
+	}
+	idx := state.Index
+	position := time.Duration(state.Position) * time.Millisecond
+	if idx < 0 || idx >= len(state.IDs) {
+		return Queue{Songs: songs, Position: 0, OK: true}
+	}
+	saved := state.IDs[idx]
+	found := -1
+	for i := range songs {
+		if songs[i].ID == saved {
+			found = i
+			break
+		}
+	}
+	if found < 0 {
+		return Queue{Songs: songs, Position: 0, OK: true}
+	}
+	return Queue{Songs: songs, Index: found, Position: position, OK: true}
+}
+
+// StartLogin 申请一次扫码登录会话。
+func (s *Service) StartLogin(ctx context.Context, id source.ID) (source.QRCode, error) {
+	src := s.sources.Get(id)
+	if src == nil {
+		return source.QRCode{}, fmt.Errorf("未知音源 %q", id)
+	}
+	return src.StartQRLogin(ctx)
+}
+
+// PollLogin 轮询扫码状态；src 由调用方从当前登录页持有。
+func (s *Service) PollLogin(ctx context.Context, src source.Source, key string) (source.LoginStatus, error) {
+	if src == nil {
+		return source.LoginStatus{}, fmt.Errorf("登录会话已失效，请重新获取")
+	}
+	if key == "" {
+		return source.LoginStatus{}, fmt.Errorf("二维码已失效，请重新获取")
+	}
+	return src.PollQRLogin(ctx, key)
+}
+
+func joinErrors(errs []string) string {
+	out := ""
+	for i, e := range errs {
+		if i > 0 {
+			out += "；"
+		}
+		out += e
+	}
+	return out
+}

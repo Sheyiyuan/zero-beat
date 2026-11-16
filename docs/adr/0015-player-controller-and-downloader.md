@@ -5,8 +5,8 @@
 
 ## 背景
 
-ADR-0014 把搜索、取流、歌词、歌单同步等外部业务抽到了 `internal/app`，但
-`internal/tui` 的 `Model` 仍然直接持有：
+ADR-0014 把搜索、取流、歌词、歌单同步等外部业务抽到了 `zero-beat-core/app`，但
+`zero-beat-tui/internal/tui` 的 `Model` 仍然直接持有：
 
 - 队列、当前曲目、播放状态、进度、播放模式、随机基准、重试计数、预解析缓存；
 - 引擎的 `PlayAt` / `Pause` / `Resume` / `Seek` / `Stop`；
@@ -18,7 +18,7 @@ Bubble Tea 测试，也让后续接入更多平台时继续被耦合。
 
 ## 决策
 
-### `internal/player.Controller` 接管播放业务
+### `zero-beat-core/player.Controller` 接管播放业务
 
 - `player.State` 是完整播放状态：队列、索引、当前曲目、播放/缓冲/失败/结束态、
   位置、时长、模式、音量、补偿、静音、断点、重试计数、等待解析、请求号、
@@ -39,7 +39,7 @@ Bubble Tea 测试，也让后续接入更多平台时继续被耦合。
   睡眠定时与 5 秒落盘。
 - 控制器不 import Bubble Tea，也不做渲染、按键或通知。
 
-### `internal/downloader.Manager` 接管下载任务
+### `zero-beat-core/downloader.Manager` 接管下载任务
 
 - `Manager` 持有任务队列、并发上限、运行中任务、取消函数与事件通道；
 - `Add` / `Start` / `Remove` / `CancelAll` / `Tasks` 是纯业务接口；

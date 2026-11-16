@@ -6,10 +6,12 @@ project_name: zero
 
 before:
   hooks:
-    - go mod verify
+    - go -C zero-beat-core mod verify
+    - go -C zero-beat-tui mod verify
 
 builds:
   - id: zero
+    dir: zero-beat-tui
     main: ./cmd/zero
     binary: zero
     env:

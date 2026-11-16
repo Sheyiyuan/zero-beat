@@ -1,9 +1,9 @@
 # 同步设计：Git 仓库、歌单快照与加密登录态
 
-- 状态：已落地（2026-11-01）
+- 状态：v2 已落地；2026-11-16 改造为共享合并器与双后端，验收记录见[迁移说明](monorepo-and-sync.md)
 - 日期：2026-11-01
 - 关联：ADR-0012（可配置快捷键）、ADR-0015（player/downloader 边界）、[ADR-0016](adr/0016-git-sync.md)（同步决策）
-- 实现：`internal/sync/`、`cmd/zero/sync.go`、`internal/tui/sync.go`
+- 实现：`zero-beat-core/sync/`、`zero-beat-tui/cmd/zero/sync.go`、`zero-beat-tui/internal/tui/sync.go`
 
 ## 0. 先看这五个审查点
 
@@ -11,15 +11,15 @@
 2. **登录态采用后写者胜（LWW），不进入冲突选择界面**；只有密钥不匹配/时间戳相同但内容不同才提示。
 3. **关闭 JSON 的行级合并**，同一实体两端修改一律交给用户整版选择；换来行为可预测，牺牲“自动合并互不重叠的改动”。
 4. **登出不传播**：A 设备退出登录不会让 B 设备掉线，远端密文也不主动删除。
-5. **自动同步默认开启**（启动拉取、变更后 debounce 推送）；如果希望默认关闭，需要现在定。
+5. **自动同步默认开启**（启动拉取、变更后 debounce 推送）；可在同步页关闭。
 
 ## 1. 背景与现状
 
 应用的数据全部在本地 `~/.config/zero-beat/`：
 
-- SQLite：`songs / playlists / playlist_items / playlist_refs / playlist_excludes / queue / settings / accounts / downloads`，见 [store.go](../internal/store/store.go#L95-L160)。
+- SQLite：`songs / playlists / playlist_items / playlist_refs / playlist_excludes / queue / settings / accounts / downloads`，见 [store.go](../zero-beat-core/store/store.go#L95-L160)。
 - `keymap.toml`：动作 ID 覆盖默认键位，导入时必须过 `keymap.LoadWithWarnings` 的冲突校验。
-- 登录态：`accounts.payload` 是明文 JSON（SESSDATA / MUSIC_U 等），见 [store.go](../internal/store/store.go#L1161-L1191)。
+- 登录态：`accounts.payload` 是明文 JSON（SESSDATA / MUSIC_U 等），见 [store.go](../zero-beat-core/store/store.go#L1161-L1191)。
 - 设备态：`queue`、`downloads.path`、音量/音质/模式等 `settings` 按设备各自不同。
 
 目前没有任何导出/迁移能力。跨设备只能手动重建歌单、重新扫码。
@@ -48,9 +48,9 @@
 
 | 主题 | 决策 | 理由 |
 | --- | --- | --- |
-| 传输 | 调用系统 `git`，兼容 HTTPS/SSH 与任意托管 | 自建服务无需对接各家 API；认证、代理、SSH 由 git 处理 |
+| 传输 | `auto|cli|gogit`，初始化、对象、引用、fetch/push 由后端负责 | CLI 保留系统认证能力，go-git 支持无 Git 环境 |
 | 快照 | 文本 JSON，一个实体一个文件 | diff 干净、冲突粒度可控；不提交 SQLite |
-| 合并 | git 三方合并 + `merge=binary` 关闭 JSON 行级合并 | 删除/修改交给 git；同实体并发修改必冲突，不出现“合并成功但语义错” |
+| 合并 | 共享合并器读取固定提交的 base/local/remote，按实体比较内容与存在性 | 删除不同于空文件；分叉提交父节点为 `[local, remote]`，两个后端行为一致 |
 | 冲突 | 按实体选择本地/远程/保留两者，落选版本归档 | 不做语义合并；零数据丢失 |
 | 凭据 | Argon2id + XChaCha20-Poly1305，每音源一个密文文件 | 认证加密、密文可整体覆盖；不参与文本合并 |
 | 盐 | 全局随机盐写入仓库 `meta.json` | 新设备只输口令即可派生同一密钥，不需要背盐或拷贝密钥 |
@@ -203,7 +203,7 @@ accounts/*.age        merge=binary
 Idle
  └─ Pulling: fetch → 凭据 LWW（可选）→ 导出 → 提交 → merge
       ├─ Clean: 导入 → Push → Idle
-      ├─ Conflict: 快照 ours/theirs → abort → Conflict
+      ├─ Conflict: 快照 base/local/remote → 恢复工作区 → Conflict
       └─ Error: 退避 → Idle
 Conflict
  └─ Resolving: 用户逐项选择 → 重新 merge 并套用选择 → 提交 → 导入 → Push
@@ -213,17 +213,15 @@ KeyMismatch
 
 ### 7.2 正常一轮
 
-1. 取同步锁；检查工作区干净（残留 merge 则 `merge --abort`，残留脏文件则恢复到 HEAD）。
-2. `git fetch origin <branch>`。
-3. 若本地有密钥：解密远端 `accounts/*.age`，按 `updated_at` 做 LWW；远端较新则先导入本地库。失败则标记 `KeyMismatch`，跳过凭据，不影响歌单。
-4. 导出快照到工作区：清空并重写 `playlists/`，按需写 `keymap.toml`、`annotations/`、`accounts/`。
-5. 若工作区有变化：`git add -A`，`git commit -m "sync: <device> <timestamp>"`。
-6. `git merge --no-edit FETCH_HEAD`。
-   - 干净：合并结果即工作区。
-   - 冲突：记录 `ours`（`:2:path`）、`theirs`（`:3:path`）、`base`（`:1:path`，可为空）到冲突目录，然后 `git merge --abort`，进入 `Conflict`。
-7. 导入合并后的树（单实体事务，失败跳过并记录）。
-8. `git push`。非快进则重新 fetch + merge + 重试（有次数上限，绝不 force push）。
-9. 更新本地状态；发 `syncAppliedMsg`。
+1. 取得进程间同步锁，按命令行 > 环境变量 > 配置文件 > 默认值选定本轮后端。
+2. 恢复本地事务；fetch 后固定远端提交。导入、导出前校验受管文件版本及未知字段，遇到无法无损处理的文件停止写入。
+3. 若密钥可用，按 `updated_at` 合并远端凭据；保持原有 LWW 和密钥不匹配语义。
+4. 记录本地输入摘要与 revision，导出确定性快照，内容有变化才生成本地提交。
+5. 保存 `transaction.json`，记录版本、local/base/remote、输入摘要与阶段。祖先必须唯一；拒绝无共同祖先的非空历史和多个最佳 merge-base。
+6. 共享合并器逐实体比较 base/local/remote：相同修改合并，一侧未改取另一侧，两侧不同修改进入冲突；同时记录文件存在性。
+7. 冲突时保存固定版本快照并恢复工作区。无冲突时快进或生成父节点 `[local, remote]` 的提交；引用更新前持久化候选提交。
+8. 导入前再次核验输入；发生本地修改就回到本地父提交并重新计算。导入完成后记录 imported 阶段，再 push。
+9. 非快进最多尝试三轮，重新 fetch、合并、导入，不 force push。成功清理事务并更新状态。
 
 ### 7.3 首次配置与加入已有仓库
 
@@ -235,10 +233,10 @@ KeyMismatch
 ### 7.4 并发保护
 
 - **进程内**：`sync.Manager` 单飞，忙时合并请求。
-- **进程间**：`sync/lock` 文件锁；拿不到锁直接跳过本轮。TUI 另由 `internal/instance`
+- **进程间**：所有仓库修改入口（初始化、同步、恢复、冲突选择与换密钥）共用 `sync/lock` 文件锁；拿不到锁返回忙碌。TUI 另由 `zero-beat-core/instance`
   保证同一数据目录单实例；同步不依赖它，CLI 也能单独运行。
-- **库写入竞态**：导出用只读事务拿一致快照；导入前检查 `LibraryRevision`（歌单/账号变更计数）。若本轮期间本地有写，放弃导入、下一轮重试，避免覆盖用户刚做的修改。
-- 冲突处理期间允许用户继续编辑；点“应用”时以**当前本地状态**作为“本地版本”快照，避免丢掉冲突产生后的编辑。
+- **库写入竞态**：导出前记录 `LibraryRevision` 及本地输入摘要（歌单、注释、键位、账号）；导入前再次核验。摘要在重启后仍有效，输入变化则放弃本轮导入并重新计算。
+- 冲突处理期间允许用户继续编辑；应用时先核验固定提交与输入摘要。输入变化会归档旧事务、重新计算，新冲突需要重新选择，不把旧选择套到新数据。
 
 ## 8. 冲突模型
 
@@ -250,7 +248,7 @@ KeyMismatch
 
 | 选项 | 行为 |
 | --- | --- |
-| 保留本地 | 用当前本地快照覆盖该实体；远端版本留在 git 历史 |
+| 保留本地 | 使用本轮冲突中展示的固定本地版本；远端版本留在 Git 历史 |
 | 保留远程 | 导入远端快照；本地版本先归档 |
 | 保留两者 | 歌单生成 `<原 ID>-copy-<n>`、标题加“（副本）”；键位/注释不提供 |
 | 全部本地 / 全部远程 | 批量操作，仅作为快捷方式 |
@@ -267,12 +265,10 @@ KeyMismatch
 
 解决冲突时不直接 push 覆盖：
 
-1. 重新 `git merge --no-commit FETCH_HEAD`，制造同样的冲突状态。
-2. 按用户选择写入工作区（删除则 `git rm`），`git add -A`。
-3. `git commit` 生成 merge commit，保留双方历史。
-4. 导入、push。
-
-这样即使选择“远程”，本地历史仍可回滚，不会丢数据。
+1. 读版本化冲突索引，核验 local/base/remote 及输入摘要；旧版档案可读，但必须归档并重建后才能解决。
+2. 从固定提交重建三方比较，凭据仍使用 LWW，按用户选择写入快照；删除用文件不存在表示。
+3. 提交前再次 fetch 并核验本地输入，变化则重新计算；否则写入两个父节点的合并提交。
+4. 导入并记录阶段，再 push；非快进剩余两次重试交给普通同步流程。
 
 ### 8.5 不算冲突的情况
 
@@ -461,30 +457,34 @@ zero sync key rotate
 
 - 口令从 stdin 交互读取（无回显），不使用 `--passphrase` 参数。
 - `--repo <path>` 供测试使用本地裸仓库。
-- token 通过 credential helper 或环境中的 `GIT_ASKPASS`，不写入命令行。
+- CLI 的 token 可通过 credential helper 或 `GIT_ASKPASS`；go-git 从本地 0600 token 文件读取，不写入命令行。
 
 ## 12. 代码落点
 
 ```
-internal/sync/
+zero-beat-core/sync/
   crypt.go       # 派生、seal/open、keycheck、AAD
   meta.go        # meta.json 与本地 sync-key
   config.go      # sync.toml、token 兜底、GIT_ASKPASS
   state.go       # state.json、进程间锁、状态摘要
   snapshot.go    # 导出/导入、确定性序列化、归档
-  git.go         # git 命令封装、工作克隆、错误分类
-  conflicts.go   # 冲突索引、ours/theirs 快照与摘要
+  backend.go     # 后端接口、共享三方比较、对象/引用写入协调
+  git.go         # CLI 命令与对象操作
+  gogit.go       # go-git 对象与 HTTPS/SSH 传输
+  transaction.go # 输入摘要与中断恢复
+  rotation.go    # 换密钥恢复日志
+  conflicts.go   # 版本化索引、固定 base/local/remote 快照
   client.go      # 同步状态机、init/加入、换口令
   credentials.go # 登录态 LWW、密文导入、账号冲突
   resolve.go     # 重新合并、按选择写回、归档
   manager.go     # 单飞、debounce、退避、冻结、事件
   options.go     # 默认路径与 LibraryRevision 回调
 
-cmd/zero/sync.go      # 子命令
-cmd/zero/main.go      # 分发、usage、构造 Manager
-internal/tui/sync.go  # 同步页、冲突视图、状态行、事件
-internal/tui/model.go # 页面枚举、接线、revision 轮询
-internal/config/      # SyncDir/SyncTomlPath/SyncKeyPath/SyncTokenPath
+zero-beat-tui/cmd/zero/sync.go      # 子命令
+zero-beat-tui/cmd/zero/main.go      # 分发、usage、构造 Manager
+zero-beat-tui/internal/tui/sync.go  # 同步页、冲突视图、状态行、事件
+zero-beat-tui/internal/tui/model.go # 页面枚举、接线、revision 轮询
+zero-beat-core/config/      # SyncDir/SyncTomlPath/SyncKeyPath/SyncTokenPath
 ```
 
 `syncManager` 只是把 `Client` 包成单飞 + 定时器；`Client` 同时服务 CLI 与 TUI，
@@ -512,7 +512,7 @@ func (s *Store) AccountUpdatedAt(source string) (int64, error)
 func (s *Store) ListAccounts() ([]string, error)
 ```
 
-`LibraryRevision` 是内存态计数器，由 `app.Service` 在歌单/账号变更时自增，不放进 `store`；`sync.Manager` 在导出前记录、导入前比较，不一致就放弃本轮导入。
+`LibraryRevision` 是内存态计数器，由 `app.Service` 在歌单/账号变更时自增；Client 同时计算可跨重启核验的输入摘要，在导入前核验两者。
 
 `ImportPlaylistSnapshot` 必须：
 
@@ -529,24 +529,26 @@ func (s *Store) ListAccounts() ([]string, error)
 - 键位文件导入后，提示“下次启动生效”，或显式重载 `keymap`（需评估对当前按键路由的影响）。
 - 登录态导入后按 §9.7 的决策回填或延迟。
 
-### 12.3 git 封装细节
+### 12.3 Git 后端与恢复
 
-- 启动时检查 `git` 是否存在，缺失给出安装提示。
-- `exec.CommandContext` + 超时；`GIT_TERMINAL_PROMPT=0`；捕获 stderr 做错误分类。
-- 认证：优先 `git credential fill`；成功后通知页面“已配置”。若用户选择保存 token，写入 0600 文件并明确警告。
-- 工作克隆固定在 `~/.config/zero-beat/sync/repo`，不是用户的代码仓库。
-- 崩溃恢复：启动时若存在 `MERGE_HEAD` 则 abort；工作区脏文件恢复到 HEAD 后重新导出。
+- `auto` 在 Linux/macOS 优先探测可用的 CLI，Windows/Android 优先 go-git；显式选择后业务失败不切换。状态同时报告请求后端和实际后端。
+- CLI 使用 `exec.CommandContext` 与超时，保留 credential helper、SSH 配置和 `GIT_SSH_COMMAND`；go-git 使用 HTTPS token、SSH agent/私钥和 known_hosts，不执行外部认证命令。
+- 工作克隆固定在 `~/.config/zero-beat/sync/repo`。
+- 初始化先写 joining 日志，再检出和导入，防止重启后将空库导出成删除。merging/prepared 恢复到固定本地父提交，保留当前数据库并重新计算；imported/pushed 保留已导入提交重试。
+- 换密钥先写仅本机的 0600 rotation 日志；恢复先核验远端是否接受新 meta，再保留新密钥或回滚旧状态，网络错误保留日志。
 
 ## 13. 本地文件与权限
 
 ```
 ~/.config/zero-beat/
-├── sync.toml          # remote/branch/auto，0600（不含 token）
+├── sync.toml          # remote/branch/auto/backend/ssh_key/known_hosts，0600（不含 token）
 ├── sync-key           # 派生密钥，0600
 ├── sync-token         # 可选的 HTTPS token 兜底，0600
 ├── sync/
 │   ├── repo/          # 受管工作克隆
 │   ├── state.json     # 上次提交、时间、账号哈希、设备 ID、待处理冲突
+│   ├── transaction.json # 合并阶段、固定提交与输入摘要
+│   ├── rotation.json    # 仅换密钥期间存在，0600
 │   ├── lock
 │   ├── conflicts/<txid>/
 │   └── archive/<time>/
@@ -567,7 +569,7 @@ func (s *Store) ListAccounts() ([]string, error)
 | git 历史 | 已删除的歌单/凭据仍在 | 凭据是密文；歌单历史无法删除，文档说明 |
 | 提交信息 | 泄露歌单名/设备名 | 提交信息只用随机设备 ID 与时间，不含标题 |
 | 日志/崩溃 | 泄露口令或 cookie | 禁止打印 payload、token、口令；错误信息脱敏 URL |
-| 多进程并发 | 仓库损坏、库覆盖 | 同步文件锁；导入前 revision 检查；TUI 单实例锁（`internal/instance`） |
+| 多进程并发 | 仓库损坏、库覆盖 | 同步文件锁；导入前 revision 检查；TUI 单实例锁（`zero-beat-core/instance`） |
 
 额外说明：
 
@@ -595,13 +597,13 @@ func (s *Store) ListAccounts() ([]string, error)
 
 **集成**
 
-- 本地裸仓库 + 两个独立数据目录模拟 A/B 设备；用真实 `git`，不联网。
+- 本地裸仓库 + 两个独立数据目录模拟 A/B 设备；同一场景分别运行 CLI/go-git。无 Git 测试用 go-git 创建裸仓库，清空 PATH 后仍需完成双设备同步。
 - 场景：首次推送；第二设备加入（口令、keycheck）；离线双改；推送被拒后重试；冲突解决；密钥轮换；仓库被 reset。
 - 崩溃恢复：同步中途 kill，重启后清理 merge 状态并重试。
 
 **TUI**
 
-- 同步页与冲突页的渲染行数/宽度断言，遵守 [view_test.go](../internal/tui/view_test.go) 的精确行约束。
+- 同步页与冲突页的渲染行数/宽度断言，遵守 [view_test.go](../zero-beat-tui/internal/tui/view_test.go) 的精确行约束。
 - 掩码输入、退出清除、状态行不挤占布局。
 - 用 fake manager 断言同步调用只发生在 `tea.Cmd`，`Update` 内不触发网络或磁盘长任务。
 
@@ -618,7 +620,7 @@ func (s *Store) ListAccounts() ([]string, error)
 
 ## 17. 实施拆分
 
-M1–M4 已实现（2026-11-01）；TUI 单实例锁随后补在 `internal/instance`。
+M1–M4 已实现（2026-11-01）；TUI 单实例锁随后补在 `zero-beat-core/instance`。
 
 1. **M1 快照与 git**：`snapshot`、`git`、`merge`、CLI `pull/push`，无凭据；本地裸仓库集成测试。先把“确定性导出 + 冲突选择”跑通。
 2. **M2 凭据加密**：`crypt`、`sync-key`、`meta.json`、LWW、密钥不匹配状态；CLI 加入 `key set/rotate`。
@@ -636,7 +638,7 @@ M1–M4 已实现（2026-11-01）；TUI 单实例锁随后补在 `internal/insta
 | 历史不可撤销 | 旧密文/旧歌单仍可读 | 文档说明；敏感场景建议新仓库 |
 | 时钟偏差 | LWW 顺序错 | 秒级时间戳 + 内容哈希；同时间不同内容进冲突 |
 | 双进程 | 仓库/库损坏 | 文件锁；revision 检查；TUI 单实例锁 |
-| git 未安装/认证失败 | 无法同步 | 初始化检测；错误分类与可操作提示 |
+| CLI 的 Git 未安装/认证失败 | 当前后端无法同步 | auto 在操作前选可用后端；操作中不切换，认证能力差异写入文档 |
 | 大曲库导出耗时 | 同步变慢 | 一实体一文件 + 只提交差异；后续可做增量，但首版不做 |
 
 **需要评审拍板**
@@ -674,7 +676,7 @@ M1–M4 已实现（2026-11-01）；TUI 单实例锁随后补在 `internal/insta
 ## 20. 参考
 
 - 现有分层与事件循环约束：[ARCHITECTURE.md](../ARCHITECTURE.md)
-- 数据模型：[store.go](../internal/store/store.go#L95-L190)
-- 键位加载与冲突规则：[keymap.go](../internal/keymap/keymap.go#L180-L226)
-- 配置目录：[config.go](../internal/config/config.go#L12-L57)
-- 登录态读写：[store.go](../internal/store/store.go#L1161-L1191)
+- 数据模型：[store.go](../zero-beat-core/store/store.go#L95-L190)
+- 键位加载与冲突规则：[keymap.go](../zero-beat-core/keymap/keymap.go)
+- 配置目录：[config.go](../zero-beat-core/config/config.go#L12-L57)
+- 登录态读写：[store.go](../zero-beat-core/store/store.go#L1161-L1191)

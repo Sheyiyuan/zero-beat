@@ -113,3 +113,7 @@ zero
 ## 许可证
 
 [AGPL-3.0](LICENSE)。
+
+## Monorepo 开发
+
+共享业务位于 `zero-beat-core`，终端应用位于 `zero-beat-tui`，GUI 设计与未来实现位于 `zero-beat-gui`，网站位于 `zero-beat-site`。命令仍为 `zero`。构建、模块标签和双 Git 后端说明见[模块迁移指南](docs/monorepo-and-sync.md)。

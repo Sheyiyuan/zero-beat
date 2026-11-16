@@ -28,22 +28,22 @@ KDE 侧零改动。zero-beat 侧做两件事：
 不采用 go-musicfox “忽略客户端目标值、只做循环切换”的做法。它的循环顺序恰好和 KDE
 对齐，所以看起来能用，但 `playerctl loop none` 这类按目标值写入的客户端会失效，且
 `Shuffle` 变化连带的 `LoopStatus` 可能短暂不同步。zero-beat 的 `sysCommandMsg` 在
-应用命令后会立即 `publishNowPlaying()`（`internal/tui/model.go:466`），天然适合做
+应用命令后会立即 `publishNowPlaying()`（`zero-beat-tui/internal/tui/model.go:466`），天然适合做
 “按目标值映射 + 立即回发”。
 
 ## 1. 现状
 
 | 位置 | 现状 | 影响 |
 | --- | --- | --- |
-| `internal/player/controller.go:16` | 只有 `ModeSequence(0)` / `ModeLoopOne(1)` / `ModeShuffle(2)` | 没有“播完即停”状态，`LoopStatus=None` 无法表达 |
-| `internal/player/queue.go:237` | `NextIndex` 末尾回 0 | 现有“顺序”实际是列表循环 |
-| `internal/sysmedia/service_linux.go:124` | `LoopStatus` / `Shuffle` 内省为 `read` | 面板按钮可点，但写入被拒 |
-| `internal/sysmedia/service_linux.go:264` | `LoopStatus` 恒返回 `"None"` | 面板无法看到真实循环状态 |
-| `internal/sysmedia/service_linux.go:398` | `props.Set` 只接受 `Volume` | 写入直接返回 `PropertyReadOnly` |
-| `internal/sysmedia/service_linux.go:185` | `propertyChanges` 不比较 `Shuffle` / `LoopStatus` | 即使改了也不发 `PropertiesChanged` |
-| `internal/tui/model.go:2206` | 快照只有 `Shuffle: mode == shuffle` | 没有循环状态字段 |
-| `internal/tui/model.go:1253` | `p` 键 `% 3` | 模式循环写死三态 |
-| `internal/app/settings.go:32` | 读取模式时限制 `0..2` | 新模式无法持久化 |
+| `zero-beat-core/player/controller.go:16` | 只有 `ModeSequence(0)` / `ModeLoopOne(1)` / `ModeShuffle(2)` | 没有“播完即停”状态，`LoopStatus=None` 无法表达 |
+| `zero-beat-core/player/queue.go:237` | `NextIndex` 末尾回 0 | 现有“顺序”实际是列表循环 |
+| `zero-beat-tui/internal/sysmedia/service_linux.go:124` | `LoopStatus` / `Shuffle` 内省为 `read` | 面板按钮可点，但写入被拒 |
+| `zero-beat-tui/internal/sysmedia/service_linux.go:264` | `LoopStatus` 恒返回 `"None"` | 面板无法看到真实循环状态 |
+| `zero-beat-tui/internal/sysmedia/service_linux.go:398` | `props.Set` 只接受 `Volume` | 写入直接返回 `PropertyReadOnly` |
+| `zero-beat-tui/internal/sysmedia/service_linux.go:185` | `propertyChanges` 不比较 `Shuffle` / `LoopStatus` | 即使改了也不发 `PropertiesChanged` |
+| `zero-beat-tui/internal/tui/model.go:2206` | 快照只有 `Shuffle: mode == shuffle` | 没有循环状态字段 |
+| `zero-beat-tui/internal/tui/model.go:1253` | `p` 键 `% 3` | 模式循环写死三态 |
+| `zero-beat-core/app/settings.go:32` | 读取模式时限制 `0..2` | 新模式无法持久化 |
 
 KDE 侧：`ExpandedRepresentation.qml` 早已有 `shuffleButton` 和 `repeatButton`，
 `enabled` 只要求 `CanControl` 且属性不是 `Unknown`；点击直接写 MPRIS 属性。
@@ -172,7 +172,7 @@ TUI 的 `sysCommandMsg` 分支本来就在 `applySysCommand` 之后立即
 
 ## 5. 改动清单
 
-### 5.1 `internal/player/controller.go`
+### 5.1 `zero-beat-core/player/controller.go`
 
 - 枚举与 `String()`：`ModeSequence` → `ModeListLoop`，追加 `ModeOrdered`，显示名调整。
 - `Next()`：在单曲判断之后加顺序模式边界：
@@ -193,7 +193,7 @@ if c.state.Mode == ModeOrdered && c.state.Index <= 0 {
 
 - `NextSongID()`：列表循环保持 `NextIndex` + 回绕；顺序模式只返回 `Index+1`，越界返回空。
 
-### 5.2 `internal/tui/model.go`
+### 5.2 `zero-beat-tui/internal/tui/model.go`
 
 - 常量别名：`modeSequence` → `modeListLoop`，新增 `modeOrdered`。
 - 新增字段 `modeBeforeShuffle playMode`；`setMode` 进入随机前记录：
@@ -248,7 +248,7 @@ case sysmedia.CommandSetLoopStatus:
 - 队列播完（`advance` 返回 `ok=false` 且顺序模式）可选加一条
   `m.setNotice("已播放到队尾", false)`，不影响状态机。
 
-### 5.3 `internal/sysmedia/types.go`
+### 5.3 `zero-beat-tui/internal/sysmedia/types.go`
 
 ```go
 type LoopStatus string
@@ -266,7 +266,7 @@ func (l LoopStatus) Valid() bool { /* 三值之一 */ }
 - `CommandKind` 末尾追加 `CommandSetShuffle`、`CommandSetLoopStatus`。
 - `Command` 增加 `Shuffle bool`、`Loop LoopStatus`。
 
-### 5.4 `internal/sysmedia/service_linux.go`
+### 5.4 `zero-beat-tui/internal/sysmedia/service_linux.go`
 
 - 内省：`LoopStatus`、`Shuffle` 的 `Access` 改为 `readwrite`。
 - `playerPropertyLocked`：
@@ -281,7 +281,7 @@ case "LoopStatus":
   入队；未知属性仍返回 `PropertyReadOnly`。
 - 新增 `normalizeLoop(LoopStatus) LoopStatus`（空值转 `LoopNone`）。
 
-### 5.5 `internal/app/settings.go`
+### 5.5 `zero-beat-core/app/settings.go`
 
 - `Preferences()` 的模式范围从 `0..2` 改为 `0..3`。
 
@@ -314,23 +314,23 @@ case "LoopStatus":
 
 ### 单元测试
 
-- `internal/player/controller_test.go`
+- `zero-beat-core/player/controller_test.go`
   - 顺序模式最后一首 `Next` 返回 `ok=false`，索引不变；
   - 顺序模式第一首 `Prev` 返回 `ok=false`，索引不变；
   - `NextSongID` 四模式表驱动；
   - 现有 `SetMode(ModeSequence)` 引用改为 `ModeListLoop`。
-- `internal/tui/model_test.go` / `sysmedia_test.go`
+- `zero-beat-tui/internal/tui/model_test.go` / `sysmedia_test.go`
   - `publishNowPlaying` 四模式 → `(Shuffle, Loop, CanNext, CanPrev)` 表驱动；
   - `applySysCommand` 五种写入 → 模式表驱动；
   - 随机中关闭随机恢复 `modeBeforeShuffle`；
   - `p` 连按四次回到原模式。
-- `internal/sysmedia/service_linux_test.go`
+- `zero-beat-tui/internal/sysmedia/service_linux_test.go`
   - `Properties.Set("Shuffle", true/false)` → 收到对应 `Command`；
   - `Properties.Set("LoopStatus", "None"/"Track"/"Playlist")` → 收到对应 `Command`；
   - 非法值返回 `InvalidArgs`，未知属性返回 `PropertyReadOnly`；
   - `propertyChanges` 在 `Shuffle` / `Loop` 变化时包含对应名称；
   - 内省字符串里两个属性为 `readwrite`。
-- `internal/app`（如有 settings 测试）
+- `zero-beat-core/app`（如有 settings 测试）
   - mode=3 能读出，mode=4 被忽略。
 
 ### 集成测试

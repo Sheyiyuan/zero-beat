@@ -2,6 +2,22 @@
 
 zero-beat 以 AGPL-3.0 发布。下面列出随二进制分发的依赖，以及运行时需要的外部程序与许可。
 
+## go-git
+
+- 版本：v5.16.3
+- 许可：Apache-2.0
+- 用途：内置同步 Git 后端，读写对象与引用、HTTPS/SSH 传输。
+- 项目：https://github.com/go-git/go-git
+- 许可全文：https://github.com/go-git/go-git/blob/v5.16.3/LICENSE
+
+## xanzy/ssh-agent
+
+- 版本：v0.3.3
+- 许可：MIT
+- 用途：go-git 的 SSH agent 认证。
+- 项目：https://github.com/xanzy/ssh-agent
+- 许可全文：https://github.com/xanzy/ssh-agent/blob/master/LICENSE
+
 ## go-musicfox/netease-music
 
 - 版本：v1.6.0
@@ -80,4 +96,4 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## 其他
 
-其余 Go 依赖及版本见 [go.mod](go.mod)；许可信息随各模块分发。
+其余 Go 依赖及版本见 [core/go.mod](zero-beat-core/go.mod) 和 [TUI/go.mod](zero-beat-tui/go.mod)；许可信息随各模块分发。
