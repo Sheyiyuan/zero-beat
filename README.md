@@ -116,4 +116,4 @@ zero
 
 ## Monorepo 开发
 
-共享业务位于 `zero-beat-core`，终端应用位于 `zero-beat-tui`，GUI 设计与未来实现位于 `zero-beat-gui`，网站位于 `zero-beat-site`。命令仍为 `zero`。构建、模块标签和双 Git 后端说明见[模块迁移指南](docs/monorepo-and-sync.md)。
+共享业务位于 `zero-beat-core`，终端应用位于 `zero-beat-tui`，GUI 设计与未来实现位于 `zero-beat-gui`，网站位于 `zero-beat-site`。命令仍为 `zero`。所有构建与检查从仓库根目录执行：`make help`、`make check`、`make build`、`make verify`（含站点构建）。构建、模块标签和双 Git 后端说明见[模块迁移指南](docs/monorepo-and-sync.md)。

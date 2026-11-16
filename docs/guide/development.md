@@ -2,11 +2,28 @@
 
 ## 本地开发
 
+所有命令都在仓库根目录（含 `go.work` 的目录）执行，不要 `cd` 进 `zero-beat-core/` 或 `zero-beat-tui/` 单独构建。
+
 ```bash
-make check        # gofmt 检查 + go vet + go test
-make build
-./bin/zero demo   # 不联网看界面
+make help          # 查看全部入口
+make check         # gofmt + vet + 两模块测试 + 文档链接
+make build         # 输出 bin/zero
+make run           # 直接运行 TUI
+./bin/zero demo    # 不联网看界面
 ```
+
+| 目标 | 用途 |
+| --- | --- |
+| `make check` | fmt-check、vet、两模块 test、文档链接、`git diff --check` |
+| `make check-modules` | 临时消费目录 + `GOWORK=off`，验证独立模块 |
+| `make check-deps` | Linux/macOS/Windows/Android 的 core 依赖边界与编译 |
+| `make check-docs` | 只检查 Markdown 本地链接与空白错误 |
+| `make site-install` / `site-build` | 站点依赖与生产构建（不需要进子目录） |
+| `make verify` | `check` + `check-modules` + `check-deps` + `check-site` |
+| `make tidy` | 用临时模块代理整理 go.mod/go.sum |
+| `make clean` / `distclean` | 清构建产物 / 连站点 node_modules 一起清 |
+
+站点源文件仍在 `zero-beat-site`，但统一从根目录用 `make site-build` 触发；`pnpm -C zero-beat-site ...` 仍然可用。
 
 UI 的单元测试会校验整帧尺寸（每行宽度、总行数）与关键字，改布局时先跑 `go -C zero-beat-tui test ./internal/tui`。
 

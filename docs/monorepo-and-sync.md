@@ -21,8 +21,9 @@ core 不依赖 TUI、Bubble Tea、oto 或 DBus。完整 Session 门面和 Androi
 
 ## 构建与发布
 
-- `make build` 输出 bin/zero；`make check` 检查两个模块。
-- 网站在 `zero-beat-site` 内运行 `pnpm install --frozen-lockfile`、`pnpm build`，独立由 Pages 工作流发布；用户文档来源仍为根 `docs/`，网址保持不变。
+- 所有命令统一从仓库根目录执行：`make help` 查看入口，`make check` 检查两个模块与文档，`make build` 输出 bin/zero。
+- `make verify` 汇总本地验收：`check`、独立模块消费、四平台 core 依赖检查、站点构建；真实设备与托管 Git 服务仍需单独验证。
+- 站点统一用 `make site-install` / `make site-build` 构建（内部调用 `pnpm`），不再要求进入 `zero-beat-site` 手动执行；用户文档来源仍为根 `docs/`，网址保持不变。
 - `make tidy` 使用临时模块代理整理依赖；不在 go.mod 提交兄弟模块相对路径 replace。core/v0.8.0 打 tag 前，go.work 用版本精确的 `replace` 指向本地 core，tag 后移除。
 - `make check-modules` 在临时消费目录、GOWORK=off 下运行 test/vet/build。
 - `python3 scripts/check-core-deps.py` 检查 Linux、macOS、Windows、Android 的核心依赖和编译；这不是 GUI 平台功能验收。

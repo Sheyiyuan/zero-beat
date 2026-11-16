@@ -42,6 +42,7 @@
 - `scripts/check-modules.py` 在临时模块代理、GOWORK=off 的独立消费目录 test/vet/build 通过。
 - `scripts/check-doc-links.py` 检查 217 个本地链接目标通过；`git diff --check` 通过。
 - `pnpm install --frozen-lockfile` + `pnpm build` 在 zero-beat-site 通过；修复了 editLink 闭包引用 `manifest` 导致的 SSR `ReferenceError`，构建无错误输出。
+- 根目录 Makefile 统一入口验证：`make help`、`make check`、`make build`、`make version`、`make site-build`、`make verify` 全部通过；站点不再需要进入子目录构建。
 
 复审发现并处理：
 
