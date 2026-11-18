@@ -64,6 +64,8 @@ features:
   <a href="./changelog/v0.7.0.html">发布说明 →</a>
 </div>
 
+> **v0.8.0 未发布**：评论、相关推荐、用户／歌手主页、播客电台与默认关闭的登录态同步已在开发版接入，等待 GUI 完成后统一发布。见 [0.8.0 更新说明](/changelog/v0.8.0)。
+
 <img src="/assets/readme/hero.svg" alt="zero-beat 零拍：两个平台，为你同频" style="width:100%;border-radius:12px" />
 
 ## 一行安装
@@ -81,7 +83,7 @@ sh install.sh && zero
 
 ## 文档地图
 
-- GUI：[设计概览](/gui/)（设计阶段，尚未发布可运行应用）
+- GUI：[开发概览](/gui/) · [双端设计预览](/gui/15-design-preview)（环境与类型契约已有验证，完整应用尚未实现）
 - 用户先看：[安装](/guide/install) → [快速上手](/guide/quickstart) → [按键速查](/reference/keys)
 - 功能专题：[曲库与歌单](/guide/library)（含本地音乐库）、[播放与歌词](/guide/playback)（含歌词来源绑定）、[下载](/guide/download)、[跨设备同步](/guide/sync)、[系统媒体](/guide/sysmedia)、[主题与配色](/guide/theme)
 - 配置参考：[自定义快捷键](/reference/keymap)、[CLI 子命令](/reference/cli)

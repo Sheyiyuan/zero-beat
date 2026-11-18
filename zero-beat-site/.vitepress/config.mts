@@ -74,11 +74,11 @@ export default defineConfig({
       },
       { text: 'TUI 参考', activeMatch: '/reference/', link: '/reference/keys' },
       { text: 'TUI 更新', activeMatch: '/changelog/', items: changelog.slice(0, 3) },
-      { text: 'GUI 设计', activeMatch: '/gui/', link: '/gui/' },
+      { text: 'GUI 开发', activeMatch: '/gui/', link: '/gui/' },
     ],
     sidebar: {
       '/gui/': [
-        { text: 'GUI（设计阶段）', items: manifest.filter(p => p.route.startsWith('/gui/') && !p.route.startsWith('/gui/decisions/')).map(p => ({ text: p.title, link: p.route })) },
+        { text: 'GUI（开发与验收）', items: manifest.filter(p => p.route.startsWith('/gui/') && !p.route.startsWith('/gui/decisions/')).map(p => ({ text: p.title, link: p.route })) },
         { text: '设计决策', items: manifest.filter(p => p.route.startsWith('/gui/decisions/')).map(p => ({ text: p.title, link: p.route })) },
       ],
       '/': [

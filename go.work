@@ -3,6 +3,7 @@ go 1.26.10
 use (
 	./zero-beat-core
 	./zero-beat-tui
+	./zero-beat-gui
 )
 
 // core/v0.8.0 打 tag 前用版本精确 replace；发布后移除。

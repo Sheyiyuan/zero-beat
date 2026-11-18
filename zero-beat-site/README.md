@@ -5,7 +5,8 @@ zero-beat 主仓库内的 VitePress 网站目录，统一发布到 <https://shey
 ## 内容来源
 
 - TUI 用户指南、参考、发布说明和截图：`../zero-beat-tui/docs/`。保留现有 `/guide/`、`/reference/`、`/changelog/` 和 `/images/` 地址。
-- GUI 概览与设计文档：`../zero-beat-gui/README.md` 和 `../zero-beat-gui/docs/`，生成 `/gui/` 栏目，所有页面标注设计阶段。
+- GUI 概览与开发文档：`../zero-beat-gui/README.md` 和 `../zero-beat-gui/docs/`，生成 `/gui/` 栏目，明确区分准备工作与尚未实现的完整应用。
+- GUI SVG 预览、索引与 token：来自 `../zero-beat-gui/design/`，复制静态资源至 `/gui-design/`；源码和生成脚本仍在 GUI 仓库维护。
 - 网站首页、导航、主题：本目录；品牌素材：主仓库 `../assets/`。
 - 集成与统一发布说明：主仓库 `../docs/`，需要时链接到 GitHub。
 

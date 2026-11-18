@@ -21,6 +21,8 @@ core 不依赖 TUI、Bubble Tea、oto 或 DBus。完整 Session 门面和 Androi
 
 ## 构建与发布
 
+**当前 v0.8.0 未发布。** core / TUI 的已完成改动归入 [0.8.0 更新说明](../zero-beat-tui/docs/release-notes-v0.8.0.md)，等待 GUI 完成并通过联合验收后统一发布；以下标签与打包顺序仅用于届时发布，本地版本标识不代表已经发布。
+
 - 所有命令统一从仓库根目录执行：`make help` 查看入口，`make check` 检查两个模块与文档，`make build` 输出 bin/zero。
 - `make verify` 汇总本地验收：`check`、独立模块消费、四平台 core 依赖检查、站点构建；真实设备与托管 Git 服务仍需单独验证。
 - 站点统一用 `make site-install` / `make site-build` 构建（内部调用 `pnpm`），不再要求进入 `zero-beat-site` 手动执行；TUI 用户文档来源为 `zero-beat-tui/docs/`，GUI 设计文档来源为 `zero-beat-gui/`。TUI 原页面地址保持不变，GUI 使用 `/gui/`；生成页面不提交。
@@ -39,6 +41,7 @@ core 不依赖 TUI、Bubble Tea、oto 或 DBus。完整 Session 门面和 Androi
 remote = "https://github.com/example/music-sync.git"
 branch = "main"
 auto = true
+sync_accounts = false # 登录态同步默认关闭，需在每台设备上手动开启
 backend = "auto"
 # go-git SSH 可选项；加密私钥请通过 SSH agent 解锁。
 # ssh_key = "/home/me/.ssh/id_ed25519"
@@ -51,7 +54,7 @@ HTTPS token 继续使用 sync-token 文件。CLI 保留 credential helper 与 GI
 
 ## 数据与恢复
 
-远端仍使用 v2 快照格式，字段和时间单位不变。合并输入是固定提交的 base/local/remote，而非 Git index stages。同一实体双方不同修改需要选择；不同实体自动合并，删除与空文件不同。账号沿用 LWW，分叉成功生成两个父提交；无共同祖先的非空历史和多个最佳共同祖先明确拒绝。
+歌单和注释仍使用 v2 快照字段，时间单位不变；新建仓库元数据为 `meta.v=3`，允许无口令初始化，已有 v2 加密仓库普通同步时保留 v2。登录态仅在本机启用后参与同步，详见[同步指南](../zero-beat-tui/docs/guide/sync.md)。合并输入是固定提交的 base/local/remote，而非 Git index stages。同一实体双方不同修改需要选择；不同实体自动合并，删除与空文件不同。账号沿用 LWW，分叉成功生成两个父提交；无共同祖先的非空历史和多个最佳共同祖先明确拒绝。
 
 受管文件在导入、覆盖导出前严格校验；未知字段和版本会停止写同步。所有同步仓库修改先持进程间锁。冲突记录固定提交和本地数据摘要；恢复时重新 fetch，输入改变后归档旧事务并重新计算，旧选择不会应用到新冲突。旧版冲突仍可查看或归档，但不能直接提交。
 
